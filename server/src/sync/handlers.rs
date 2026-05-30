@@ -1,0 +1,146 @@
+use axum::{
+    extract::{
+        ws::{Message, WebSocket, WebSocketUpgrade},
+        Query, State,
+    },
+    response::IntoResponse,
+};
+use jsonwebtoken::{decode, DecodingKey, Validation};
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+
+use super::room::RoomRegistry;
+use crate::auth::model::Claims;
+use crate::error::AppError;
+use crate::AppState;
+
+#[derive(Debug, Deserialize)]
+pub struct SyncQuery {
+    pub file_id: String,
+    pub token: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum SyncMessage {
+    #[serde(rename = "sync_update")]
+    SyncUpdate { update: Vec<u8> },
+    #[serde(rename = "sync_full")]
+    SyncFull { state: Vec<u8> },
+    #[serde(rename = "awareness")]
+    Awareness { state: Vec<u8> },
+}
+
+pub async fn ws_handler(
+    ws: WebSocketUpgrade,
+    State(state): State<AppState>,
+    Query(query): Query<SyncQuery>,
+) -> Result<impl IntoResponse, AppError> {
+    let file_id = query.file_id;
+    let claims = decode::<Claims>(
+        &query.token,
+        &DecodingKey::from_secret(state.config.jwt_secret.as_bytes()),
+        &Validation::default(),
+    )
+    .map_err(|_| AppError::Unauthorized("invalid token".into()))?;
+
+    if claims.claims.token_type != "access" {
+        return Err(AppError::Unauthorized("invalid token".into()));
+    }
+
+    ensure_sync_access(&state.pool, &file_id, &claims.claims.sub).await?;
+
+    let pool = state.pool.clone();
+    let registry = state.room_registry.clone();
+
+    Ok(ws.on_upgrade(move |socket| handle_socket(socket, file_id, pool, registry)))
+}
+
+async fn ensure_sync_access(
+    pool: &sqlx::SqlitePool,
+    file_id: &str,
+    user_id: &str,
+) -> Result<(), AppError> {
+    let exists: i64 = sqlx::query_scalar(
+        "SELECT EXISTS(
+            SELECT 1
+            FROM files f
+            JOIN project_members pm ON pm.project_id = f.project_id
+            WHERE f.id = ?
+              AND f.type = 'file'
+              AND f.storage_path IS NULL
+              AND pm.user_id = ?
+        )",
+    )
+    .bind(file_id)
+    .bind(user_id)
+    .fetch_one(pool)
+    .await?;
+
+    if exists == 0 {
+        return Err(AppError::NotFound("sync file not found".into()));
+    }
+
+    sqlx::query(
+        "INSERT OR IGNORE INTO crdt_docs (file_id, ydoc_state, updated_at) VALUES (?, ?, ?)",
+    )
+    .bind(file_id)
+    .bind(Vec::<u8>::new())
+    .bind(chrono::Utc::now().timestamp())
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
+async fn handle_socket(
+    mut socket: WebSocket,
+    file_id: String,
+    pool: sqlx::SqlitePool,
+    registry: Arc<RoomRegistry>,
+) {
+    let room = registry.get_or_create(&file_id, &pool).await;
+
+    // Send current full state to new client
+    {
+        let r = room.read().await;
+        let state = r.encode_state();
+        let msg = SyncMessage::SyncFull { state };
+        if let Ok(json) = serde_json::to_string(&msg) {
+            let _ = socket.send(Message::Text(json.into())).await;
+        }
+    }
+
+    // Subscribe to updates from other clients
+    let mut update_rx = room.read().await.update_tx.subscribe();
+
+    loop {
+        tokio::select! {
+            client_msg = socket.recv() => {
+                match client_msg {
+                    Some(Ok(Message::Text(text))) => {
+                        if let Ok(SyncMessage::SyncUpdate { update }) =
+                            serde_json::from_str::<SyncMessage>(&text)
+                        {
+                            let mut r = room.write().await;
+                            if r.apply_update(&update).is_ok() {
+                                let _ = r.update_tx.send(update);
+                            }
+                        }
+                    }
+                    Some(Ok(Message::Close(_))) | None => break,
+                    _ => continue,
+                }
+            }
+            Ok(update) = update_rx.recv() => {
+                let msg = SyncMessage::SyncUpdate { update };
+                if let Ok(json) = serde_json::to_string(&msg) {
+                    let _ = socket.send(Message::Text(json.into())).await;
+                }
+            }
+        }
+    }
+
+    // Persist CRDT state on disconnect
+    registry.release(&file_id, &pool).await;
+}

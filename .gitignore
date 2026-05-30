@@ -1,0 +1,36 @@
+# v0 sandbox internal files
+__v0_runtime_loader.js
+__v0_devtools.tsx
+__v0_jsx-dev-runtime.ts
+.snowflake/
+.v0-trash/
+.vercel/
+
+# Environment variables
+.env*.local
+.env
+.env.*
+!.env.example
+!**/.env.example
+
+# Common ignores
+node_modules
+.next/
+.DS_Store
+tsconfig.tsbuildinfo
+.claude/
+
+# Rust build outputs
+target/
+agent/target/
+server/target/
+server/target-smoke/
+
+# Local runtime data
+server/data/
+
+# Local reference checkout, not part of this project
+/one-api/
+
+# Nested repository metadata backup while converting to monorepo
+.git-nested-backups/
