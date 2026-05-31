@@ -1,0 +1,10 @@
+-- 005: Extend research_items for Morphic search
+-- Executed via ensure_column() in db.rs — idempotent, safe for repeated runs.
+-- Columns are added only if they don't already exist (PRAGMA table_info check).
+
+-- ALTER TABLE research_items ADD COLUMN category TEXT DEFAULT 'literature';
+-- ALTER TABLE research_items ADD COLUMN authors TEXT DEFAULT '';
+-- ALTER TABLE research_items ADD COLUMN publish_year INTEGER;
+-- ALTER TABLE research_items ADD COLUMN keywords TEXT DEFAULT '';
+-- ALTER TABLE research_items ADD COLUMN relevance_score REAL DEFAULT 0.0;
+-- ALTER TABLE research_items ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0;

@@ -23,6 +23,7 @@ async fn run_migrations(pool: &SqlitePool) {
     run_specific_migration(pool, include_str!("../migrations/002_ai.sql")).await;
     run_specific_migration(pool, include_str!("../migrations/003_history.sql")).await;
     run_specific_migration(pool, include_str!("../migrations/004_research.sql")).await;
+    run_005_migration(pool).await;
 }
 
 pub async fn run_specific_migration(pool: &SqlitePool, sql: &str) {
@@ -32,4 +33,49 @@ pub async fn run_specific_migration(pool: &SqlitePool, sql: &str) {
             .await
             .expect("Failed to run migration");
     }
+}
+
+/// Idempotent column addition: checks PRAGMA table_info before ALTER TABLE.
+pub async fn ensure_column(
+    pool: &SqlitePool,
+    table: &str,
+    column: &str,
+    type_sql: &str,
+) -> Result<(), sqlx::Error> {
+    let count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name = ?2"
+    )
+    .bind(table)
+    .bind(column)
+    .fetch_one(pool)
+    .await?;
+
+    if count == 0 {
+        let sql = format!("ALTER TABLE {table} ADD COLUMN {column} {type_sql}");
+        sqlx::query(&sql).execute(pool).await?;
+        tracing::info!("Migration: added column {table}.{column} {type_sql}");
+    }
+
+    Ok(())
+}
+
+async fn run_005_migration(pool: &SqlitePool) {
+    ensure_column(pool, "research_items", "category", "TEXT DEFAULT 'literature'")
+        .await
+        .expect("005: category");
+    ensure_column(pool, "research_items", "authors", "TEXT DEFAULT ''")
+        .await
+        .expect("005: authors");
+    ensure_column(pool, "research_items", "publish_year", "INTEGER")
+        .await
+        .expect("005: publish_year");
+    ensure_column(pool, "research_items", "keywords", "TEXT DEFAULT ''")
+        .await
+        .expect("005: keywords");
+    ensure_column(pool, "research_items", "relevance_score", "REAL DEFAULT 0.0")
+        .await
+        .expect("005: relevance_score");
+    ensure_column(pool, "research_items", "updated_at", "INTEGER NOT NULL DEFAULT 0")
+        .await
+        .expect("005: updated_at");
 }
