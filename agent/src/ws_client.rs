@@ -44,8 +44,36 @@ pub enum AgentMessage {
     NewFolder,
     #[serde(rename = "ready")]
     Ready,
+    #[serde(rename = "create_file")]
+    CreateFile { path: String, content: String },
     #[serde(rename = "error")]
     AgentError { message: String },
+}
+
+fn validate_create_path(work_dir: &std::path::Path, relative_path: &str) -> Result<std::path::PathBuf, String> {
+    // Reject absolute paths
+    if relative_path.starts_with('/') || relative_path.starts_with('\\') {
+        return Err("absolute path rejected".into());
+    }
+    // Reject path traversal
+    if relative_path.contains("..") {
+        return Err("path traversal rejected".into());
+    }
+    // Resolve under work_dir
+    let resolved = work_dir.join(relative_path);
+    // Canonicalize work_dir
+    let canon_work = work_dir.canonicalize().unwrap_or_else(|_| work_dir.to_path_buf());
+    // For paths that don't exist yet, check string prefix
+    if let Ok(canon) = resolved.canonicalize() {
+        if !canon.starts_with(&canon_work) {
+            return Err("path escapes workspace".into());
+        }
+    } else {
+        if !resolved.to_string_lossy().starts_with(canon_work.to_string_lossy().as_ref()) {
+            return Err("path escapes workspace".into());
+        }
+    }
+    Ok(resolved)
 }
 
 pub async fn run(
@@ -149,6 +177,36 @@ pub async fn run(
                                     let _ = outbound_tx.send(AgentMessage::AgentError {
                                         message: "New Folder: use the terminal".into(),
                                     });
+                                }
+                                AgentMessage::CreateFile { path, content } => {
+                                    match validate_create_path(&current_work_dir, &path) {
+                                        Ok(resolved) => {
+                                            if let Some(parent) = resolved.parent() {
+                                                if let Err(err) = std::fs::create_dir_all(parent) {
+                                                    let _ = outbound_tx.send(AgentMessage::AgentError {
+                                                        message: format!("failed to create parent dir: {err:#}"),
+                                                    });
+                                                    continue;
+                                                }
+                                            }
+                                            if resolved.exists() {
+                                                tracing::warn!("create_file: path already exists, skipping: {}", path);
+                                                continue;
+                                            }
+                                            if let Err(err) = std::fs::write(&resolved, &content) {
+                                                let _ = outbound_tx.send(AgentMessage::AgentError {
+                                                    message: format!("failed to write file: {err:#}"),
+                                                });
+                                            } else {
+                                                tracing::info!("create_file: wrote {}", path);
+                                            }
+                                        }
+                                        Err(err) => {
+                                            let _ = outbound_tx.send(AgentMessage::AgentError {
+                                                message: format!("create_file rejected: {err}"),
+                                            });
+                                        }
+                                    }
                                 }
                                 _ => {}
                             }
