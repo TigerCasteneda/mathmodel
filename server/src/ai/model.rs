@@ -57,7 +57,6 @@ pub struct UpdateChannelRequest {
 pub mod channel_type {
     pub const OPENAI_COMPATIBLE: i32 = 1;
     pub const ANTHROPIC: i32 = 18;
-    pub const TAVILY: i32 = 99;
 }
 
 #[derive(Debug, Deserialize)]
@@ -131,25 +130,4 @@ pub struct ModelInfo {
 pub struct ModelListResponse {
     pub object: String,
     pub data: Vec<ModelInfo>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct SearchRequest {
-    pub project_id: String,
-    pub query: String,
-    pub max_results: Option<i32>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct SearchResponse {
-    pub query: String,
-    pub results: Vec<SearchResult>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct SearchResult {
-    pub title: String,
-    pub url: String,
-    pub content: String,
-    pub score: f64,
 }

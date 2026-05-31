@@ -8,7 +8,6 @@ use uuid::Uuid;
 
 use crate::ai::adaptor::anthropic::AnthropicAdaptor;
 use crate::ai::adaptor::openai::OpenAIAdaptor;
-use crate::ai::adaptor::tavily::TavilyAdaptor;
 use crate::ai::adaptor::Adaptor;
 use crate::ai::model::channel_type;
 use crate::ai::model::*;
@@ -21,7 +20,6 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/ai/v1/chat/completions", post(chat_completions))
         .route("/ai/v1/models", get(list_models))
-        .route("/ai/search", post(search))
         .route(
             "/ai/admin/channels",
             get(list_channels).post(create_channel),
@@ -35,7 +33,6 @@ pub fn routes() -> Router<AppState> {
 fn get_adaptor(ctype: i32, channel_name: &str) -> Box<dyn Adaptor> {
     match ctype {
         channel_type::ANTHROPIC => Box::new(AnthropicAdaptor),
-        channel_type::TAVILY => Box::new(TavilyAdaptor),
         _ => Box::new(OpenAIAdaptor {
             custom_provider: Some(channel_name.to_string()),
         }),
@@ -226,29 +223,6 @@ async fn list_models(
             })
             .collect(),
     }))
-}
-
-async fn search(
-    State(state): State<AppState>,
-    auth: AuthUser,
-    Json(req): Json<SearchRequest>,
-) -> Result<Json<ChatCompletionResponse>, AppError> {
-    let chat_req = ChatCompletionRequest {
-        project_id: req.project_id.clone(),
-        model: "tavily-search".into(),
-        messages: vec![ChatMessage {
-            role: "user".into(),
-            content: req.query.clone(),
-        }],
-        temperature: None,
-        max_tokens: Some(1024),
-        stream: Some(false),
-        top_p: None,
-        n: None,
-        stop: None,
-    };
-
-    chat_completions(State(state), auth, Json(chat_req)).await
 }
 
 // Admin channel management

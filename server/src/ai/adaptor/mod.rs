@@ -1,6 +1,5 @@
 pub mod anthropic;
 pub mod openai;
-pub mod tavily;
 
 use crate::ai::model::*;
 use crate::error::AppError;
