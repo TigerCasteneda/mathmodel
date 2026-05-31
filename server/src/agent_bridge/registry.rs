@@ -23,7 +23,7 @@ impl ProjectAgentBridge {
         *self.agent.write().await = Some((connection_id, tx));
         self.broadcast_to_frontends(serde_json::json!({
             "type": "agent_status",
-            "status": "connected"
+            "status": "ready"
         }));
     }
 

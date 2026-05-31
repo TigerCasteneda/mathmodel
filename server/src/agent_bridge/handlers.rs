@@ -180,7 +180,7 @@ async fn handle_frontend(
     let mut frontend_rx = bridge.subscribe_frontend();
 
     let status = if bridge.has_agent().await {
-        "connected"
+        "ready"
     } else {
         "disconnected"
     };

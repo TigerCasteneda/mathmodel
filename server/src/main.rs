@@ -7,6 +7,7 @@ mod db;
 mod error;
 mod file;
 mod history;
+mod morphic;
 mod project;
 mod research;
 mod sync;
@@ -41,6 +42,7 @@ async fn main() -> anyhow::Result<()> {
         .merge(ai::handlers::routes())
         .merge(compute::handlers::routes())
         .merge(history::handlers::routes())
+        .merge(research::handlers::routes())
         .layer(
             CorsLayer::new()
                 .allow_origin(Any)
