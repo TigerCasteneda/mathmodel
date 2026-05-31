@@ -12,15 +12,12 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 
-# Agent deps (Phase 8b — commented until ported)
-# axum = "0.8"
-# tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
-# futures-util = "0.3"
-# notify = "7"
-# portable-pty = "0.9"
-# anyhow = "1"
-# tracing = "0.1"
-# tracing-subscriber = "0.3"
+# Agent deps (Phase 8b)
+notify = "7"
+portable-pty = "0.9"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = "0.3"
 
 # Server deps for Host Mode (Phase 8e — commented)
 # modeler-server = { path = "../server" }
