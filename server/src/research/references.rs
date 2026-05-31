@@ -2,7 +2,6 @@ use crate::agent_bridge::registry::AgentRegistry;
 use crate::error::AppError;
 use chrono::Utc;
 use std::sync::Arc;
-use uuid::Uuid;
 use yrs::ReadTxn;
 use yrs::Transact;
 use yrs::Text;
@@ -64,6 +63,11 @@ pub fn title_to_slug(title: &str) -> String {
         .collect::<String>()
         .trim_matches('_')
         .to_string();
+    let slug = if slug.is_empty() {
+        "research-item".to_string()
+    } else {
+        slug
+    };
     if slug.len() > 64 {
         slug[..64].to_string()
     } else {
@@ -77,20 +81,36 @@ pub fn title_to_slug(title: &str) -> String {
 pub async fn create_cloud_md_file(
     pool: &sqlx::SqlitePool,
     project_id: &str,
-    filename: &str,
+    file_id: &str,
+    title: &str,
     md_content: &str,
-) -> Result<String, AppError> {
-    let file_id = Uuid::new_v4().to_string();
+) -> Result<(), AppError> {
     let now = Utc::now().timestamp();
+    let slug = title_to_slug(title);
+    let suffix = file_id.chars().take(8).collect::<String>();
+    let file_name = format!("{slug}-{suffix}.md");
+    let parent_id: Option<String> = sqlx::query_scalar(
+        "SELECT id FROM files
+         WHERE project_id = ?
+           AND parent_id IS NULL
+           AND name = 'Research'
+           AND type = 'folder'
+           AND zone = 'research'
+         LIMIT 1",
+    )
+    .bind(project_id)
+    .fetch_optional(pool)
+    .await?;
 
     // 1. Insert into files table (zone=research)
     sqlx::query(
         "INSERT INTO files (id, project_id, parent_id, name, type, zone, created_at, updated_at)
-         VALUES (?, ?, NULL, ?, 'file', 'research', ?, ?)",
+         VALUES (?, ?, ?, ?, 'file', 'research', ?, ?)",
     )
-    .bind(&file_id)
+    .bind(file_id)
     .bind(project_id)
-    .bind(filename)
+    .bind(&parent_id)
+    .bind(&file_name)
     .bind(now)
     .bind(now)
     .execute(pool)
@@ -109,13 +129,13 @@ pub async fn create_cloud_md_file(
     };
 
     sqlx::query("INSERT INTO crdt_docs (file_id, ydoc_state, updated_at) VALUES (?, ?, ?)")
-        .bind(&file_id)
+        .bind(file_id)
         .bind(&state)
         .bind(now)
         .execute(pool)
         .await?;
 
-    Ok(file_id)
+    Ok(())
 }
 
 /// Send create_file to Agent (best-effort, errors are logged not returned).

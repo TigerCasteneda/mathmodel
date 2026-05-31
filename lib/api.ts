@@ -139,6 +139,7 @@ export interface ResearchItem {
   keywords?: string
   notes?: string
   relevance_score: number
+  cloud_file_id?: string
   raw_json: string
   created_at: number
   updated_at: number

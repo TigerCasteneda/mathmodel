@@ -84,4 +84,7 @@ async fn run_005_migration(pool: &SqlitePool) {
     ensure_column(pool, "research_items", "updated_at", "INTEGER NOT NULL DEFAULT 0")
         .await
         .expect("005: updated_at");
+    ensure_column(pool, "research_items", "cloud_file_id", "TEXT")
+        .await
+        .expect("005: cloud_file_id");
 }

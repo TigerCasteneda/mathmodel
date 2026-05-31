@@ -44,21 +44,21 @@ impl MorphicClient {
             .await
             .map_err(|e| {
                 tracing::warn!("Morphic connection error: {e}");
-                AppError::Internal("Search engine is not available".into())
+                AppError::ServiceUnavailable("Search engine is not available".into())
             })?;
 
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
             let body = resp.text().await.unwrap_or_default();
             tracing::warn!("Morphic error {status}: {body}");
-            return Err(AppError::Internal(format!(
+            return Err(AppError::ServiceUnavailable(format!(
                 "Search engine returned {status}"
             )));
         }
 
         let result: AdvancedSearchResponse = resp.json().await.map_err(|e| {
             tracing::warn!("Morphic parse error: {e}");
-            AppError::Internal("Failed to parse search results".into())
+            AppError::ServiceUnavailable("Failed to parse search results".into())
         })?;
 
         Ok(result)

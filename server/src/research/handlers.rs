@@ -1,6 +1,6 @@
 use axum::{
     extract::{Path, Query, State},
-    routing::{delete, get, patch, post},
+    routing::{get, post},
     Json, Router,
 };
 use chrono::Utc;
@@ -11,7 +11,6 @@ use super::references;
 use crate::auth::middleware::AuthUser;
 use crate::error::AppError;
 use crate::morphic::client::MorphicClient;
-use crate::morphic::model::AdvancedSearchResponse;
 use crate::AppState;
 
 pub fn routes() -> Router<AppState> {
@@ -53,6 +52,21 @@ fn validate_category(cat: &str) -> Result<&str, AppError> {
     }
 }
 
+async fn load_item_for_user(
+    pool: &sqlx::SqlitePool,
+    item_id: &str,
+    user_id: &str,
+) -> Result<ResearchItem, AppError> {
+    let item: ResearchItem = sqlx::query_as("SELECT * FROM research_items WHERE id = ?")
+        .bind(item_id)
+        .fetch_optional(pool)
+        .await?
+        .ok_or_else(|| AppError::NotFound("research item not found".into()))?;
+
+    verify_membership(pool, &item.project_id, user_id).await?;
+    Ok(item)
+}
+
 // ── POST /research/search ──
 
 async fn search(
@@ -65,14 +79,7 @@ async fn search(
 
     let client = MorphicClient::from_env();
 
-    let morphic_resp = client
-        .advanced_search(&req.query, req.max_results)
-        .await
-        .unwrap_or_else(|_| AdvancedSearchResponse {
-            query: req.query.clone(),
-            results: vec![],
-            number_of_results: 0,
-        });
+    let morphic_resp = client.advanced_search(&req.query, req.max_results).await?;
 
     let results: Vec<SearchResultItem> = morphic_resp
         .results
@@ -110,6 +117,7 @@ async fn save_items(
     for input in &req.items {
         let cat = validate_category(&input.category)?;
         let item_id = Uuid::new_v4().to_string();
+        let cloud_file_id = Uuid::new_v4().to_string();
         let summary = input.summary.clone().unwrap_or_default();
         let authors = input.authors.clone().unwrap_or_default();
         let keywords = input.keywords.clone().unwrap_or_default();
@@ -123,9 +131,9 @@ async fn save_items(
         sqlx::query(
             "INSERT INTO research_items
              (id, project_id, created_by, source, category, url, title, summary,
-              authors, publish_year, keywords, notes, relevance_score, raw_json,
+              authors, publish_year, keywords, notes, relevance_score, cloud_file_id, raw_json,
               created_at, updated_at)
-             VALUES (?, ?, ?, 'morphic', ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?)",
+             VALUES (?, ?, ?, 'morphic', ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?)",
         )
         .bind(&item_id)
         .bind(&req.project_id)
@@ -138,6 +146,7 @@ async fn save_items(
         .bind(input.publish_year)
         .bind(&keywords)
         .bind(relevance)
+        .bind(&cloud_file_id)
         .bind(&raw_json)
         .bind(now)
         .bind(now)
@@ -145,30 +154,38 @@ async fn save_items(
         .await?;
 
         // Generate cloud .md file via existing CRDT path
-        let slug = references::title_to_slug(&input.title);
-        let filename = format!("references/{slug}.md");
         let md_content = references::render_md(input);
 
         match references::create_cloud_md_file(
             &state.pool,
             &req.project_id,
-            &filename,
+            &cloud_file_id,
+            &input.title,
             &md_content,
         )
         .await
         {
-            Ok(_file_id) => {
+            Ok(()) => {
                 // Best-effort: also send to Agent for local copy
+                let agent_path = format!(
+                    "references/{}-{}.md",
+                    references::title_to_slug(&input.title),
+                    &cloud_file_id[..8]
+                );
                 files_created += references::notify_agent_create_file(
                     &state.agent_registry,
                     &req.project_id,
-                    &filename,
+                    &agent_path,
                     &md_content,
                 )
                 .await;
             }
             Err(err) => {
                 tracing::warn!("Failed to create cloud md file: {err:?}");
+                sqlx::query("UPDATE research_items SET cloud_file_id = NULL WHERE id = ?")
+                    .bind(&item_id)
+                    .execute(&state.pool)
+                    .await?;
             }
         }
 
@@ -230,15 +247,10 @@ async fn list_items(
 
 async fn get_item(
     State(state): State<AppState>,
-    _auth: AuthUser,
+    auth: AuthUser,
     Path(params): Path<ItemPathParam>,
 ) -> Result<Json<ResearchItem>, AppError> {
-    let item: ResearchItem = sqlx::query_as("SELECT * FROM research_items WHERE id = ?")
-        .bind(&params.item_id)
-        .fetch_optional(&state.pool)
-        .await?
-        .ok_or_else(|| AppError::NotFound("research item not found".into()))?;
-
+    let item = load_item_for_user(&state.pool, &params.item_id, &auth.user_id).await?;
     Ok(Json(item))
 }
 
@@ -246,10 +258,11 @@ async fn get_item(
 
 async fn update_item(
     State(state): State<AppState>,
-    _auth: AuthUser,
+    auth: AuthUser,
     Path(params): Path<ItemPathParam>,
     Json(req): Json<UpdateItemRequest>,
 ) -> Result<Json<ResearchItem>, AppError> {
+    let _item = load_item_for_user(&state.pool, &params.item_id, &auth.user_id).await?;
     let now = Utc::now().timestamp();
 
     if let Some(ref cat) = req.category {
@@ -284,23 +297,44 @@ async fn update_item(
 
 async fn delete_item(
     State(state): State<AppState>,
-    _auth: AuthUser,
+    auth: AuthUser,
     Path(params): Path<ItemPathParam>,
 ) -> Result<Json<serde_json::Value>, AppError> {
+    let item = load_item_for_user(&state.pool, &params.item_id, &auth.user_id).await?;
+    let mut tx = state.pool.begin().await?;
+
     // Delete context pages first (FK)
     sqlx::query("DELETE FROM research_context_pages WHERE item_id = ?")
         .bind(&params.item_id)
-        .execute(&state.pool)
+        .execute(&mut *tx)
         .await?;
 
     let result = sqlx::query("DELETE FROM research_items WHERE id = ?")
         .bind(&params.item_id)
-        .execute(&state.pool)
+        .execute(&mut *tx)
         .await?;
 
     if result.rows_affected() == 0 {
         return Err(AppError::NotFound("research item not found".into()));
     }
+
+    if let Some(cloud_file_id) = item.cloud_file_id {
+        sqlx::query("DELETE FROM crdt_docs WHERE file_id = ?")
+            .bind(&cloud_file_id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM file_blobs WHERE file_id = ?")
+            .bind(&cloud_file_id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM files WHERE id = ? AND project_id = ?")
+            .bind(&cloud_file_id)
+            .bind(&item.project_id)
+            .execute(&mut *tx)
+            .await?;
+    }
+
+    tx.commit().await?;
 
     Ok(Json(serde_json::json!({ "deleted": true })))
 }

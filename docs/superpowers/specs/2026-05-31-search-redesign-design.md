@@ -485,13 +485,14 @@ Phases are ordered to keep each step independently testable and avoid breaking e
 
 ### 7a-0: Migration Foundation
 - Add `ensure_column()` helper in `db.rs` using `PRAGMA table_info` for idempotent ALTER TABLE
-- Run 005 extension columns on `research_items` (category, authors, publish_year, keywords, relevance_score, updated_at)
+- Run 005 extension columns on `research_items` (category, authors, publish_year, keywords, relevance_score, updated_at, cloud_file_id)
 - Verify Tabbit inserts still work after migration
 - No frontend or API changes
 
 ### 7a-1: Research Backend CRUD
 - Create `server/src/research/` module (model, handlers, mod)
-- `POST /research/items` — save items (writes research_items + files/file_blobs for cloud .md)
+- Generated `.md` cloud copies should use the existing project file + CRDT storage path; do not introduce a new `file_blobs` table.
+- `POST /research/items` — save items into `research_items` and write cloud markdown via the existing project file/CRDT path
 - `GET /research/items?project_id=` — list with category/sort/pagination
 - `GET /research/items/{id}` — detail
 - `PATCH /research/items/{id}` — edit notes/category
@@ -500,8 +501,11 @@ Phases are ordered to keep each step independently testable and avoid breaking e
 
 ### 7a-2: Morphic Client
 - Create `server/src/morphic/` module (client, model)
-- `POST /research/search` — calls Morphic `/api/chat` + `/api/advanced-search`, merges results
-- Error paths: Morphic unavailable returns 503, partial failure returns AI summary with empty results
+- Primary integration target: Morphic `POST /api/advanced-search`, because it returns structured JSON.
+- Do not depend on Morphic `POST /api/chat` in the first slice. It is a streaming endpoint; summaries require a stream consumer that extracts the final assistant text.
+- Default local config should be `MORPHIC_BASE_URL=http://localhost:3000`, matching the checked-in Morphic Docker compose port mapping.
+- `POST /research/search` — starts with Morphic `/api/advanced-search`; optional summary support can be added later with explicit stream handling
+- Error paths: Morphic unavailable returns 503; advanced-search failure returns an empty result set with a clear error message
 - Config: `MORPHIC_BASE_URL` env var
 - Still keep Tavily running
 
@@ -516,7 +520,7 @@ Phases are ordered to keep each step independently testable and avoid breaking e
 ### 7a-4: Agent create_file
 - Add `CreateFile` variant to `AgentMessage` enum (both server and agent sides)
 - Agent path safety: reject absolute/`..` paths, validate under work_dir, create parents, skip existing
-- Server-side dual-write on save: primary cloud copy via file API, secondary Agent local copy
+- Server-side dual-write on save: primary cloud copy via existing project file/CRDT path, secondary Agent local copy
 - Handle Agent disconnected: skip Agent copy silently, cloud copy already exists
 
 ### 7a-5: Remove Tavily

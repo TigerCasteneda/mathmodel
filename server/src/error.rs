@@ -12,6 +12,7 @@ pub enum AppError {
     Forbidden(String),
     NotFound(String),
     Conflict(String),
+    ServiceUnavailable(String),
     Internal(String),
 }
 
@@ -23,6 +24,7 @@ impl AppError {
             AppError::Forbidden(m) => (StatusCode::FORBIDDEN, m),
             AppError::NotFound(m) => (StatusCode::NOT_FOUND, m),
             AppError::Conflict(m) => (StatusCode::CONFLICT, m),
+            AppError::ServiceUnavailable(m) => (StatusCode::SERVICE_UNAVAILABLE, m),
             AppError::Internal(m) => (StatusCode::INTERNAL_SERVER_ERROR, m),
         }
     }

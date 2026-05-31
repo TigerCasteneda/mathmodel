@@ -31,6 +31,11 @@ server/data/
 
 # Local reference checkout, not part of this project
 /one-api/
+/morphic/
+
+# Local notes/session files
+.obsidian/
+sessions.md
 
 # Nested repository metadata backup while converting to monorepo
 .git-nested-backups/

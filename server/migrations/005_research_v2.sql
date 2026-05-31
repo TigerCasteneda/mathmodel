@@ -8,3 +8,4 @@
 -- ALTER TABLE research_items ADD COLUMN keywords TEXT DEFAULT '';
 -- ALTER TABLE research_items ADD COLUMN relevance_score REAL DEFAULT 0.0;
 -- ALTER TABLE research_items ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0;
+-- ALTER TABLE research_items ADD COLUMN cloud_file_id TEXT;

@@ -4,6 +4,7 @@ use crate::tabbit;
 use anyhow::Context;
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
+use std::path::Component;
 use std::path::PathBuf;
 use tokio::sync::mpsc;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
@@ -51,27 +52,26 @@ pub enum AgentMessage {
 }
 
 fn validate_create_path(work_dir: &std::path::Path, relative_path: &str) -> Result<std::path::PathBuf, String> {
-    // Reject absolute paths
-    if relative_path.starts_with('/') || relative_path.starts_with('\\') {
+    let rel = std::path::Path::new(relative_path);
+    if rel.is_absolute() {
         return Err("absolute path rejected".into());
     }
-    // Reject path traversal
-    if relative_path.contains("..") {
-        return Err("path traversal rejected".into());
+    for component in rel.components() {
+        match component {
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                return Err("path traversal rejected".into());
+            }
+            _ => {}
+        }
     }
-    // Resolve under work_dir
-    let resolved = work_dir.join(relative_path);
-    // Canonicalize work_dir
+    let resolved = work_dir.join(rel);
     let canon_work = work_dir.canonicalize().unwrap_or_else(|_| work_dir.to_path_buf());
-    // For paths that don't exist yet, check string prefix
     if let Ok(canon) = resolved.canonicalize() {
         if !canon.starts_with(&canon_work) {
             return Err("path escapes workspace".into());
         }
-    } else {
-        if !resolved.to_string_lossy().starts_with(canon_work.to_string_lossy().as_ref()) {
-            return Err("path escapes workspace".into());
-        }
+    } else if !resolved.starts_with(&canon_work) {
+        return Err("path escapes workspace".into());
     }
     Ok(resolved)
 }

@@ -67,7 +67,9 @@ function ResultCard({
       onClick={onToggle}
     >
       <div className="absolute top-3 right-3">
-        <Checkbox checked={selected} onCheckedChange={onToggle} />
+        <div onClick={(e) => e.stopPropagation()}>
+          <Checkbox checked={selected} onCheckedChange={onToggle} />
+        </div>
       </div>
       <div className="pr-8">
         <h4 className="font-medium text-sm text-foreground line-clamp-2 mb-1">

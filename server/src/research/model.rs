@@ -17,6 +17,7 @@ pub struct ResearchItem {
     pub keywords: Option<String>,
     pub notes: Option<String>,
     pub relevance_score: f64,
+    pub cloud_file_id: Option<String>,
     pub raw_json: String,
     pub created_at: i64,
     pub updated_at: i64,
