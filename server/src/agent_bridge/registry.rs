@@ -84,4 +84,8 @@ impl AgentRegistry {
             .or_insert_with(|| Arc::new(ProjectAgentBridge::new()))
             .clone()
     }
+
+    pub async fn get(&self, project_id: &str) -> Option<Arc<ProjectAgentBridge>> {
+        self.projects.read().await.get(project_id).cloned()
+    }
 }
