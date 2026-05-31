@@ -36,29 +36,35 @@ pub async fn run_specific_migration(pool: &SqlitePool, sql: &str) {
 }
 
 /// Idempotent column addition: checks PRAGMA table_info before ALTER TABLE.
+/// Wraps the check and ALTER in a transaction to prevent races.
+/// Callers must only pass trusted, alphanumeric identifiers for `table` and `column`.
 pub async fn ensure_column(
     pool: &SqlitePool,
     table: &str,
     column: &str,
     type_sql: &str,
 ) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
     let count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name = ?2"
     )
     .bind(table)
     .bind(column)
-    .fetch_one(pool)
+    .fetch_one(&mut *tx)
     .await?;
 
     if count == 0 {
-        let sql = format!("ALTER TABLE {table} ADD COLUMN {column} {type_sql}");
-        sqlx::query(&sql).execute(pool).await?;
+        let sql = format!("ALTER TABLE \"{table}\" ADD COLUMN \"{column}\" {type_sql}");
+        sqlx::query(&sql).execute(&mut *tx).await?;
         tracing::info!("Migration: added column {table}.{column} {type_sql}");
     }
+
+    tx.commit().await?;
 
     Ok(())
 }
 
+/// 005: extend research_items table with Morphic search columns.
 async fn run_005_migration(pool: &SqlitePool) {
     ensure_column(pool, "research_items", "category", "TEXT DEFAULT 'literature'")
         .await
