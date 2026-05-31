@@ -1,5 +1,5 @@
-use crate::file_watcher::FileWatcher;
-use crate::pty_manager::PtyManager;
+use crate::file_watcher::{read_workspace_file, scan_tree, FileTreeItem, FileWatcher};
+use crate::pty_manager::{PtyCommand, PtyManager};
 use crate::tabbit;
 use anyhow::Context;
 use futures_util::{SinkExt, StreamExt};
@@ -13,17 +13,35 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 pub enum AgentMessage {
     #[serde(rename = "terminal_input")]
     TerminalInput { data: String },
+    #[serde(rename = "terminal_resize")]
+    TerminalResize { cols: u16, rows: u16 },
     #[serde(rename = "terminal_output")]
     TerminalOutput { data: String },
     #[serde(rename = "claude_command")]
     ClaudeCommand { command: String },
     #[serde(rename = "file_change")]
     FileChange { path: String, content: String },
+    #[serde(rename = "file_tree")]
+    FileTree { tree: FileTreeItem },
+    #[serde(rename = "list_files")]
+    ListFiles,
+    #[serde(rename = "open_file")]
+    OpenFile { path: String },
+    #[serde(rename = "file_content")]
+    FileContent { path: String, content: String },
     #[serde(rename = "tabbit_data")]
     TabbitData {
         payload: tabbit::TabbitPayload,
         raw_json: serde_json::Value,
     },
+    #[serde(rename = "change_work_dir")]
+    ChangeWorkDir { path: String },
+    #[serde(rename = "work_dir")]
+    WorkDir { path: String },
+    #[serde(rename = "new_file")]
+    NewFile,
+    #[serde(rename = "new_folder")]
+    NewFolder,
     #[serde(rename = "ready")]
     Ready,
     #[serde(rename = "error")]
@@ -36,7 +54,6 @@ pub async fn run(
     project_id: &str,
     tabbit_port: u16,
     work_dir: &PathBuf,
-    claude_path: &PathBuf,
 ) -> anyhow::Result<()> {
     let url = format!("{}?token={}&project_id={}", server_url, token, project_id);
     let (ws_stream, _) = connect_async(url.as_str())
@@ -45,23 +62,17 @@ pub async fn run(
     tracing::info!("Connected to server");
 
     let (mut ws_tx, mut ws_rx) = ws_stream.split();
-    let mut file_watcher = FileWatcher::new(work_dir).context("Failed to start file watcher")?;
-    let (pty_input_tx, pty_input_rx) = mpsc::unbounded_channel::<String>();
+    let mut current_work_dir = work_dir.clone();
+    let mut file_watcher = FileWatcher::new(&current_work_dir).context("Failed to start file watcher")?;
+    let (pty_input_tx, pty_input_rx) = mpsc::unbounded_channel::<PtyCommand>();
     let (pty_output_tx, mut pty_output_rx) = mpsc::unbounded_channel::<Result<String, String>>();
     let (outbound_tx, mut outbound_rx) = mpsc::unbounded_channel::<AgentMessage>();
 
-    let pty_work_dir = work_dir.clone();
-    let pty_claude_path = claude_path.clone();
+    let pty_work_dir = current_work_dir.clone();
     tokio::spawn(async move {
-        if let Err(err) = PtyManager::run(
-            pty_claude_path,
-            pty_work_dir,
-            pty_input_rx,
-            pty_output_tx.clone(),
-        )
-        .await
+        if let Err(err) = PtyManager::run(pty_work_dir, pty_input_rx, pty_output_tx.clone()).await
         {
-            let _ = pty_output_tx.send(Err(format!("failed to run claude: {err:#}")));
+            let _ = pty_output_tx.send(Err(format!("failed to run shell: {err:#}")));
         }
     });
 
@@ -73,6 +84,7 @@ pub async fn run(
     outbound_tx
         .send(AgentMessage::Ready)
         .map_err(|_| anyhow::anyhow!("failed to queue ready message"))?;
+    queue_file_tree(&current_work_dir, &outbound_tx);
 
     // Message loop
     loop {
@@ -83,11 +95,60 @@ pub async fn run(
                         if let Ok(msg) = serde_json::from_str::<AgentMessage>(&text) {
                             match msg {
                                 AgentMessage::TerminalInput { data } => {
-                                    let _ = pty_input_tx.send(data);
+                                    let _ = pty_input_tx.send(PtyCommand::Input(data));
+                                }
+                                AgentMessage::TerminalResize { cols, rows } => {
+                                    let _ = pty_input_tx.send(PtyCommand::Resize { cols, rows });
                                 }
                                 AgentMessage::ClaudeCommand { command } => {
                                     tracing::info!("claude cmd: {}", command);
-                                    let _ = pty_input_tx.send(format!("{command}\n"));
+                                    let _ = pty_input_tx.send(PtyCommand::Input(format!("{command}\n")));
+                                }
+                                AgentMessage::ListFiles => {
+                                    queue_file_tree(&current_work_dir, &outbound_tx);
+                                }
+                                AgentMessage::OpenFile { path } => {
+                                    match read_workspace_file(&current_work_dir, &path) {
+                                        Ok(content) => {
+                                            let _ = outbound_tx.send(AgentMessage::FileContent { path, content });
+                                        }
+                                        Err(err) => {
+                                            let _ = outbound_tx.send(AgentMessage::AgentError {
+                                                message: format!("failed to open file: {err:#}"),
+                                            });
+                                        }
+                                    }
+                                }
+                                AgentMessage::ChangeWorkDir { path } => {
+                                    let new_dir = PathBuf::from(&path);
+                                    match FileWatcher::new(&new_dir) {
+                                        Ok(new_watcher) => {
+                                            file_watcher = new_watcher;
+                                            current_work_dir = new_dir.clone();
+                                            let _ = outbound_tx.send(AgentMessage::WorkDir { path });
+                                            if let Ok(tree) = scan_tree(&current_work_dir) {
+                                                let _ = outbound_tx.send(AgentMessage::FileTree { tree });
+                                            }
+                                        }
+                                        Err(err) => {
+                                            let _ = outbound_tx.send(AgentMessage::AgentError {
+                                                message: format!("cannot watch directory: {err:#}"),
+                                            });
+                                        }
+                                    }
+                                }
+                                AgentMessage::NewFile => {
+                                    let _ = pty_input_tx.send(PtyCommand::Input(
+                                        "code .\n".to_string(),
+                                    ));
+                                    let _ = outbound_tx.send(AgentMessage::AgentError {
+                                        message: "New File: use the terminal to create files".into(),
+                                    });
+                                }
+                                AgentMessage::NewFolder => {
+                                    let _ = outbound_tx.send(AgentMessage::AgentError {
+                                        message: "New Folder: use the terminal".into(),
+                                    });
                                 }
                                 _ => {}
                             }
@@ -116,6 +177,7 @@ pub async fn run(
                 if let Some((path, content)) = file_change {
                     let msg = AgentMessage::FileChange { path, content };
                     let _ = outbound_tx.send(msg);
+                    queue_file_tree(&current_work_dir, &outbound_tx);
                 }
             }
             _ = tokio::signal::ctrl_c() => {
@@ -127,4 +189,17 @@ pub async fn run(
 
     tabbit_server.abort();
     Ok(())
+}
+
+fn queue_file_tree(work_dir: &PathBuf, outbound_tx: &mpsc::UnboundedSender<AgentMessage>) {
+    match scan_tree(work_dir) {
+        Ok(tree) => {
+            let _ = outbound_tx.send(AgentMessage::FileTree { tree });
+        }
+        Err(err) => {
+            let _ = outbound_tx.send(AgentMessage::AgentError {
+                message: format!("failed to scan workspace: {err:#}"),
+            });
+        }
+    }
 }

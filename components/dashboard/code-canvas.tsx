@@ -1,12 +1,13 @@
 "use client"
 
-import { useState, useEffect, useRef } from "react"
+import { useState, useEffect, useRef, useCallback } from "react"
 import dynamic from "next/dynamic"
-import { 
+import {
   CheckCircle2, Play, Copy, X, ChevronDown, ChevronRight,
   FileCode, FileText, FolderOpen, Folder, Terminal as TerminalIcon,
   Search, GitBranch, Bug, Puzzle, MoreHorizontal, PanelBottomClose,
-  PanelBottom, Split, Settings, Bell, Maximize2, Minimize2
+  PanelBottom, Split, Settings, Bell, Maximize2, Minimize2,
+  Columns2, FilePlus, FolderPlus, RefreshCw, GripHorizontal
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
@@ -22,9 +23,20 @@ import {
   Legend
 } from "recharts"
 import * as Y from "yjs"
-import { MonacoBinding } from "y-monaco"
 import type { editor as monacoEditor } from "monaco-editor"
 import { YjsWebsocketProvider } from "@/lib/yjs-provider"
+import { getToken } from "@/lib/api"
+import { Terminal } from "@xterm/xterm"
+import { FitAddon } from "@xterm/addon-fit"
+
+// y-monaco accesses `window` at module level — must be lazy-loaded
+let MonacoBindingModule: typeof import("y-monaco") | null = null
+async function getMonacoBinding() {
+  if (!MonacoBindingModule) {
+    MonacoBindingModule = await import("y-monaco")
+  }
+  return MonacoBindingModule
+}
 
 const MonacoEditor = dynamic(
   () => import("@monaco-editor/react").then((mod) => mod.default),
@@ -34,26 +46,29 @@ const MonacoEditor = dynamic(
 // File system structure
 const fileSystem = {
   name: "sir-model",
+  path: "",
   type: "folder" as const,
   children: [
     {
       name: "src",
+      path: "src",
       type: "folder" as const,
       children: [
-        { name: "model.py", type: "file" as const, language: "python" },
-        { name: "utils.py", type: "file" as const, language: "python" },
-        { name: "config.json", type: "file" as const, language: "json" },
+        { name: "model.py", path: "src/model.py", type: "file" as const, language: "python" },
+        { name: "utils.py", path: "src/utils.py", type: "file" as const, language: "python" },
+        { name: "config.json", path: "src/config.json", type: "file" as const, language: "json" },
       ]
     },
     {
       name: "tests",
+      path: "tests",
       type: "folder" as const,
       children: [
-        { name: "test_model.py", type: "file" as const, language: "python" },
+        { name: "test_model.py", path: "tests/test_model.py", type: "file" as const, language: "python" },
       ]
     },
-    { name: "requirements.txt", type: "file" as const, language: "plaintext" },
-    { name: "README.md", type: "file" as const, language: "markdown" },
+    { name: "requirements.txt", path: "requirements.txt", type: "file" as const, language: "plaintext" },
+    { name: "README.md", path: "README.md", type: "file" as const, language: "markdown" },
   ]
 }
 
@@ -265,6 +280,7 @@ const activityBarItems = [
 
 type FileItem = {
   name: string
+  path: string
   type: "file" | "folder"
   language?: string
   children?: FileItem[]
@@ -273,19 +289,19 @@ type FileItem = {
 interface FileTreeItemProps {
   item: FileItem
   depth: number
-  onFileSelect: (fileName: string) => void
+  onFileSelect: (file: FileItem) => void
   selectedFile: string
 }
 
 function FileTreeItem({ item, depth, onFileSelect, selectedFile }: FileTreeItemProps) {
   const [isOpen, setIsOpen] = useState(depth < 2)
   const isFolder = item.type === "folder"
-  const isSelected = !isFolder && item.name === selectedFile
+  const isSelected = !isFolder && item.path === selectedFile
 
   return (
     <div>
       <button
-        onClick={() => isFolder ? setIsOpen(!isOpen) : onFileSelect(item.name)}
+        onClick={() => isFolder ? setIsOpen(!isOpen) : onFileSelect(item)}
         className={cn(
           "w-full flex items-center gap-1 py-0.5 px-2 text-sm hover:bg-[#2a2d2e] transition-colors",
           isSelected && "bg-[#094771]"
@@ -329,57 +345,277 @@ function FileTreeItem({ item, depth, onFileSelect, selectedFile }: FileTreeItemP
 
 interface TabItem {
   name: string
+  path: string
   language: string
 }
 
-export function CodeCanvas() {
+interface CodeCanvasProps {
+  projectId: string
+}
+
+type AgentStatus = "connecting" | "connected" | "ready" | "disconnected"
+
+type AgentMessage =
+  | { type: "agent_status"; status: AgentStatus }
+  | { type: "terminal_output"; data: string }
+  | { type: "file_tree"; tree: FileItem }
+  | { type: "file_content"; path: string; content: string }
+  | { type: "file_change"; path: string; content: string }
+  | { type: "work_dir"; path: string }
+  | { type: "error"; message: string }
+
+function FolderPathInput({
+  onSubmit,
+  onCancel,
+  currentPath,
+}: {
+  onSubmit: (path: string) => void
+  onCancel: () => void
+  currentPath?: string
+}) {
+  const [value, setValue] = useState(currentPath || "")
+  const inputRef = useRef<HTMLInputElement>(null)
+  useEffect(() => { inputRef.current?.focus() }, [])
+
+  const handleSubmit = () => {
+    const trimmed = value.trim()
+    if (trimmed) onSubmit(trimmed)
+  }
+
+  return (
+    <div className="flex items-center gap-1 w-full px-2 py-1">
+      <input
+        ref={inputRef}
+        type="text"
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") handleSubmit()
+          if (e.key === "Escape") onCancel()
+        }}
+        placeholder="D:/path/to/project"
+        className="flex-1 bg-[#3c3c3c] text-[#cccccc] text-xs px-2 py-1 rounded border border-[#5a5a5a] outline-none focus:border-primary"
+      />
+      <button
+        onClick={handleSubmit}
+        className="text-xs text-primary hover:text-primary/80 px-1"
+        title="Open"
+      >
+        OK
+      </button>
+      <button onClick={onCancel} className="text-xs text-muted-foreground hover:text-foreground px-1" title="Cancel">
+        ✕
+      </button>
+    </div>
+  )
+}
+
+export function CodeCanvas({ projectId }: CodeCanvasProps) {
   // Yjs CRDT state
   const yDocsRef = useRef<Map<string, { doc: Y.Doc; provider: YjsWebsocketProvider }>>(new Map())
-  const bindingsRef = useRef<Map<string, MonacoBinding>>(new Map())
+  const bindingsRef = useRef<Map<string, { destroy: () => void }>>(new Map())
   const editorRef = useRef<monacoEditor.IStandaloneCodeEditor | null>(null)
+  const agentWsRef = useRef<WebSocket | null>(null)
+  const xtermRef = useRef<Terminal | null>(null)
+  const fitAddonRef = useRef<FitAddon | null>(null)
+  const pendingTerminalWritesRef = useRef<string[]>([])
   const [editorReady, setEditorReady] = useState(false)
+  const [agentStatus, setAgentStatus] = useState<AgentStatus>("connecting")
+  const [agentFileTree, setAgentFileTree] = useState<FileItem | null>(null)
+  const [agentFileContents, setAgentFileContents] = useState<Record<string, string>>({})
 
   const [activeActivity, setActiveActivity] = useState("explorer")
   const [openTabs, setOpenTabs] = useState<TabItem[]>([
-    { name: "model.py", language: "python" }
+    { name: "model.py", path: "src/model.py", language: "python" }
   ])
-  const [activeTab, setActiveTab] = useState("model.py")
+  const [activeTab, setActiveTab] = useState("src/model.py")
+  const activeTabRef = useRef(activeTab)
   const [showTerminal, setShowTerminal] = useState(true)
-  const [terminalOutput, setTerminalOutput] = useState<string[]>([
-    "Python 3.11.4 (main, Jun  9 2024, 07:31:04)",
-    '>>> exec(open("src/model.py").read())',
-    "R₀ = 3.00",
-    ">>> "
-  ])
-  const [terminalInput, setTerminalInput] = useState("")
   const [isRunning, setIsRunning] = useState(false)
   const [copied, setCopied] = useState(false)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  const [isMaximized, setIsMaximized] = useState(false)
   const [activePanel, setActivePanel] = useState<"terminal" | "output" | "problems">("terminal")
-  const terminalRef = useRef<HTMLDivElement>(null)
+  const [terminalHeight, setTerminalHeight] = useState(40) // percentage
+  const [isDragging, setIsDragging] = useState(false)
+  const [splitView, setSplitView] = useState(false)
+  const terminalContainerRef = useRef<HTMLDivElement>(null)
+  const editorContainerRef = useRef<HTMLDivElement>(null)
 
-  const handleFileSelect = (fileName: string) => {
-    if (!openTabs.find(t => t.name === fileName)) {
-      const extension = fileName.split('.').pop()
-      const language = extension === 'py' ? 'python' : 
-                      extension === 'json' ? 'json' : 
-                      extension === 'md' ? 'markdown' : 'plaintext'
-      setOpenTabs([...openTabs, { name: fileName, language }])
+  const sendAgentMessage = (message: unknown) => {
+    if (agentWsRef.current?.readyState === WebSocket.OPEN) {
+      agentWsRef.current.send(JSON.stringify(message))
+      return true
     }
-    setActiveTab(fileName)
+    writeTerminal("\r\n[agent] local agent websocket is not connected\r\n")
+    return false
   }
+
+  const writeTerminal = (data: string) => {
+    const terminal = xtermRef.current
+    if (terminal) {
+      terminal.write(data)
+    } else {
+      pendingTerminalWritesRef.current.push(data)
+    }
+  }
+
+  const fitTerminal = () => {
+    const terminal = xtermRef.current
+    const fitAddon = fitAddonRef.current
+    if (!terminal || !fitAddon) return
+    fitAddon.fit()
+    if (agentWsRef.current?.readyState === WebSocket.OPEN) {
+      agentWsRef.current.send(JSON.stringify({
+        type: "terminal_resize",
+        cols: terminal.cols,
+        rows: terminal.rows,
+      }))
+    }
+  }
+
+  const handleFileSelect = (file: FileItem) => {
+    if (!openTabs.find(t => t.path === file.path)) {
+      const extension = file.name.split('.').pop()
+      const language = file.language || (extension === 'py' ? 'python' :
+                      extension === 'json' ? 'json' :
+                      extension === 'md' ? 'markdown' : 'plaintext')
+      setOpenTabs([...openTabs, { name: file.name, path: file.path, language }])
+    }
+    setActiveTab(file.path)
+    sendAgentMessage({ type: "open_file", path: file.path })
+  }
+
+  useEffect(() => {
+    activeTabRef.current = activeTab
+  }, [activeTab])
+
+  useEffect(() => {
+    const container = terminalContainerRef.current
+    if (!container || xtermRef.current) return
+
+    const terminal = new Terminal({
+      cursorBlink: true,
+      convertEol: true,
+      fontFamily: "var(--font-mono), Consolas, 'Courier New', monospace",
+      fontSize: 13,
+      scrollback: 5000,
+      theme: {
+        background: "#1e1e1e",
+        foreground: "#cccccc",
+        cursor: "#ffffff",
+        selectionBackground: "#264f78",
+      },
+    })
+    const fitAddon = new FitAddon()
+    terminal.loadAddon(fitAddon)
+    terminal.open(container)
+    xtermRef.current = terminal
+    fitAddonRef.current = fitAddon
+    const resizeObserver = new ResizeObserver(() => {
+      requestAnimationFrame(fitTerminal)
+    })
+    resizeObserver.observe(container)
+
+    terminal.onData((data) => {
+      sendAgentMessage({ type: "terminal_input", data })
+    })
+
+    for (const data of pendingTerminalWritesRef.current) {
+      terminal.write(data)
+    }
+    pendingTerminalWritesRef.current = []
+    terminal.writeln("Connecting to local agent...")
+    requestAnimationFrame(fitTerminal)
+
+    return () => {
+      resizeObserver.disconnect()
+      terminal.dispose()
+      xtermRef.current = null
+      fitAddonRef.current = null
+    }
+  }, [])
+
+  useEffect(() => {
+    requestAnimationFrame(fitTerminal)
+  }, [isMaximized, showTerminal, activePanel, sidebarCollapsed])
+
+  useEffect(() => {
+    const token = getToken()
+    if (!token || !projectId) {
+      setAgentStatus("disconnected")
+      writeTerminal("\r\n[agent] sign in before connecting the local agent\r\n")
+      return
+    }
+
+    const base = process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:3001"
+    const url = `${base}/agent?role=frontend&project_id=${encodeURIComponent(projectId)}&token=${encodeURIComponent(token)}`
+    const ws = new WebSocket(url)
+    agentWsRef.current = ws
+    setAgentStatus("connecting")
+
+    ws.onopen = () => {
+      writeTerminal("\r\n[agent] frontend websocket connected\r\n")
+      ws.send(JSON.stringify({ type: "list_files" }))
+      ws.send(JSON.stringify({ type: "open_file", path: activeTabRef.current }))
+      fitTerminal()
+    }
+    ws.onmessage = (event) => {
+      const msg = JSON.parse(event.data) as AgentMessage
+      if (msg.type === "agent_status") {
+        setAgentStatus(msg.status)
+        writeTerminal(`\r\n[agent] ${msg.status}\r\n`)
+        if (msg.status === "connected" || msg.status === "ready") {
+          ws.send(JSON.stringify({ type: "list_files" }))
+          ws.send(JSON.stringify({ type: "open_file", path: activeTabRef.current }))
+          fitTerminal()
+        }
+      } else if (msg.type === "terminal_output") {
+        writeTerminal(msg.data)
+      } else if (msg.type === "file_tree") {
+        setAgentFileTree(msg.tree)
+      } else if (msg.type === "file_content") {
+        setAgentFileContents((prev) => ({ ...prev, [msg.path]: msg.content }))
+      } else if (msg.type === "file_change") {
+        setAgentFileContents((prev) => ({ ...prev, [msg.path]: msg.content }))
+      } else if (msg.type === "work_dir") {
+        setWorkDir(msg.path)
+        writeTerminal(`\r\n[agent] Working directory: ${msg.path}\r\n`)
+      } else if (msg.type === "error") {
+        writeTerminal(`\r\n[agent] ${msg.message}\r\n`)
+      }
+    }
+    ws.onclose = () => {
+      if (agentWsRef.current === ws) {
+        setAgentStatus("disconnected")
+        writeTerminal("\r\n[agent] frontend websocket disconnected\r\n")
+      }
+    }
+    ws.onerror = () => {
+      setAgentStatus("disconnected")
+      writeTerminal("\r\n[agent] websocket error\r\n")
+    }
+
+    return () => {
+      if (agentWsRef.current === ws) {
+        agentWsRef.current = null
+      }
+      ws.close()
+    }
+  }, [projectId])
 
   const handleCloseTab = (fileName: string, e: React.MouseEvent) => {
     e.stopPropagation()
-    const newTabs = openTabs.filter(t => t.name !== fileName)
+    const newTabs = openTabs.filter(t => t.path !== fileName)
     setOpenTabs(newTabs)
     if (activeTab === fileName && newTabs.length > 0) {
-      setActiveTab(newTabs[newTabs.length - 1].name)
+      setActiveTab(newTabs[newTabs.length - 1].path)
     }
   }
 
   const handleCopy = () => {
-    const content = fileContents[activeTab] || ""
+    const activeName = openTabs.find(t => t.path === activeTab)?.name || activeTab
+    const content = agentFileContents[activeTab] || fileContents[activeTab] || fileContents[activeName] || ""
     navigator.clipboard.writeText(content)
     setCopied(true)
     setTimeout(() => setCopied(false), 2000)
@@ -389,55 +625,9 @@ export function CodeCanvas() {
     setIsRunning(true)
     setActivePanel("terminal")
     setShowTerminal(true)
-    
-    const newOutput = [
-      ...terminalOutput.slice(0, -1),
-      `>>> python src/${activeTab}`,
-      "Running SIR model simulation...",
-    ]
-    setTerminalOutput(newOutput)
-
-    setTimeout(() => {
-      setTerminalOutput([
-        ...newOutput,
-        "R₀ = 3.00",
-        "Peak infection: Day 47 (268 infected)",
-        "Final epidemic size: 941 individuals",
-        "",
-        "Execution completed in 0.042s",
-        ">>> "
-      ])
-      setIsRunning(false)
-    }, 1500)
+    sendAgentMessage({ type: "terminal_input", data: `python ${activeTab}\r` })
+    setTimeout(() => setIsRunning(false), 500)
   }
-
-  const handleTerminalInput = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter" && terminalInput.trim()) {
-      const newOutput = [...terminalOutput.slice(0, -1), `>>> ${terminalInput}`]
-      
-      if (terminalInput.includes("python") || terminalInput.includes("run")) {
-        setTerminalOutput([...newOutput, "Running...", ">>> "])
-        setTimeout(() => {
-          setTerminalOutput([
-            ...newOutput,
-            "R₀ = 3.00",
-            ">>> "
-          ])
-        }, 500)
-      } else if (terminalInput === "clear") {
-        setTerminalOutput([">>> "])
-      } else {
-        setTerminalOutput([...newOutput, ">>> "])
-      }
-      setTerminalInput("")
-    }
-  }
-
-  useEffect(() => {
-    if (terminalRef.current) {
-      terminalRef.current.scrollTop = terminalRef.current.scrollHeight
-    }
-  }, [terminalOutput])
 
   // Set up Monaco/Yjs binding when the editor or active file changes.
   useEffect(() => {
@@ -449,7 +639,8 @@ export function CodeCanvas() {
 
     const syncFileId = UUID_RE.test(activeTab) ? activeTab : null
     if (!syncFileId) {
-      editor.setValue(fileContents[activeTab] || "// File not found")
+      const activeName = openTabs.find(t => t.path === activeTab)?.name || activeTab
+      editor.setValue(agentFileContents[activeTab] || fileContents[activeTab] || fileContents[activeName] || "// File not found")
       return
     }
 
@@ -463,24 +654,30 @@ export function CodeCanvas() {
 
     const yText = entry.doc.getText("content")
     if (yText.length === 0) {
-      yText.insert(0, fileContents[activeTab] || "")
+      yText.insert(0, agentFileContents[activeTab] || fileContents[activeTab] || "")
     } else {
       editor.setValue(yText.toString())
     }
 
-    const binding = new MonacoBinding(
-      yText,
-      editor.getModel()!,
-      new Set([editor]),
-      undefined
-    )
-    bindingsRef.current.set(syncFileId, binding)
+    getMonacoBinding().then(({ MonacoBinding }) => {
+      if (!editorRef.current || activeTabRef.current !== activeTab) return
+      const binding = new MonacoBinding(
+        yText,
+        editor.getModel()!,
+        new Set([editor]),
+        undefined
+      )
+      bindingsRef.current.set(syncFileId, binding)
+    })
 
     return () => {
-      binding.destroy()
-      bindingsRef.current.delete(syncFileId)
+      const existing = bindingsRef.current.get(syncFileId)
+      if (existing) {
+        existing.destroy()
+        bindingsRef.current.delete(syncFileId)
+      }
     }
-  }, [activeTab, editorReady])
+  }, [activeTab, editorReady, agentFileContents, openTabs])
 
   // Cleanup Yjs on unmount
   useEffect(() => {
@@ -490,31 +687,106 @@ export function CodeCanvas() {
     }
   }, [])
 
-  const currentContent = fileContents[activeTab] || "// File not found"
-  const currentLanguage = openTabs.find(t => t.name === activeTab)?.language || "plaintext"
+  // Terminal drag resize handler
+  const handleDragStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault()
+    setIsDragging(true)
+    const startY = e.clientY
+    const startHeight = terminalHeight
+    const containerEl = editorContainerRef.current
+    const containerHeight = containerEl?.getBoundingClientRect().height || 600
+
+    const onMouseMove = (ev: MouseEvent) => {
+      const deltaY = startY - ev.clientY
+      const newPct = Math.min(70, Math.max(15, startHeight + (deltaY / containerHeight) * 100))
+      setTerminalHeight(Math.round(newPct))
+    }
+    const onMouseUp = () => {
+      setIsDragging(false)
+      document.removeEventListener("mousemove", onMouseMove)
+      document.removeEventListener("mouseup", onMouseUp)
+    }
+    document.addEventListener("mousemove", onMouseMove)
+    document.addEventListener("mouseup", onMouseUp)
+  }, [terminalHeight])
+
+  // Explorer context menu click-outside
+  const [explorerMenuOpen, setExplorerMenuOpen] = useState(false)
+  const [showOpenFolder, setShowOpenFolder] = useState(false)
+  const [workDir, setWorkDir] = useState<string | null>(null)
+  const explorerMenuRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const onClick = (e: MouseEvent) => {
+      if (explorerMenuRef.current && !explorerMenuRef.current.contains(e.target as Node)) {
+        setExplorerMenuOpen(false)
+      }
+    }
+    if (explorerMenuOpen) document.addEventListener("mousedown", onClick)
+    return () => document.removeEventListener("mousedown", onClick)
+  }, [explorerMenuOpen])
+
+  const currentLanguage = openTabs.find(t => t.path === activeTab)?.language || "plaintext"
+  const currentFileTree = agentFileTree || fileSystem
 
   const handleEditorMount = (editor: monacoEditor.IStandaloneCodeEditor, _monaco: typeof import("monaco-editor")) => {
     editorRef.current = editor
     setEditorReady(true)
   }
 
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => {
+      editorRef.current?.layout()
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [isMaximized, showTerminal, sidebarCollapsed])
+
   return (
-    <div className="h-full flex flex-col bg-[#1e1e1e] border-l border-[#3c3c3c]">
+    <div
+      className={cn(
+        "h-full flex flex-col bg-[#1e1e1e] border-l border-[#3c3c3c]",
+        isMaximized && "fixed inset-0 z-50 border-l-0"
+      )}
+    >
       {/* Title Bar */}
       <div className="h-8 bg-[#323233] flex items-center justify-between px-2 border-b border-[#3c3c3c]">
         <div className="flex items-center gap-2">
-          <div className="flex items-center gap-1.5 px-2 py-0.5 rounded bg-primary/10 text-primary text-xs">
-            <CheckCircle2 className="w-3 h-3" />
-            <span>Docker Ready</span>
+          <div className={cn(
+            "flex items-center gap-1.5 px-2 py-0.5 rounded text-xs",
+            agentStatus === "ready" ? "bg-green-500/20 text-green-400" :
+            agentStatus === "connected" ? "bg-primary/10 text-primary" :
+            agentStatus === "connecting" ? "bg-yellow-500/20 text-yellow-400" :
+            "bg-red-500/20 text-red-400"
+          )}>
+            <div className={cn(
+              "w-2 h-2 rounded-full",
+              agentStatus === "ready" ? "bg-green-400" :
+              agentStatus === "connected" ? "bg-primary" :
+              agentStatus === "connecting" ? "bg-yellow-400 animate-pulse" :
+              "bg-red-400"
+            )} />
+            <span className="capitalize">{agentStatus}</span>
           </div>
-          <span className="text-xs text-muted-foreground">sir-model - Modeler AI</span>
+          <span className="text-xs text-muted-foreground">Modeler AI</span>
         </div>
         <div className="flex items-center gap-1">
-          <Button variant="ghost" size="icon" className="h-6 w-6 text-muted-foreground hover:text-foreground">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-6 w-6 text-muted-foreground hover:text-foreground"
+            onClick={() => setIsMaximized(false)}
+            disabled={!isMaximized}
+            title="Restore editor"
+          >
             <Minimize2 className="w-3.5 h-3.5" />
           </Button>
-          <Button variant="ghost" size="icon" className="h-6 w-6 text-muted-foreground hover:text-foreground">
-            <Maximize2 className="w-3.5 h-3.5" />
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-6 w-6 text-muted-foreground hover:text-foreground"
+            onClick={() => setIsMaximized((prev) => !prev)}
+            title={isMaximized ? "Restore editor" : "Maximize editor"}
+          >
+            {isMaximized ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
           </Button>
         </div>
       </div>
@@ -555,18 +827,81 @@ export function CodeCanvas() {
 
         {/* Side Bar (File Explorer) */}
         {!sidebarCollapsed && (
-          <div className="w-56 bg-[#252526] border-r border-[#3c3c3c] flex flex-col">
-            <div className="h-9 px-4 flex items-center justify-between border-b border-[#3c3c3c]">
-              <span className="text-[11px] font-medium text-[#bbbbbb] uppercase tracking-wider">Explorer</span>
-              <Button variant="ghost" size="icon" className="h-5 w-5 text-muted-foreground hover:text-foreground">
-                <MoreHorizontal className="w-4 h-4" />
-              </Button>
+          <div className="w-56 bg-[#252526] border-r border-[#3c3c3c] flex flex-col min-h-0">
+            <div className="h-9 flex-shrink-0 px-4 flex items-center justify-between border-b border-[#3c3c3c] gap-1">
+              <span className="text-[11px] font-medium text-[#bbbbbb] uppercase tracking-wider truncate" title={workDir || undefined}>
+                {workDir ? workDir.split(/[/\\]/).pop() || "Explorer" : "Explorer"}
+              </span>
+              <div className="relative flex items-center gap-0.5" ref={explorerMenuRef}>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-5 w-5 text-muted-foreground hover:text-foreground"
+                  onClick={() => setShowOpenFolder(!showOpenFolder)}
+                  title="Open Folder"
+                >
+                  <FolderOpen className="w-3.5 h-3.5" />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-5 w-5 text-muted-foreground hover:text-foreground"
+                  onClick={() => setExplorerMenuOpen(!explorerMenuOpen)}
+                  title="More"
+                >
+                  <MoreHorizontal className="w-4 h-4" />
+                </Button>
+                {showOpenFolder && (
+                  <div className="absolute right-0 top-6 w-64 bg-[#252526] border border-[#3c3c3c] rounded-md shadow-lg z-50">
+                    <FolderPathInput
+                      currentPath={workDir || undefined}
+                      onSubmit={(path) => {
+                        setShowOpenFolder(false)
+                        sendAgentMessage({ type: "change_work_dir", path })
+                        setWorkDir(path)
+                      }}
+                      onCancel={() => setShowOpenFolder(false)}
+                    />
+                  </div>
+                )}
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-5 w-5 text-muted-foreground hover:text-foreground"
+                  onClick={() => setExplorerMenuOpen(!explorerMenuOpen)}
+                >
+                  <MoreHorizontal className="w-4 h-4" />
+                </Button>
+                {explorerMenuOpen && (
+                  <div className="absolute right-0 top-6 w-40 bg-[#252526] border border-[#3c3c3c] rounded-md shadow-lg z-50 py-1 text-xs">
+                    <button
+                      className="w-full text-left px-3 py-1.5 text-[#cccccc] hover:bg-[#2a2d2e] flex items-center gap-2"
+                      onClick={() => { setExplorerMenuOpen(false); sendAgentMessage({ type: "new_file" }) }}
+                    >
+                      <FilePlus className="w-3.5 h-3.5" /> New File
+                    </button>
+                    <button
+                      className="w-full text-left px-3 py-1.5 text-[#cccccc] hover:bg-[#2a2d2e] flex items-center gap-2"
+                      onClick={() => { setExplorerMenuOpen(false); sendAgentMessage({ type: "new_folder" }) }}
+                    >
+                      <FolderPlus className="w-3.5 h-3.5" /> New Folder
+                    </button>
+                    <div className="border-t border-[#3c3c3c] my-0.5" />
+                    <button
+                      className="w-full text-left px-3 py-1.5 text-[#cccccc] hover:bg-[#2a2d2e] flex items-center gap-2"
+                      onClick={() => { setExplorerMenuOpen(false); sendAgentMessage({ type: "list_files" }) }}
+                    >
+                      <RefreshCw className="w-3.5 h-3.5" /> Refresh
+                    </button>
+                  </div>
+                )}
+              </div>
             </div>
-            <ScrollArea className="flex-1">
+            <ScrollArea className="flex-1 min-h-0">
               <div className="py-1">
-                <FileTreeItem 
-                  item={fileSystem} 
-                  depth={0} 
+                <FileTreeItem
+                  item={currentFileTree}
+                  depth={0}
                   onFileSelect={handleFileSelect}
                   selectedFile={activeTab}
                 />
@@ -581,11 +916,11 @@ export function CodeCanvas() {
           <div className="h-9 bg-[#252526] flex items-center border-b border-[#3c3c3c] overflow-x-auto">
             {openTabs.map((tab) => (
               <div
-                key={tab.name}
-                onClick={() => setActiveTab(tab.name)}
+                key={tab.path}
+                onClick={() => setActiveTab(tab.path)}
                 className={cn(
                   "h-full flex items-center gap-2 px-3 cursor-pointer border-r border-[#3c3c3c] group min-w-0",
-                  activeTab === tab.name 
+                  activeTab === tab.path 
                     ? "bg-[#1e1e1e] text-white" 
                     : "bg-[#2d2d2d] text-[#969696] hover:bg-[#2d2d2d]"
                 )}
@@ -598,7 +933,7 @@ export function CodeCanvas() {
                 )} />
                 <span className="text-[13px] truncate">{tab.name}</span>
                 <button
-                  onClick={(e) => handleCloseTab(tab.name, e)}
+                  onClick={(e) => handleCloseTab(tab.path, e)}
                   className="opacity-0 group-hover:opacity-100 hover:bg-[#3c3c3c] rounded p-0.5 transition-opacity shrink-0"
                 >
                   <X className="w-3.5 h-3.5" />
@@ -615,12 +950,17 @@ export function CodeCanvas() {
               >
                 <Copy className="w-3.5 h-3.5" />
               </Button>
-              <Button 
-                variant="ghost" 
-                size="icon" 
-                className="h-6 w-6 text-muted-foreground hover:text-foreground"
+              <Button
+                variant="ghost"
+                size="icon"
+                className={cn(
+                  "h-6 w-6 hover:text-foreground",
+                  splitView ? "text-primary" : "text-muted-foreground"
+                )}
+                onClick={() => setSplitView(!splitView)}
+                title="Toggle split editor"
               >
-                <Split className="w-3.5 h-3.5" />
+                <Columns2 className="w-3.5 h-3.5" />
               </Button>
               <Button 
                 size="sm" 
@@ -635,18 +975,31 @@ export function CodeCanvas() {
           </div>
 
           {/* Breadcrumb */}
-          <div className="h-6 bg-[#1e1e1e] flex items-center px-3 text-xs text-muted-foreground border-b border-[#3c3c3c]">
-            <span>sir-model</span>
-            <ChevronRight className="w-3 h-3 mx-1" />
-            <span>src</span>
-            <ChevronRight className="w-3 h-3 mx-1" />
-            <span className="text-foreground">{activeTab}</span>
+          <div className="h-6 bg-[#1e1e1e] flex items-center px-3 text-xs text-muted-foreground border-b border-[#3c3c3c] min-w-0">
+            {(() => {
+              const parts = activeTab.split("/")
+              const filename = parts.pop() || activeTab
+              return (
+                <span className="truncate">
+                  {parts.length > 0 && parts.map((segment, i) => (
+                    <span key={i}>
+                      <span className="text-[#858585]">{segment}</span>
+                      <ChevronRight className="w-3 h-3 mx-0.5 inline text-[#5a5a5a]" />
+                    </span>
+                  ))}
+                  <span className="text-foreground">{filename}</span>
+                </span>
+              )
+            })()}
           </div>
 
           {/* Editor + Terminal */}
-          <div className="flex-1 flex flex-col min-h-0">
+          <div ref={editorContainerRef} className="flex-1 flex flex-col min-h-0">
             {/* Monaco Editor */}
-            <div className={cn("flex-1 min-h-0", showTerminal && "h-[60%]")}>
+            <div
+              className={cn("min-h-0", showTerminal ? "" : "flex-1")}
+              style={showTerminal ? { height: `${100 - terminalHeight}%` } : undefined}
+            >
               <MonacoEditor
                 height="100%"
                 language={currentLanguage}
@@ -673,9 +1026,25 @@ export function CodeCanvas() {
               />
             </div>
 
+            {/* Drag handle */}
+            {showTerminal && (
+              <div
+                className={cn(
+                  "h-1 bg-[#3c3c3c] hover:bg-primary/60 cursor-ns-resize transition-colors flex-shrink-0 z-10",
+                  isDragging && "bg-primary"
+                )}
+                onMouseDown={handleDragStart}
+              >
+                <div className="w-8 h-1 mx-auto mt-px rounded bg-muted-foreground/30" />
+              </div>
+            )}
+
             {/* Terminal Panel */}
             {showTerminal && (
-              <div className="h-[40%] min-h-[120px] border-t border-[#3c3c3c] flex flex-col bg-[#1e1e1e]">
+              <div
+                className="min-h-[100px] border-t-0 flex flex-col bg-[#1e1e1e]"
+                style={{ height: `${terminalHeight}%` }}
+              >
                 {/* Panel Header */}
                 <div className="h-9 flex items-center justify-between px-2 bg-[#252526] border-b border-[#3c3c3c]">
                   <div className="flex items-center gap-1">
@@ -710,43 +1079,14 @@ export function CodeCanvas() {
                 </div>
 
                 {/* Terminal Content */}
-                {activePanel === "terminal" && (
-                  <div className="flex-1 flex flex-col min-h-0">
+                <div className={cn("flex-1 flex flex-col min-h-0", activePanel !== "terminal" && "hidden")}>
                     <div className="h-7 flex items-center gap-2 px-3 bg-[#1e1e1e] border-b border-[#3c3c3c]">
                       <TerminalIcon className="w-3.5 h-3.5 text-muted-foreground" />
-                      <span className="text-xs text-muted-foreground">bash</span>
-                      <span className="text-xs text-muted-foreground">- python</span>
+                      <span className="text-xs text-muted-foreground">local shell</span>
+                      <span className="text-xs text-muted-foreground">- {agentStatus}</span>
                     </div>
-                    <ScrollArea className="flex-1" ref={terminalRef}>
-                      <div className="p-2 font-mono text-sm">
-                        {terminalOutput.map((line, i) => (
-                          <div 
-                            key={i} 
-                            className={cn(
-                              "leading-5",
-                              line.startsWith(">>>") ? "text-[#4ec9b0]" : 
-                              line.includes("Error") ? "text-red-400" :
-                              line.includes("completed") ? "text-primary" :
-                              "text-[#cccccc]"
-                            )}
-                          >
-                            {line}
-                          </div>
-                        ))}
-                        <div className="flex items-center">
-                          <input
-                            type="text"
-                            value={terminalInput}
-                            onChange={(e) => setTerminalInput(e.target.value)}
-                            onKeyDown={handleTerminalInput}
-                            className="flex-1 bg-transparent text-[#cccccc] outline-none font-mono text-sm"
-                            placeholder=""
-                          />
-                        </div>
-                      </div>
-                    </ScrollArea>
+                    <div ref={terminalContainerRef} className="flex-1 min-h-0 p-2 [&_.xterm]:h-full" />
                   </div>
-                )}
 
                 {activePanel === "output" && (
                   <div className="flex-1 p-4 overflow-auto">

@@ -28,6 +28,7 @@ async fn main() -> anyhow::Result<()> {
         pool,
         config: cfg.clone(),
         room_registry: Arc::new(sync::room::RoomRegistry::new()),
+        agent_registry: Arc::new(agent_bridge::registry::AgentRegistry::new()),
     };
 
     let app = Router::new()
@@ -60,4 +61,5 @@ pub struct AppState {
     pub pool: sqlx::SqlitePool,
     pub config: config::Config,
     pub room_registry: Arc<sync::room::RoomRegistry>,
+    pub agent_registry: Arc<agent_bridge::registry::AgentRegistry>,
 }

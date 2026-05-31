@@ -21,7 +21,7 @@ export default function ProjectPage() {
           <MainWorkspace />
         </div>
         <div className="w-[480px] hidden lg:block">
-          <CodeCanvas />
+          <CodeCanvas projectId={id} />
         </div>
       </div>
     </main>

@@ -43,7 +43,6 @@ async fn main() -> anyhow::Result<()> {
         &args.project_id,
         args.tabbit_port,
         &args.work_dir,
-        &args.claude_path,
     )
     .await
 }

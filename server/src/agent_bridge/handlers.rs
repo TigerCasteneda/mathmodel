@@ -5,9 +5,10 @@ use axum::{
     },
     response::IntoResponse,
 };
+use futures::{SinkExt, StreamExt};
 use serde::Deserialize;
 use serde_json::Value;
-use std::sync::Arc;
+use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use crate::error::AppError;
@@ -17,6 +18,7 @@ use crate::AppState;
 pub struct AgentQuery {
     pub token: String,
     pub project_id: String,
+    pub role: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -73,75 +75,176 @@ pub async fn agent_ws_handler(
     }
 
     let pool = state.pool.clone();
-    let registry = state.room_registry.clone();
+    let bridge = state.agent_registry.get_or_create(&project_id).await;
 
-    Ok(ws.on_upgrade(move |socket| handle_agent(socket, project_id, user_id, registry, pool)))
+    if query.role.as_deref() == Some("frontend") {
+        Ok(ws.on_upgrade(move |socket| handle_frontend(socket, project_id, user_id, bridge)))
+    } else {
+        Ok(ws.on_upgrade(move |socket| handle_agent(socket, project_id, user_id, bridge, pool)))
+    }
 }
 
 async fn handle_agent(
-    mut socket: WebSocket,
+    socket: WebSocket,
     project_id: String,
     user_id: String,
-    _registry: Arc<crate::sync::room::RoomRegistry>,
+    bridge: std::sync::Arc<crate::agent_bridge::registry::ProjectAgentBridge>,
     pool: sqlx::SqlitePool,
 ) {
     tracing::info!("Agent connected: user={} project={}", user_id, project_id);
 
-    // Message loop
-    while let Some(Ok(msg)) = socket.recv().await {
-        match msg {
-            Message::Text(text) => {
-                match serde_json::from_str::<Value>(&text) {
-                    Ok(value) => {
-                        let msg_type = value["type"].as_str().unwrap_or("unknown");
-                        match msg_type {
-                            "ready" => {
-                                tracing::info!("Agent ready: user={}", user_id);
-                            }
-                            "terminal_output" => {
-                                let data = value["data"].as_str().unwrap_or("");
-                                tracing::debug!(
-                                    "agent terminal: {}",
-                                    data.chars().take(50).collect::<String>()
-                                );
-                                // Phase 6b: broadcast to frontend
-                            }
-                            "file_change" => {
-                                let path = value["path"].as_str().unwrap_or("");
-                                let content = value["content"].as_str().unwrap_or("");
-                                tracing::info!(
-                                    "agent file change: {} ({} bytes)",
-                                    path,
-                                    content.len()
-                                );
-                                // Phase 6b: apply to CRDT sync room
-                            }
-                            "tabbit_data" => {
-                                if let Err(err) =
-                                    handle_tabbit_data(&pool, &project_id, &user_id, &value).await
-                                {
-                                    tracing::warn!("failed to store tabbit data: {:?}", err);
+    let connection_id = Uuid::new_v4().to_string();
+    let (outbound_tx, mut outbound_rx) = mpsc::unbounded_channel::<Value>();
+    bridge.set_agent(connection_id.clone(), outbound_tx).await;
+
+    let (mut ws_tx, mut ws_rx) = socket.split();
+
+    loop {
+        tokio::select! {
+            Some(server_msg) = outbound_rx.recv() => {
+                match serde_json::to_string(&server_msg) {
+                    Ok(text) => {
+                        if ws_tx.send(Message::Text(text.into())).await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(err) => tracing::warn!("failed to encode agent outbound json: {}", err),
+                }
+            }
+            agent_msg = ws_rx.next() => {
+                match agent_msg {
+                    Some(Ok(Message::Text(text))) => {
+                        match serde_json::from_str::<Value>(&text) {
+                            Ok(value) => {
+                                let msg_type = value["type"].as_str().unwrap_or("unknown");
+                                match msg_type {
+                                    "ready" => {
+                                        tracing::info!("Agent ready: user={}", user_id);
+                                        bridge.broadcast_to_frontends(serde_json::json!({
+                                            "type": "agent_status",
+                                            "status": "ready"
+                                        }));
+                                    }
+                                    "terminal_output"
+                                    | "file_tree"
+                                    | "file_content"
+                                    | "file_change"
+                                    | "work_dir" => {
+                                        bridge.broadcast_to_frontends(value);
+                                    }
+                                    "tabbit_data" => {
+                                        if let Err(err) =
+                                            handle_tabbit_data(&pool, &project_id, &user_id, &value).await
+                                        {
+                                            tracing::warn!("failed to store tabbit data: {:?}", err);
+                                        }
+                                    }
+                                    "error" => {
+                                        tracing::error!("agent error: {}", value["message"]);
+                                        bridge.broadcast_to_frontends(value);
+                                    }
+                                    _ => {
+                                        tracing::debug!("agent unknown msg: {}", msg_type);
+                                    }
                                 }
                             }
-                            "error" => {
-                                tracing::error!("agent error: {}", value["message"]);
-                            }
-                            _ => {
-                                tracing::debug!("agent unknown msg: {}", msg_type);
+                            Err(err) => {
+                                tracing::warn!("agent sent invalid json: {}", err);
                             }
                         }
                     }
-                    Err(err) => {
-                        tracing::warn!("agent sent invalid json: {}", err);
-                    }
+                    Some(Ok(Message::Close(_))) | None => break,
+                    _ => {}
                 }
             }
-            Message::Close(_) => break,
-            _ => {}
         }
     }
 
+    bridge.clear_agent(&connection_id).await;
     tracing::info!("Agent disconnected: user={}", user_id);
+}
+
+async fn handle_frontend(
+    socket: WebSocket,
+    project_id: String,
+    user_id: String,
+    bridge: std::sync::Arc<crate::agent_bridge::registry::ProjectAgentBridge>,
+) {
+    tracing::info!(
+        "Agent frontend connected: user={} project={}",
+        user_id,
+        project_id
+    );
+
+    let (mut ws_tx, mut ws_rx) = socket.split();
+    let mut frontend_rx = bridge.subscribe_frontend();
+
+    let status = if bridge.has_agent().await {
+        "connected"
+    } else {
+        "disconnected"
+    };
+    let _ = ws_tx
+        .send(Message::Text(
+            serde_json::json!({
+                "type": "agent_status",
+                "status": status
+            })
+            .to_string()
+            .into(),
+        ))
+        .await;
+
+    loop {
+        tokio::select! {
+            frontend_msg = ws_rx.next() => {
+                match frontend_msg {
+                    Some(Ok(Message::Text(text))) => {
+                        match serde_json::from_str::<Value>(&text) {
+                            Ok(value) => {
+                                let msg_type = value["type"].as_str().unwrap_or("unknown");
+                                match msg_type {
+                                    "terminal_input"
+                                    | "terminal_resize"
+                                    | "claude_command"
+                                    | "open_file"
+                                    | "list_files"
+                                    | "change_work_dir"
+                                    | "new_file"
+                                    | "new_folder" => {
+                                        if bridge.send_to_agent(value).await.is_err() {
+                                            let _ = ws_tx.send(Message::Text(
+                                                serde_json::json!({
+                                                    "type": "error",
+                                                    "message": "local agent is not connected"
+                                                }).to_string().into()
+                                            )).await;
+                                        }
+                                    }
+                                    _ => tracing::debug!("frontend unknown msg: {}", msg_type),
+                                }
+                            }
+                            Err(err) => tracing::warn!("frontend sent invalid json: {}", err),
+                        }
+                    }
+                    Some(Ok(Message::Close(_))) | None => break,
+                    _ => {}
+                }
+            }
+            Ok(agent_event) = frontend_rx.recv() => {
+                match serde_json::to_string(&agent_event) {
+                    Ok(text) => {
+                        if ws_tx.send(Message::Text(text.into())).await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(err) => tracing::warn!("failed to encode frontend json: {}", err),
+                }
+            }
+        }
+    }
+
+    tracing::info!("Agent frontend disconnected: user={}", user_id);
 }
 
 async fn handle_tabbit_data(
