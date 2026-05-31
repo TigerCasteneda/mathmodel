@@ -10,10 +10,13 @@ use super::model::*;
 use super::references;
 use crate::auth::middleware::AuthUser;
 use crate::error::AppError;
+use crate::morphic::client::MorphicClient;
+use crate::morphic::model::AdvancedSearchResponse;
 use crate::AppState;
 
 pub fn routes() -> Router<AppState> {
     Router::new()
+        .route("/research/search", post(search))
         .route("/research/items", get(list_items).post(save_items))
         .route(
             "/research/items/{item_id}",
@@ -48,6 +51,47 @@ fn validate_category(cat: &str) -> Result<&str, AppError> {
         "literature" | "dataset" | "code" | "formula" | "competition" => Ok(cat),
         _ => Err(AppError::BadRequest(format!("invalid category: {cat}"))),
     }
+}
+
+// ── POST /research/search ──
+
+async fn search(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Json(req): Json<SearchRequest>,
+) -> Result<Json<SearchResponse>, AppError> {
+    verify_membership(&state.pool, &req.project_id, &auth.user_id).await?;
+    validate_category(&req.category)?;
+
+    let client = MorphicClient::from_env();
+
+    let morphic_resp = client
+        .advanced_search(&req.query, req.max_results)
+        .await
+        .unwrap_or_else(|_| AdvancedSearchResponse {
+            query: req.query.clone(),
+            results: vec![],
+            number_of_results: 0,
+        });
+
+    let results: Vec<SearchResultItem> = morphic_resp
+        .results
+        .into_iter()
+        .map(|r| SearchResultItem {
+            title: r.title,
+            url: r.url,
+            content: r.content,
+            authors: None,
+            publish_year: None,
+            keywords: None,
+            relevance_score: 0.0,
+        })
+        .collect();
+
+    Ok(Json(SearchResponse {
+        query: morphic_resp.query,
+        results,
+    }))
 }
 
 // ── POST /research/items — save search results ──
