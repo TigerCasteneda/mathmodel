@@ -18,7 +18,7 @@ export default function ProjectPage() {
       />
       <div className="flex flex-1 min-w-0">
         <div className="flex-1 min-w-0">
-          <MainWorkspace />
+          <MainWorkspace projectId={id} />
         </div>
         <div className="w-[480px] hidden lg:block">
           <CodeCanvas projectId={id} />

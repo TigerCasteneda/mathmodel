@@ -94,3 +94,116 @@ export interface Project {
   created_at: number
   updated_at: number
 }
+
+// ── Research / Search ──
+
+export interface SearchResultItem {
+  title: string
+  url: string
+  content: string
+  authors?: string
+  publish_year?: number
+  keywords?: string
+  relevance_score: number
+}
+
+export interface SearchResponse {
+  query: string
+  results: SearchResultItem[]
+}
+
+export interface SaveItemInput {
+  title: string
+  url: string
+  content: string
+  category: string
+  summary?: string
+  authors?: string
+  publish_year?: number
+  keywords?: string
+  relevance_score?: number
+  raw_json?: Record<string, unknown>
+}
+
+export interface ResearchItem {
+  id: string
+  project_id: string
+  created_by: string
+  source: string
+  category: string
+  url: string
+  title?: string
+  summary?: string
+  authors?: string
+  publish_year?: number
+  keywords?: string
+  notes?: string
+  relevance_score: number
+  raw_json: string
+  created_at: number
+  updated_at: number
+}
+
+export interface SaveItemsResponse {
+  saved: number
+  items: ResearchItem[]
+  files_created: number
+}
+
+export async function researchSearch(
+  projectId: string,
+  query: string,
+  category: string,
+  maxResults = 20
+): Promise<SearchResponse> {
+  return apiFetch<SearchResponse>("/research/search", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ project_id: projectId, query, category, max_results: maxResults }),
+  })
+}
+
+export async function saveResearchItems(
+  projectId: string,
+  items: SaveItemInput[]
+): Promise<SaveItemsResponse> {
+  return apiFetch<SaveItemsResponse>("/research/items", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ project_id: projectId, items }),
+  })
+}
+
+export async function listResearchItems(
+  projectId: string,
+  category?: string,
+  sort = "created_at",
+  order = "desc",
+  limit = 50,
+  offset = 0
+): Promise<ResearchItem[]> {
+  const params = new URLSearchParams({ project_id: projectId, sort, order, limit: String(limit), offset: String(offset) })
+  if (category) params.set("category", category)
+  return apiFetch<ResearchItem[]>(`/research/items?${params.toString()}`)
+}
+
+export async function getResearchItem(itemId: string): Promise<ResearchItem> {
+  return apiFetch<ResearchItem>(`/research/items/${itemId}`)
+}
+
+export async function updateResearchItem(
+  itemId: string,
+  data: { notes?: string; category?: string }
+): Promise<ResearchItem> {
+  return apiFetch<ResearchItem>(`/research/items/${itemId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  })
+}
+
+export async function deleteResearchItem(itemId: string): Promise<{ deleted: boolean }> {
+  return apiFetch<{ deleted: boolean }>(`/research/items/${itemId}`, {
+    method: "DELETE",
+  })
+}
