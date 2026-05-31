@@ -8,6 +8,7 @@ mod error;
 mod file;
 mod history;
 mod project;
+mod research;
 mod sync;
 
 use axum::routing::get;
