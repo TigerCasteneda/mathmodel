@@ -39,3 +39,4 @@ sessions.md
 
 # Nested repository metadata backup while converting to monorepo
 .git-nested-backups/
+out/
