@@ -1,8 +1,9 @@
 # Phase 7a: Search Module Redesign — Design Spec
 
 **Date**: 2026-05-31
-**Status**: approved
+**Status**: approved (revised per review)
 **Scope**: Replace Tavily with Morphic + SearXNG, build research pipeline, wire up frontend
+**Implementation order**: 7a-0 → 7a-1 → 7a-2 → 7a-3 → 7a-4 → 7a-5
 
 ---
 
@@ -49,7 +50,7 @@
 ### Key data flows
 
 1. **Search flow**: Frontend → `/research/search` → `morphic::client` → Morphic `/api/chat` (AI summary) + `/api/advanced-search` (structured results) → merged response to frontend
-2. **Save flow**: Frontend selected items → `POST /research/items` → write SQLite → send `create_file` to Agent via agent_bridge → Agent creates `references/*.md` → file_watcher detects → sync back to DB via CRDT
+2. **Save flow**: Frontend selected items → `POST /research/items` → write SQLite (research_items + files/file_blobs for cloud copy) → optionally send `create_file` to Agent → Agent creates local `references/*.md` as additive sync. Cloud .md file always written server-side via existing file API; Agent local file is best-effort.
 3. **Browse flow**: Research Library Tab → `GET /research/items?project_id=` → display by type/time → edit notes / delete
 
 ---
@@ -87,14 +88,37 @@ Design rationale:
 
 ### Migration `005_research_v2.sql`
 
-```sql
-ALTER TABLE research_items ADD COLUMN category TEXT DEFAULT 'literature';
-ALTER TABLE research_items ADD COLUMN authors TEXT DEFAULT '';
-ALTER TABLE research_items ADD COLUMN publish_year INTEGER;
-ALTER TABLE research_items ADD COLUMN keywords TEXT DEFAULT '';
-ALTER TABLE research_items ADD COLUMN relevance_score REAL DEFAULT 0.0;
-ALTER TABLE research_items ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0;
+**Idempotency strategy**: The current migration runner (`server/src/db.rs:22`) runs all SQL files on every startup. To make ALTER TABLE safe, add an `ensure_column(table, column, type_sql)` helper in `db.rs` that uses `PRAGMA table_info` to check column existence before each ALTER:
+
+```rust
+// db.rs — new helper
+async fn ensure_column(pool: &SqlitePool, table: &str, column: &str, type_sql: &str) -> Result<()> {
+    let count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name = ?2"
+    )
+    .bind(table).bind(column)
+    .fetch_one(pool).await?;
+    if count == 0 {
+        let sql = format!("ALTER TABLE {table} ADD COLUMN {column} {type_sql}");
+        sqlx::query(&sql).execute(pool).await?;
+    }
+    Ok(())
+}
 ```
+
+This way 004 (original table) already created the table, Tabbit inserts still work, and 005 idempotently extends it. Each ALTER is guarded by PRAGMA check:
+
+```sql
+-- Executed via ensure_column(), safe to run multiple times:
+-- ALTER TABLE research_items ADD COLUMN category TEXT DEFAULT 'literature';
+-- ALTER TABLE research_items ADD COLUMN authors TEXT DEFAULT '';
+-- ALTER TABLE research_items ADD COLUMN publish_year INTEGER;
+-- ALTER TABLE research_items ADD COLUMN keywords TEXT DEFAULT '';
+-- ALTER TABLE research_items ADD COLUMN relevance_score REAL DEFAULT 0.0;
+-- ALTER TABLE research_items ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0;
+```
+
+**Compatibility with Tabbit**: 005 only ADDs columns with defaults; existing `INSERT` statements in `agent_bridge/handlers.rs:298` are unaffected. Tabbit writes to `(id, project_id, created_by, source, url, title, summary, notes, raw_json, created_at)` — all unchanged, new columns get their default values for existing rows.
 
 ### Complete `research_items` table
 
@@ -335,22 +359,56 @@ Server → Agent:
 { "type": "create_file", "path": "references/optimal-control-sir.md", "content": "# ..." }
 ```
 
+Added as `CreateFile { path: String, content: String }` variant to `AgentMessage` enum in both server bridge and agent `ws_client.rs`.
+
 ### Agent-side handling (`ws_client.rs`)
 
-1. Receive `CreateFile` message variant
-2. Create file (including parent directories) under `current_work_dir`
-3. `file_watcher` auto-detects → pushes `FileChange` → server → CRDT sync → all collaborators
+Path safety validation (reject before any filesystem operation):
+1. Reject absolute paths (`path.starts_with('/')` or `path.starts_with('\\')` or has `C:` prefix on Windows)
+2. Reject `..` path traversal: `path.contains("..")` → error
+3. Resolve under `current_work_dir`: `work_dir.join(sanitized_path)`, canonicalize and verify it's still under work_dir
+4. Auto-create parent directories: `fs::create_dir_all(parent)`
+5. If file already exists: skip creation, log warning (don't overwrite user work)
 
-### Agent status awareness on frontend
+```rust
+fn validate_and_resolve(work_dir: &Path, relative_path: &str) -> Result<PathBuf, String> {
+    if relative_path.contains("..") { return Err("path traversal rejected".into()); }
+    if relative_path.starts_with('/') || relative_path.starts_with('\\') { return Err("absolute path rejected".into()); }
+    let resolved = work_dir.join(relative_path);
+    // Canonicalize work_dir and verify resolved starts with it
+    let canon_work = work_dir.canonicalize().unwrap_or_else(|_| work_dir.to_path_buf());
+    let canon_resolved = resolved.canonicalize().unwrap_or(resolved.clone());
+    if !canon_resolved.starts_with(&canon_work) { return Err("path escapes workspace".into()); }
+    Ok(resolved)
+}
+```
 
-- Use existing `agent_status` WebSocket messages (`"ready"` | `"disconnected"`)
-- `status === "ready"` → Save button normal
-- `status === "disconnected"` → Save button shows warning: "Agent not connected — files will only be saved to cloud"
-  Button still enabled (knowledge base saved regardless)
+### Agent status field consistency
+
+Server-side `handle_frontend` sends either `"connected"` or `"disconnected"` (line 182).
+**Fix**: Change server to send `"ready"` (when agent connected) or `"disconnected"`.
+Frontend hook `useAgentStatus` only recognizes `"ready"` | `"disconnected"`.
+
+### File creation: dual-write approach
+
+When saving research items, the server does TWO things:
+1. **Primary (always)**: Write `.md` file to cloud file tree via existing file API (`files` + `file_blobs` tables). This guarantees the file appears in the web editor for all collaborators regardless of Agent state.
+2. **Secondary (best-effort)**: Send `create_file` to Agent to write a local copy. If Agent is disconnected, skip silently — the cloud copy already exists.
+
+This avoids the optimistic "file_watcher syncs back" path as the primary mechanism.
 
 ---
 
 ## 7. Frontend Design
+
+### Prerequisite: projectId passthrough
+
+Currently `app/projects/[id]/page.tsx:21` renders `<MainWorkspace />` without `projectId`. All `/research/*` APIs require `project_id`. Fix: pass `projectId={id}` from page to MainWorkspace.
+
+```tsx
+// app/projects/[id]/page.tsx
+<MainWorkspace projectId={id} />
+```
 
 ### Component tree
 
@@ -421,16 +479,52 @@ MainWorkspace (refactored)
 
 ---
 
-## 9. Scope Boundaries
+## 9. Implementation Phases
 
-### In scope (Phase 7a)
-- Morphic module (client + model)
-- Research module (model + handlers + references template)
-- Migration 005
-- Remove Tavily
-- Frontend MainWorkspace refactor (SearchTab + ResearchLibraryTab)
-- Agent `create_file` message handling
-- Agent status hook for save button
+Phases are ordered to keep each step independently testable and avoid breaking existing functionality.
+
+### 7a-0: Migration Foundation
+- Add `ensure_column()` helper in `db.rs` using `PRAGMA table_info` for idempotent ALTER TABLE
+- Run 005 extension columns on `research_items` (category, authors, publish_year, keywords, relevance_score, updated_at)
+- Verify Tabbit inserts still work after migration
+- No frontend or API changes
+
+### 7a-1: Research Backend CRUD
+- Create `server/src/research/` module (model, handlers, mod)
+- `POST /research/items` — save items (writes research_items + files/file_blobs for cloud .md)
+- `GET /research/items?project_id=` — list with category/sort/pagination
+- `GET /research/items/{id}` — detail
+- `PATCH /research/items/{id}` — edit notes/category
+- `DELETE /research/items/{id}` — hard delete + context_pages
+- Tavily and `/ai/search` remain untouched
+
+### 7a-2: Morphic Client
+- Create `server/src/morphic/` module (client, model)
+- `POST /research/search` — calls Morphic `/api/chat` + `/api/advanced-search`, merges results
+- Error paths: Morphic unavailable returns 503, partial failure returns AI summary with empty results
+- Config: `MORPHIC_BASE_URL` env var
+- Still keep Tavily running
+
+### 7a-3: Frontend Search + Library
+- Pass `projectId` from `page.tsx` to `MainWorkspace`
+- Refactor MainWorkspace into SearchTab + ResearchLibraryTab
+- SearchTab: type selector, real `/research/search` API call, result cards with checkboxes, SaveBar
+- ResearchLibraryTab: filter bar, item list, detail view, edit notes, delete
+- Agent status hook for SaveBar warning
+- Replace all mock data
+
+### 7a-4: Agent create_file
+- Add `CreateFile` variant to `AgentMessage` enum (both server and agent sides)
+- Agent path safety: reject absolute/`..` paths, validate under work_dir, create parents, skip existing
+- Server-side dual-write on save: primary cloud copy via file API, secondary Agent local copy
+- Handle Agent disconnected: skip Agent copy silently, cloud copy already exists
+
+### 7a-5: Remove Tavily
+- Wait until `/research/search` and frontend are verified stable
+- Delete `server/src/ai/adaptor/tavily.rs`
+- Remove `/ai/search` endpoint from `ai/handlers.rs`
+- Clean up `SearchRequest`/`SearchResponse`/`SearchResult` from `ai/model.rs`
+- Remove tavily from `ai/adaptor/mod.rs`
 
 ### Out of scope (future)
 - AI Chat panel (user explicitly rejected)
