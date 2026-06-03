@@ -25,6 +25,7 @@ target/
 agent/target/
 server/target/
 server/target-smoke/
+src-tauri/target*/
 
 # Local runtime data
 server/data/

@@ -1,4 +1,17 @@
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001"
+let API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001"
+
+let apiBasePromise: Promise<string> | null = null
+
+async function getApiBase(): Promise<string> {
+  if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
+    if (!apiBasePromise) {
+      const { getServerPort } = await import("@/lib/tauri-api")
+      apiBasePromise = getServerPort().then((port) => `http://127.0.0.1:${port}`)
+    }
+    return apiBasePromise
+  }
+  return API_BASE
+}
 
 let tokenStore: string | null = null
 let refreshTokenStore: string | null = null
@@ -36,7 +49,8 @@ export function getToken() {
 async function refreshAccessToken(): Promise<boolean> {
   if (!refreshTokenStore) return false
   try {
-    const res = await fetch(`${API_BASE}/auth/refresh`, {
+    const base = await getApiBase()
+    const res = await fetch(`${base}/auth/refresh`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ refresh_token: refreshTokenStore }),
@@ -62,13 +76,14 @@ export async function apiFetch<T = unknown>(
     headers["Authorization"] = `Bearer ${token}`
   }
 
-  let res = await fetch(`${API_BASE}${path}`, { ...options, headers })
+  const base = await getApiBase()
+  let res = await fetch(`${base}${path}`, { ...options, headers })
 
   if (res.status === 401 && refreshTokenStore) {
     const refreshed = await refreshAccessToken()
     if (refreshed) {
       headers["Authorization"] = `Bearer ${getToken()}`
-      res = await fetch(`${API_BASE}${path}`, { ...options, headers })
+      res = await fetch(`${base}${path}`, { ...options, headers })
     }
   }
 

@@ -19,5 +19,5 @@ anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = "0.3"
 
-# Server deps for Host Mode (Phase 8e — commented)
-# modeler-server = { path = "../server" }
+# Server deps for Host Mode (Phase 8e)
+modeler-server = { path = "../server" }

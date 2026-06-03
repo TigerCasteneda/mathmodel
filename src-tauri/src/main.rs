@@ -2,5 +2,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    modeler_desktop_lib::run()
+    modeler_desktop::run()
 }

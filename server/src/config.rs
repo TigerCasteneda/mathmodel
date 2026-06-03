@@ -22,4 +22,9 @@ impl Config {
                 .unwrap_or(3001),
         }
     }
+
+    /// Construct Config explicitly (used by Tauri embedded mode).
+    pub fn new(database_url: String, jwt_secret: String, data_dir: String, port: u16) -> Self {
+        Self { database_url, jwt_secret, data_dir, port }
+    }
 }

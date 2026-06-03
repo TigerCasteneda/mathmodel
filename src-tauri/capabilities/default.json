@@ -1,0 +1,11 @@
+{
+  "identifier": "default",
+  "description": "Default capability for Modeler AI app",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:event:allow-listen",
+    "core:event:allow-emit",
+    "core:event:allow-unlisten"
+  ]
+}

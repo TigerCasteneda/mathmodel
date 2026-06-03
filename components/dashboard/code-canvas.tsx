@@ -26,6 +26,8 @@ import * as Y from "yjs"
 import type { editor as monacoEditor } from "monaco-editor"
 import { YjsWebsocketProvider } from "@/lib/yjs-provider"
 import { getToken } from "@/lib/api"
+import { useTauriAgent } from "@/hooks/use-tauri-agent"
+import { isTauri } from "@/lib/tauri-api"
 import { Terminal } from "@xterm/xterm"
 import { FitAddon } from "@xterm/addon-fit"
 
@@ -419,10 +421,14 @@ export function CodeCanvas({ projectId }: CodeCanvasProps) {
   const xtermRef = useRef<Terminal | null>(null)
   const fitAddonRef = useRef<FitAddon | null>(null)
   const pendingTerminalWritesRef = useRef<string[]>([])
+  const isTauriMode = useRef(isTauri())
   const [editorReady, setEditorReady] = useState(false)
   const [agentStatus, setAgentStatus] = useState<AgentStatus>("connecting")
   const [agentFileTree, setAgentFileTree] = useState<FileItem | null>(null)
   const [agentFileContents, setAgentFileContents] = useState<Record<string, string>>({})
+
+  // Tauri Agent (replaces WebSocket agent when running in Tauri)
+  const tauriAgent = useTauriAgent()
 
   const [activeActivity, setActiveActivity] = useState("explorer")
   const [openTabs, setOpenTabs] = useState<TabItem[]>([
@@ -443,6 +449,41 @@ export function CodeCanvas({ projectId }: CodeCanvasProps) {
   const editorContainerRef = useRef<HTMLDivElement>(null)
 
   const sendAgentMessage = (message: unknown) => {
+    if (isTauriMode.current) {
+      const msg = message as {
+        type: string
+        data?: string
+        path?: string
+        content?: string
+        cols?: number
+        rows?: number
+      }
+      switch (msg.type) {
+        case "terminal_input":
+          if (msg.data) tauriAgent.writeToTerminal(msg.data)
+          break
+        case "terminal_resize":
+          if (msg.cols && msg.rows) tauriAgent.resizeTerminal(msg.cols, msg.rows)
+          break
+        case "open_file":
+          if (msg.path) tauriAgent.openFile(msg.path)
+          break
+        case "list_files":
+          tauriAgent.refreshFileTree()
+          break
+        case "change_work_dir":
+          if (msg.path) tauriAgent.changeDir(msg.path)
+          break
+        case "create_file":
+          if (msg.path && msg.content) tauriAgent.createFile(msg.path, msg.content)
+          break
+        case "new_file":
+        case "new_folder":
+          writeTerminal("\r\n[agent] New File/Folder: use the terminal\r\n")
+          break
+      }
+      return true
+    }
     if (agentWsRef.current?.readyState === WebSocket.OPEN) {
       agentWsRef.current.send(JSON.stringify(message))
       return true
@@ -465,7 +506,9 @@ export function CodeCanvas({ projectId }: CodeCanvasProps) {
     const fitAddon = fitAddonRef.current
     if (!terminal || !fitAddon) return
     fitAddon.fit()
-    if (agentWsRef.current?.readyState === WebSocket.OPEN) {
+    if (isTauriMode.current) {
+      tauriAgent.resizeTerminal(terminal.cols, terminal.rows)
+    } else if (agentWsRef.current?.readyState === WebSocket.OPEN) {
       agentWsRef.current.send(JSON.stringify({
         type: "terminal_resize",
         cols: terminal.cols,
@@ -603,6 +646,42 @@ export function CodeCanvas({ projectId }: CodeCanvasProps) {
       ws.close()
     }
   }, [projectId])
+
+  // Tauri Agent: connect on mount, sync state to existing UI
+  useEffect(() => {
+    if (!isTauriMode.current) return
+    tauriAgent.connect()
+    return () => {
+      tauriAgent.disconnect()
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!isTauriMode.current) return
+    return tauriAgent.onTerminalData((data) => {
+      writeTerminal(data)
+    })
+  }, [tauriAgent])
+
+  useEffect(() => {
+    if (!isTauriMode.current || !tauriAgent.fileTree) return
+    setAgentFileTree(tauriAgent.fileTree)
+  }, [tauriAgent.fileTree])
+
+  useEffect(() => {
+    if (!isTauriMode.current) return
+    setAgentFileContents(tauriAgent.fileContents)
+  }, [tauriAgent.fileContents])
+
+  useEffect(() => {
+    if (!isTauriMode.current) return
+    setAgentStatus(tauriAgent.status)
+  }, [tauriAgent.status])
+
+  useEffect(() => {
+    if (!isTauriMode.current || !tauriAgent.workDir) return
+    setWorkDir(tauriAgent.workDir)
+  }, [tauriAgent.workDir])
 
   const handleCloseTab = (fileName: string, e: React.MouseEvent) => {
     e.stopPropagation()
