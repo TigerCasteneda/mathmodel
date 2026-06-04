@@ -6,8 +6,6 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum AgentEvent {
-    #[serde(rename = "pty_output")]
-    PtyOutput { data: String },
     #[serde(rename = "agent_error")]
     AgentError { message: String },
     #[serde(rename = "file_change")]

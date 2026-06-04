@@ -136,6 +136,9 @@ export interface SaveItemInput {
   authors?: string
   publish_year?: number
   keywords?: string
+  methodology?: string
+  key_parameters?: string
+  ai_relevance?: string
   relevance_score?: number
   raw_json?: Record<string, unknown>
 }
@@ -155,6 +158,9 @@ export interface ResearchItem {
   notes?: string
   relevance_score: number
   cloud_file_id?: string
+  methodology: string
+  key_parameters: string
+  ai_relevance: string
   raw_json: string
   created_at: number
   updated_at: number
@@ -172,11 +178,11 @@ export async function researchSearch(
   category: string,
   maxResults = 20
 ): Promise<SearchResponse> {
-  return apiFetch<SearchResponse>("/research/search", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ project_id: projectId, query, category, max_results: maxResults }),
-  })
+  void projectId
+  void query
+  void category
+  void maxResults
+  throw new Error("Research search now runs through native Modeler AI chat.")
 }
 
 export async function saveResearchItems(

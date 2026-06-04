@@ -44,12 +44,38 @@ export interface WorkDirEvent {
 }
 
 export type AgentEvent =
-  | PtyOutputEvent
   | AgentErrorEvent
   | FileChangeEvent
   | FileTreeEvent
   | FileContentEvent
   | WorkDirEvent
+
+export interface AiConfig {
+  api_key?: string | null
+  base_url: string
+  model: string
+  firecrawl_api_key?: string | null
+  searxng_url: string
+}
+
+export interface AiConfigStatus {
+  configured: boolean
+  base_url: string
+  model: string
+  firecrawl_configured: boolean
+  searxng_url: string
+}
+
+export interface ChatStreamEvent {
+  conversation_id: string
+  content: string
+  done: boolean
+}
+
+export interface ChatErrorEvent {
+  conversation_id: string
+  message: string
+}
 
 export function isTauri(): boolean {
   if (typeof window === "undefined") return false
@@ -71,23 +97,22 @@ export async function getServerPort(): Promise<number> {
 // ─── Commands ───────────────────────────────────────
 
 export async function ptySpawn(): Promise<void> {
-  if (!isTauri()) return
-  return invoke("pty_spawn")
+  return Promise.resolve()
 }
 
 export async function ptyWrite(data: string): Promise<void> {
-  if (!isTauri()) return
-  return invoke("pty_write", { data })
+  void data
+  return Promise.resolve()
 }
 
 export async function ptyResize(cols: number, rows: number): Promise<void> {
-  if (!isTauri()) return
-  return invoke("pty_resize", { cols, rows })
+  void cols
+  void rows
+  return Promise.resolve()
 }
 
 export async function ptyKill(): Promise<void> {
-  if (!isTauri()) return
-  return invoke("pty_kill")
+  return Promise.resolve()
 }
 
 export async function listFiles(): Promise<FileTreeItem> {
@@ -110,6 +135,29 @@ export async function changeWorkDir(path: string): Promise<FileTreeItem> {
   return invoke<FileTreeItem>("change_work_dir", { path })
 }
 
+export async function setAiConfig(config: AiConfig): Promise<void> {
+  if (!isTauri()) return
+  return invoke("set_ai_config", { config })
+}
+
+export async function getAiConfigStatus(): Promise<AiConfigStatus> {
+  if (!isTauri()) {
+    return {
+      configured: false,
+      base_url: "https://api.deepseek.com/anthropic",
+      model: "deepseek-v4-pro",
+      firecrawl_configured: false,
+      searxng_url: "http://localhost:8080",
+    }
+  }
+  return invoke<AiConfigStatus>("get_ai_config_status")
+}
+
+export async function aiChat(message: string, conversationId = "default"): Promise<void> {
+  if (!isTauri()) return
+  return invoke("ai_chat", { message, conversationId })
+}
+
 // ─── Events ─────────────────────────────────────────
 
 function listenEvent<T>(event: string, callback: (payload: T) => void): () => void {
@@ -130,7 +178,8 @@ function listenEvent<T>(event: string, callback: (payload: T) => void): () => vo
 }
 
 export function onPtyOutput(callback: (data: string) => void): () => void {
-  return listenEvent<PtyOutputEvent>("pty-output", (e) => callback(e.data))
+  void callback
+  return () => {}
 }
 
 export function onAgentError(callback: (message: string) => void): () => void {
@@ -151,4 +200,12 @@ export function onFileContent(callback: (path: string, content: string) => void)
 
 export function onWorkDirChanged(callback: (path: string) => void): () => void {
   return listenEvent<WorkDirEvent>("work-dir", (e) => callback(e.path))
+}
+
+export function onChatStream(callback: (event: ChatStreamEvent) => void): () => void {
+  return listenEvent<ChatStreamEvent>("chat:stream", callback)
+}
+
+export function onChatError(callback: (event: ChatErrorEvent) => void): () => void {
+  return listenEvent<ChatErrorEvent>("chat:error", callback)
 }

@@ -20,10 +20,10 @@ pub async fn init_pool(database_url: &str) -> SqlitePool {
 
 async fn run_migrations(pool: &SqlitePool) {
     run_specific_migration(pool, include_str!("../migrations/001_initial.sql")).await;
-    run_specific_migration(pool, include_str!("../migrations/002_ai.sql")).await;
     run_specific_migration(pool, include_str!("../migrations/003_history.sql")).await;
     run_specific_migration(pool, include_str!("../migrations/004_research.sql")).await;
     run_005_migration(pool).await;
+    run_006_migration(pool).await;
 }
 
 pub async fn run_specific_migration(pool: &SqlitePool, sql: &str) {
@@ -87,4 +87,17 @@ async fn run_005_migration(pool: &SqlitePool) {
     ensure_column(pool, "research_items", "cloud_file_id", "TEXT")
         .await
         .expect("005: cloud_file_id");
+}
+
+/// 006: extend research_items with AI-generated analysis columns.
+async fn run_006_migration(pool: &SqlitePool) {
+    ensure_column(pool, "research_items", "methodology", "TEXT DEFAULT ''")
+        .await
+        .expect("006: methodology");
+    ensure_column(pool, "research_items", "key_parameters", "TEXT DEFAULT ''")
+        .await
+        .expect("006: key_parameters");
+    ensure_column(pool, "research_items", "ai_relevance", "TEXT DEFAULT ''")
+        .await
+        .expect("006: ai_relevance");
 }

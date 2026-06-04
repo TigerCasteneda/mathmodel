@@ -13,7 +13,6 @@ async fn main() -> anyhow::Result<()> {
         pool,
         config: cfg.clone(),
         room_registry: Arc::new(modeler_server::sync::room::RoomRegistry::new()),
-        agent_registry: Arc::new(modeler_server::agent_bridge::registry::AgentRegistry::new()),
     };
 
     let app = modeler_server::build_router(state);

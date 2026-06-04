@@ -1,14 +1,12 @@
-use crate::agent_bridge::registry::AgentRegistry;
 use crate::error::AppError;
 use chrono::Utc;
-use std::sync::Arc;
 use yrs::ReadTxn;
 use yrs::Transact;
 use yrs::Text;
 
 use super::model::SaveItemInput;
 
-/// Generate a references/<slug>.md file body from a search result.
+/// Generate a references/<slug>.md file body from an AI-saved source.
 pub fn render_md(input: &SaveItemInput) -> String {
     let category_label = category_label(&input.category);
     let summary = input.summary.as_deref().unwrap_or("");
@@ -18,6 +16,9 @@ pub fn render_md(input: &SaveItemInput) -> String {
         .map(|y| y.to_string())
         .unwrap_or_default();
     let keywords = input.keywords.as_deref().unwrap_or("");
+    let methodology = input.methodology.as_deref().unwrap_or("");
+    let key_parameters = input.key_parameters.as_deref().unwrap_or("");
+    let ai_relevance = input.ai_relevance.as_deref().unwrap_or("");
     let date = Utc::now().format("%Y-%m-%d");
 
     format!(
@@ -28,8 +29,14 @@ pub fn render_md(input: &SaveItemInput) -> String {
          - **Year**: {year}\n\
          - **Keywords**: {keywords}\n\
          - **Saved**: {date}\n\n\
-         ## Abstract\n\
+         ## AI Summary\n\
          {summary}\n\n\
+         ## Methodology\n\
+         {methodology}\n\n\
+         ## Key Parameters\n\
+         {key_parameters}\n\n\
+         ## Relevance to Project\n\
+         {ai_relevance}\n\n\
          ## Notes\n\
          <!-- Add your notes here -->\n",
         title = input.title,
@@ -40,17 +47,20 @@ pub fn render_md(input: &SaveItemInput) -> String {
         keywords = keywords,
         date = date,
         summary = summary,
+        methodology = methodology,
+        key_parameters = key_parameters,
+        ai_relevance = ai_relevance,
     )
 }
 
 fn category_label(cat: &str) -> &str {
     match cat {
-        "literature" => "📄 Literature",
-        "dataset" => "📊 Dataset",
-        "code" => "🧮 Code",
-        "formula" => "📐 Formula",
-        "competition" => "🏆 Competition",
-        _ => "📄 Literature",
+        "literature" => "Literature",
+        "dataset" => "Dataset",
+        "code" => "Code",
+        "formula" => "Formula",
+        "competition" => "Competition",
+        _ => "Literature",
     }
 }
 
@@ -76,8 +86,6 @@ pub fn title_to_slug(title: &str) -> String {
 }
 
 /// Create a cloud file entry using existing project file + CRDT storage path.
-///
-/// Returns the created file's UUID.
 pub async fn create_cloud_md_file(
     pool: &sqlx::SqlitePool,
     project_id: &str,
@@ -102,7 +110,6 @@ pub async fn create_cloud_md_file(
     .fetch_optional(pool)
     .await?;
 
-    // 1. Insert into files table (zone=research)
     sqlx::query(
         "INSERT INTO files (id, project_id, parent_id, name, type, zone, created_at, updated_at)
          VALUES (?, ?, ?, ?, 'file', 'research', ?, ?)",
@@ -116,7 +123,6 @@ pub async fn create_cloud_md_file(
     .execute(pool)
     .await?;
 
-    // 2. Encode the markdown as a Yrs CRDT update and store in crdt_docs
     let ydoc = yrs::Doc::new();
     let text = ydoc.get_or_insert_text("content");
     {
@@ -138,37 +144,34 @@ pub async fn create_cloud_md_file(
     Ok(())
 }
 
-/// Send create_file to Agent (best-effort, errors are logged not returned).
-/// Returns 1 if sent, 0 if Agent not connected or bridge missing.
-pub async fn notify_agent_create_file(
-    agent_registry: &Arc<AgentRegistry>,
-    project_id: &str,
-    relative_path: &str,
-    content: &str,
-) -> i32 {
-    let Some(bridge) = agent_registry.get(project_id).await else {
-        tracing::info!(
-            "No agent bridge for project {project_id}, skipping local file creation"
-        );
-        return 0;
-    };
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    let msg = serde_json::json!({
-        "type": "create_file",
-        "path": relative_path,
-        "content": content,
-    });
+    #[test]
+    fn render_md_includes_phase9_ai_sections() {
+        let input = SaveItemInput {
+            title: "Bayesian SIR".to_string(),
+            url: "https://example.com/paper".to_string(),
+            content: "body".to_string(),
+            category: "literature".to_string(),
+            summary: Some("summary".to_string()),
+            authors: Some("A. Author".to_string()),
+            publish_year: Some(2026),
+            keywords: Some("MCMC,SIR".to_string()),
+            methodology: Some("Bayesian inference".to_string()),
+            key_parameters: Some("{\"beta\":0.3}".to_string()),
+            ai_relevance: Some("Useful for parameter estimation".to_string()),
+            relevance_score: Some(0.9),
+            raw_json: None,
+        };
 
-    match bridge.send_to_agent(msg).await {
-        Ok(()) => {
-            tracing::info!("Sent create_file to agent: {relative_path}");
-            1
-        }
-        Err(()) => {
-            tracing::info!(
-                "Agent not connected for project {project_id}, skipping local file"
-            );
-            0
-        }
+        let md = render_md(&input);
+
+        assert!(md.contains("## AI Summary"));
+        assert!(md.contains("## Methodology"));
+        assert!(md.contains("Bayesian inference"));
+        assert!(md.contains("## Key Parameters"));
+        assert!(md.contains("## Relevance to Project"));
     }
 }

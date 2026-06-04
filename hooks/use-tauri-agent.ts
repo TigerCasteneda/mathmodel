@@ -23,18 +23,9 @@ export function useTauriAgent() {
     setStatus("connecting")
 
     try {
-      console.log("[agent] calling ptySpawn...")
-      await tauriApi.ptySpawn()
-      console.log("[agent] ptySpawn OK, setting ready")
       setStatus("ready")
 
       const unlisteners: (() => void)[] = []
-
-      unlisteners.push(
-        tauriApi.onPtyOutput((data) => {
-          terminalCallbackRef.current?.(data)
-        })
-      )
 
       unlisteners.push(
         tauriApi.onAgentError((message) => {
@@ -80,7 +71,6 @@ export function useTauriAgent() {
 
   const disconnect = useCallback(() => {
     cleanupRef.current?.()
-    tauriApi.ptyKill().catch(() => {})
     setStatus("disconnected")
   }, [])
 
@@ -91,11 +81,12 @@ export function useTauriAgent() {
   }, [])
 
   const writeToTerminal = useCallback((data: string) => {
-    tauriApi.ptyWrite(data).catch(() => {})
+    terminalCallbackRef.current?.(`\r\n[agent] PTY is retired in Phase 9. Ignored input: ${data}\r\n`)
   }, [])
 
   const resizeTerminal = useCallback((cols: number, rows: number) => {
-    tauriApi.ptyResize(cols, rows).catch(() => {})
+    void cols
+    void rows
   }, [])
 
   const openFile = useCallback(async (path: string) => {

@@ -1,5 +1,3 @@
-pub mod agent_bridge;
-pub mod ai;
 pub mod auth;
 pub mod compute;
 pub mod config;
@@ -7,7 +5,6 @@ pub mod db;
 pub mod error;
 pub mod file;
 pub mod history;
-pub mod morphic;
 pub mod project;
 pub mod research;
 pub mod sync;
@@ -25,7 +22,6 @@ pub struct AppState {
     pub pool: sqlx::SqlitePool,
     pub config: Config,
     pub room_registry: Arc<sync::room::RoomRegistry>,
-    pub agent_registry: Arc<agent_bridge::registry::AgentRegistry>,
 }
 
 /// Build the full Axum router for the server.
@@ -35,8 +31,6 @@ pub fn build_router(state: AppState) -> Router {
         .nest("/projects", project::handlers::routes())
         .merge(file::handlers::routes())
         .route("/sync", get(sync::handlers::ws_handler))
-        .route("/agent", get(agent_bridge::handlers::agent_ws_handler))
-        .merge(ai::handlers::routes())
         .merge(compute::handlers::routes())
         .merge(history::handlers::routes())
         .merge(research::handlers::routes())

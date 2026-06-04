@@ -1,6 +1,8 @@
 mod agent;
+mod ai;
 
 use agent::state::AgentState;
+use ai::config::AiConfigState;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::Emitter;
@@ -16,10 +18,11 @@ pub fn run() {
         .setup(|app| {
             let work_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
             app.manage(AgentState {
-                pty_tx: std::sync::Mutex::new(None),
                 work_dir: std::sync::Mutex::new(work_dir),
                 app_handle: app.handle().clone(),
             });
+            app.manage(AiConfigState::default());
+            app.manage(ai::session::ChatSessionStore::default());
 
             // ── Embedded server startup ──
             let handle = app.handle().clone();
@@ -43,14 +46,13 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            agent::commands::pty_spawn,
-            agent::commands::pty_write,
-            agent::commands::pty_resize,
-            agent::commands::pty_kill,
             agent::commands::list_files,
             agent::commands::read_file,
             agent::commands::create_file,
             agent::commands::change_work_dir,
+            ai::chat::set_ai_config,
+            ai::chat::get_ai_config_status,
+            ai::chat::ai_chat,
             get_server_port,
         ])
         .run(tauri::generate_context!())
@@ -78,7 +80,6 @@ async fn start_server(data_dir: PathBuf) -> anyhow::Result<u16> {
         pool,
         config: cfg,
         room_registry: Arc::new(modeler_server::sync::room::RoomRegistry::new()),
-        agent_registry: Arc::new(modeler_server::agent_bridge::registry::AgentRegistry::new()),
     };
 
     modeler_server::serve(state).await

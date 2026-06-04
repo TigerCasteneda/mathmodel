@@ -1,6 +1,6 @@
 use axum::{
     extract::{Path, Query, State},
-    routing::{get, post},
+    routing::get,
     Json, Router,
 };
 use chrono::Utc;
@@ -10,20 +10,16 @@ use super::model::*;
 use super::references;
 use crate::auth::middleware::AuthUser;
 use crate::error::AppError;
-use crate::morphic::client::MorphicClient;
 use crate::AppState;
 
 pub fn routes() -> Router<AppState> {
     Router::new()
-        .route("/research/search", post(search))
         .route("/research/items", get(list_items).post(save_items))
         .route(
             "/research/items/{item_id}",
             get(get_item).patch(update_item).delete(delete_item),
         )
 }
-
-// ── Helpers ──
 
 async fn verify_membership(
     pool: &sqlx::SqlitePool,
@@ -67,42 +63,6 @@ async fn load_item_for_user(
     Ok(item)
 }
 
-// ── POST /research/search ──
-
-async fn search(
-    State(state): State<AppState>,
-    auth: AuthUser,
-    Json(req): Json<SearchRequest>,
-) -> Result<Json<SearchResponse>, AppError> {
-    verify_membership(&state.pool, &req.project_id, &auth.user_id).await?;
-    validate_category(&req.category)?;
-
-    let client = MorphicClient::from_env();
-
-    let morphic_resp = client.advanced_search(&req.query, req.max_results).await?;
-
-    let results: Vec<SearchResultItem> = morphic_resp
-        .results
-        .into_iter()
-        .map(|r| SearchResultItem {
-            title: r.title,
-            url: r.url,
-            content: r.content,
-            authors: None,
-            publish_year: None,
-            keywords: None,
-            relevance_score: 0.0,
-        })
-        .collect();
-
-    Ok(Json(SearchResponse {
-        query: morphic_resp.query,
-        results,
-    }))
-}
-
-// ── POST /research/items — save search results ──
-
 async fn save_items(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -121,6 +81,9 @@ async fn save_items(
         let summary = input.summary.clone().unwrap_or_default();
         let authors = input.authors.clone().unwrap_or_default();
         let keywords = input.keywords.clone().unwrap_or_default();
+        let methodology = input.methodology.clone().unwrap_or_default();
+        let key_parameters = input.key_parameters.clone().unwrap_or_default();
+        let ai_relevance = input.ai_relevance.clone().unwrap_or_default();
         let relevance = input.relevance_score.unwrap_or(0.0);
         let raw_json = input
             .raw_json
@@ -131,9 +94,9 @@ async fn save_items(
         sqlx::query(
             "INSERT INTO research_items
              (id, project_id, created_by, source, category, url, title, summary,
-              authors, publish_year, keywords, notes, relevance_score, cloud_file_id, raw_json,
-              created_at, updated_at)
-             VALUES (?, ?, ?, 'morphic', ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?)",
+              authors, publish_year, keywords, notes, relevance_score, cloud_file_id,
+              methodology, key_parameters, ai_relevance, raw_json, created_at, updated_at)
+             VALUES (?, ?, ?, 'ai', ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&item_id)
         .bind(&req.project_id)
@@ -147,15 +110,16 @@ async fn save_items(
         .bind(&keywords)
         .bind(relevance)
         .bind(&cloud_file_id)
+        .bind(&methodology)
+        .bind(&key_parameters)
+        .bind(&ai_relevance)
         .bind(&raw_json)
         .bind(now)
         .bind(now)
         .execute(&state.pool)
         .await?;
 
-        // Generate cloud .md file via existing CRDT path
         let md_content = references::render_md(input);
-
         match references::create_cloud_md_file(
             &state.pool,
             &req.project_id,
@@ -166,19 +130,7 @@ async fn save_items(
         .await
         {
             Ok(()) => {
-                // Best-effort: also send to Agent for local copy
-                let agent_path = format!(
-                    "references/{}-{}.md",
-                    references::title_to_slug(&input.title),
-                    &cloud_file_id[..8]
-                );
-                files_created += references::notify_agent_create_file(
-                    &state.agent_registry,
-                    &req.project_id,
-                    &agent_path,
-                    &md_content,
-                )
-                .await;
+                files_created += 1;
             }
             Err(err) => {
                 tracing::warn!("Failed to create cloud md file: {err:?}");
@@ -203,8 +155,6 @@ async fn save_items(
         files_created,
     }))
 }
-
-// ── GET /research/items — list ──
 
 async fn list_items(
     State(state): State<AppState>,
@@ -243,8 +193,6 @@ async fn list_items(
     Ok(Json(items))
 }
 
-// ── GET /research/items/{item_id} — detail ──
-
 async fn get_item(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -253,8 +201,6 @@ async fn get_item(
     let item = load_item_for_user(&state.pool, &params.item_id, &auth.user_id).await?;
     Ok(Json(item))
 }
-
-// ── PATCH /research/items/{item_id} — update notes/category ──
 
 async fn update_item(
     State(state): State<AppState>,
@@ -293,8 +239,6 @@ async fn update_item(
     Ok(Json(item))
 }
 
-// ── DELETE /research/items/{item_id} ──
-
 async fn delete_item(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -303,7 +247,6 @@ async fn delete_item(
     let item = load_item_for_user(&state.pool, &params.item_id, &auth.user_id).await?;
     let mut tx = state.pool.begin().await?;
 
-    // Delete context pages first (FK)
     sqlx::query("DELETE FROM research_context_pages WHERE item_id = ?")
         .bind(&params.item_id)
         .execute(&mut *tx)

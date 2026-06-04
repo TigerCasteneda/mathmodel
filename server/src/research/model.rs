@@ -1,7 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-/// Matches research_items table (after 005 migration).
-/// Existing Tabbit columns plus new Morphic search columns.
+/// Matches research_items after the Phase 9 research migrations.
 #[derive(Debug, Serialize, Deserialize, sqlx::FromRow)]
 pub struct ResearchItem {
     pub id: String,
@@ -18,42 +17,13 @@ pub struct ResearchItem {
     pub notes: Option<String>,
     pub relevance_score: f64,
     pub cloud_file_id: Option<String>,
+    pub methodology: String,
+    pub key_parameters: String,
+    pub ai_relevance: String,
     pub raw_json: String,
     pub created_at: i64,
     pub updated_at: i64,
 }
-
-// ── Search ──
-
-#[derive(Debug, Deserialize)]
-pub struct SearchRequest {
-    pub project_id: String,
-    pub query: String,
-    pub category: String,
-    #[serde(default = "default_max_results")]
-    pub max_results: i32,
-}
-
-fn default_max_results() -> i32 { 20 }
-
-#[derive(Debug, Serialize)]
-pub struct SearchResponse {
-    pub query: String,
-    pub results: Vec<SearchResultItem>,
-}
-
-#[derive(Debug, Serialize, Clone)]
-pub struct SearchResultItem {
-    pub title: String,
-    pub url: String,
-    pub content: String,
-    pub authors: Option<String>,
-    pub publish_year: Option<i32>,
-    pub keywords: Option<String>,
-    pub relevance_score: f64,
-}
-
-// ── Save ──
 
 #[derive(Debug, Deserialize)]
 pub struct SaveItemsRequest {
@@ -71,6 +41,9 @@ pub struct SaveItemInput {
     pub authors: Option<String>,
     pub publish_year: Option<i32>,
     pub keywords: Option<String>,
+    pub methodology: Option<String>,
+    pub key_parameters: Option<String>,
+    pub ai_relevance: Option<String>,
     pub relevance_score: Option<f64>,
     pub raw_json: Option<serde_json::Value>,
 }
@@ -81,8 +54,6 @@ pub struct SaveItemsResponse {
     pub items: Vec<ResearchItem>,
     pub files_created: i32,
 }
-
-// ── List / Detail / Update ──
 
 #[derive(Debug, Deserialize)]
 pub struct ListItemsQuery {
@@ -98,9 +69,17 @@ pub struct ListItemsQuery {
     pub offset: i32,
 }
 
-fn default_sort() -> String { "created_at".into() }
-fn default_order() -> String { "desc".into() }
-fn default_limit() -> i32 { 50 }
+fn default_sort() -> String {
+    "created_at".into()
+}
+
+fn default_order() -> String {
+    "desc".into()
+}
+
+fn default_limit() -> i32 {
+    50
+}
 
 #[derive(Debug, Deserialize)]
 pub struct UpdateItemRequest {

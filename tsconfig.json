@@ -37,6 +37,7 @@
   ],
   "exclude": [
     "node_modules",
-    "morphic"
+    "morphic",
+    "claude-code-rust"
   ]
 }

@@ -1,10 +1,8 @@
 use crate::agent::events::AgentEvent;
 use crate::agent::file_watcher::{self, FileTreeItem};
-use crate::agent::pty;
-use crate::agent::state::{AgentState, PtyCommand};
+use crate::agent::state::AgentState;
 use std::path::{Component, PathBuf};
 use tauri::{Emitter, State};
-use tokio::sync::mpsc;
 
 fn validate_create_path(work_dir: &std::path::Path, relative_path: &str) -> Result<PathBuf, String> {
     let rel = std::path::Path::new(relative_path);
@@ -31,68 +29,6 @@ fn validate_create_path(work_dir: &std::path::Path, relative_path: &str) -> Resu
         return Err("path escapes workspace".into());
     }
     Ok(resolved)
-}
-
-#[tauri::command]
-pub async fn pty_spawn(state: State<'_, AgentState>) -> Result<(), String> {
-    let work_dir = state.work_dir.lock().map_err(|e| e.to_string())?.clone();
-    let (tx, rx) = mpsc::unbounded_channel();
-    {
-        let mut pty_tx = state.pty_tx.lock().map_err(|e| e.to_string())?;
-        if let Some(old_tx) = pty_tx.take() {
-            let _ = old_tx.send(PtyCommand::Kill);
-        }
-        *pty_tx = Some(tx);
-    }
-
-    let app_handle = state.app_handle.clone();
-    tokio::spawn(async move {
-        if let Err(err) = pty::spawn_pty(work_dir, rx, app_handle.clone()).await {
-            let _ = app_handle.emit(
-                "agent-error",
-                AgentEvent::AgentError {
-                    message: format!("PTY spawn failed: {err:#}"),
-                },
-            );
-        }
-    });
-
-    Ok(())
-}
-
-#[tauri::command]
-pub async fn pty_write(data: String, state: State<'_, AgentState>) -> Result<(), String> {
-    let pty_tx = state.pty_tx.lock().map_err(|e| e.to_string())?;
-    match pty_tx.as_ref() {
-        Some(tx) => tx
-            .send(PtyCommand::Input(data))
-            .map_err(|_| "PTY has closed".to_string()),
-        None => Err("No PTY session. Call pty_spawn first.".to_string()),
-    }
-}
-
-#[tauri::command]
-pub async fn pty_resize(
-    cols: u16,
-    rows: u16,
-    state: State<'_, AgentState>,
-) -> Result<(), String> {
-    let pty_tx = state.pty_tx.lock().map_err(|e| e.to_string())?;
-    match pty_tx.as_ref() {
-        Some(tx) => tx
-            .send(PtyCommand::Resize { cols, rows })
-            .map_err(|_| "PTY has closed".to_string()),
-        None => Err("No PTY session. Call pty_spawn first.".to_string()),
-    }
-}
-
-#[tauri::command]
-pub async fn pty_kill(state: State<'_, AgentState>) -> Result<(), String> {
-    let mut pty_tx = state.pty_tx.lock().map_err(|e| e.to_string())?;
-    if let Some(tx) = pty_tx.take() {
-        let _ = tx.send(PtyCommand::Kill);
-    }
-    Ok(())
 }
 
 #[tauri::command]
@@ -151,4 +87,16 @@ pub async fn change_work_dir(
         },
     );
     Ok(tree)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_create_path;
+    use std::path::Path;
+
+    #[test]
+    fn rejects_path_traversal() {
+        let err = validate_create_path(Path::new("."), "../outside.txt").unwrap_err();
+        assert!(err.contains("traversal"));
+    }
 }
