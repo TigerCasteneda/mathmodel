@@ -8,7 +8,7 @@ import { ScrollArea } from "@/components/ui/scroll-area"
 import { ChatPanel } from "@/components/chat/chat-panel"
 import { CodeEditor } from "@/components/editor/code-editor"
 import { cn } from "@/lib/utils"
-import { getAiConfigStatus, setAiConfig, type AiConfigStatus, type FileTreeItem } from "@/lib/tauri-api"
+import { deleteSession, getAiConfigStatus, listSessions, setAiConfig, type AiConfigStatus, type FileTreeItem, type SessionInfo } from "@/lib/tauri-api"
 import { useTauriAgent } from "@/hooks/use-tauri-agent"
 import { listResearchItems, type ResearchItem } from "@/lib/api"
 
@@ -210,10 +210,40 @@ export function ModelerWorkbench({ projectId }: { projectId: string }) {
   const [tabs, setTabs] = useState<Tab[]>([
     { id: "chat", title: "Chat", kind: "chat" },
   ])
+  const [sessions, setSessions] = useState<SessionInfo[]>([])
 
   useEffect(() => {
     tauriAgent.connect()
   }, [tauriAgent.connect])
+
+  const refreshSessions = async () => {
+    try { setSessions(await listSessions()) } catch {}
+  }
+
+  const newChat = async () => {
+    const id = crypto.randomUUID()
+    const tab: Tab = { id, title: "Chat", kind: "chat" }
+    setTabs((prev) => [...prev, tab])
+    setActiveTab(tab.id)
+    await refreshSessions()
+  }
+
+  const switchToChat = (sessionId: string, name: string) => {
+    const existing = tabs.find((t) => t.id === sessionId)
+    if (existing) {
+      setActiveTab(sessionId)
+      return
+    }
+    setTabs((prev) => [...prev, { id: sessionId, title: name || "Chat", kind: "chat" }])
+    setActiveTab(sessionId)
+  }
+
+  const deleteChat = async (sessionId: string) => {
+    try { await deleteSession(sessionId) } catch {}
+    setTabs((prev) => prev.filter((t) => t.id !== sessionId))
+    if (activeTab === sessionId) setActiveTab("chat")
+    await refreshSessions()
+  }
 
   const tree = tauriAgent.fileTree || sampleTree
   const active = tabs.find((tab) => tab.id === activeTab) || tabs[0]
@@ -295,10 +325,36 @@ export function ModelerWorkbench({ projectId }: { projectId: string }) {
             </button>
           )}
           {activeActivity === "chat" && (
-            <button className="flex h-8 w-full items-center gap-2 px-3 text-left text-xs text-[#e8e8e8]" onClick={() => setActiveTab("chat")}>
-              <Bot className="h-4 w-4 text-[#d4a574]" />
-              Default
-            </button>
+            <>
+              <button
+                onClick={() => { refreshSessions(); newChat() }}
+                className="flex h-8 w-full items-center gap-2 px-3 text-left text-xs text-[#b4b4b4] hover:bg-[#232323] hover:text-[#e8e8e8] transition-colors"
+              >
+                <span className="text-[#d4a574]">+</span>
+                New Chat
+              </button>
+              <div className="py-1">
+                {sessions.length === 0 ? (
+                  <p className="px-3 py-4 text-center text-xs text-[#787878]">No conversations yet</p>
+                ) : sessions.map((s) => (
+                  <button
+                    key={s.id}
+                    onClick={() => { refreshSessions(); switchToChat(s.id, s.name || "Chat") }}
+                    className="group flex h-8 w-full items-center gap-2 px-3 text-left text-xs text-[#b4b4b4] hover:bg-[#232323] hover:text-[#e8e8e8] transition-colors"
+                  >
+                    <MessageSquare className="h-3.5 w-3.5 text-[#d4a574]" />
+                    <span className="flex-1 truncate">{s.name || new Date(s.created_at * 1000).toLocaleDateString()}</span>
+                    <span className="hidden text-[#787878] group-hover:inline-flex">{s.message_count}</span>
+                    <button
+                      className="ml-1 hidden h-4 w-4 items-center justify-center rounded text-[#787878] hover:bg-[#373737] hover:text-[#f44336] group-hover:flex"
+                      onClick={(e) => { e.stopPropagation(); deleteChat(s.id) }}
+                    >
+                      ✕
+                    </button>
+                  </button>
+                ))}
+              </div>
+            </>
           )}
           {activeActivity === "settings" && <div className="p-3 text-xs text-[#787878]">Local configuration</div>}
         </ScrollArea>
@@ -341,7 +397,7 @@ export function ModelerWorkbench({ projectId }: { projectId: string }) {
           {activeActivity === "settings" ? (
             <SettingsPanel />
           ) : active?.kind === "chat" ? (
-            <ChatPanel />
+            <ChatPanel conversationId={active.id} />
           ) : active?.kind === "research" ? (
             <ResearchLibrary projectId={projectId} />
           ) : active?.kind === "file" ? (
