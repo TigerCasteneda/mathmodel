@@ -22,7 +22,51 @@ pub struct ChatErrorEvent {
     pub message: String,
 }
 
-const MAX_TOOL_ROUNDS: usize = 5;
+/// Approximate max tokens to send per request. Model-dependent;
+/// DeepSeek supports up to ~128K but we conservatively trim at 96K to
+/// leave room for the model response + tool call overhead.
+const MAX_CONTEXT_TOKENS: usize = 96_000;
+
+/// Rough token estimate: ~1.3 chars per token for English + code.
+fn estimate_tokens(text: &str) -> usize {
+    (text.len() as f64 / 1.3) as usize
+}
+
+/// Trim `messages` to fit within `MAX_CONTEXT_TOKENS`, preserving the
+/// system prompt (always first) and recent conversation history.
+fn trim_context(mut messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
+    let system = messages.first().filter(|m| m.role == "system").cloned();
+    let rest: Vec<_> = if system.is_some() {
+        messages.split_off(1)
+    } else {
+        messages
+    };
+
+    let system_tokens = system.as_ref().map(|s| s.content.as_deref().map(estimate_tokens).unwrap_or(0)).unwrap_or(0);
+    let mut budget = MAX_CONTEXT_TOKENS.saturating_sub(system_tokens);
+
+    // Keep recent messages; drop oldest non-system messages first
+    let mut kept = Vec::new();
+    for msg in rest.into_iter().rev() {
+        let tokens = msg.content.as_deref().map(estimate_tokens).unwrap_or(0)
+            + msg.tool_calls.as_ref().map(|tc| tc.len() * 20).unwrap_or(0);
+        if tokens <= budget {
+            budget = budget.saturating_sub(tokens);
+            kept.push(msg);
+        } else {
+            break; // stop — older messages would exceed budget
+        }
+    }
+    kept.reverse();
+
+    if let Some(sys) = system {
+        let mut out = vec![sys];
+        out.extend(kept);
+        out
+    } else {
+        kept
+    }
+}
 
 #[tauri::command]
 pub fn set_ai_config(config: AiConfig, state: State<'_, AiConfigState>) -> Result<(), String> {
@@ -67,11 +111,10 @@ pub async fn ai_chat(
     let mut messages = vec![ChatMessage::system(system_prompt())];
     messages.extend(sessions.history(&conversation_id)?);
 
-    let mut tool_rounds = 0;
-
     loop {
+        let trimmed = trim_context(messages.clone());
         let response = client
-            .chat_stream(messages.clone(), Some(tools.clone()))
+            .chat_stream(trimmed, Some(tools.clone()))
             .await
             .map_err(|e| {
                 let msg = format!("API request failed: {e}");
@@ -163,13 +206,7 @@ pub async fn ai_chat(
 
             sessions.push_assistant(&conversation_id, format!("{assistant_text}\n\n[Executed {tool_count} tool(s)]"))?;
 
-            tool_rounds += 1;
-            if tool_rounds >= MAX_TOOL_ROUNDS {
-                sessions.push_assistant(&conversation_id, "[Tool loop limit reached]")?;
-                emit_stream(&app, &conversation_id, String::new(), true);
-                return Ok(());
-            }
-            // Continue loop — send tool results back to LLM
+            // Continue loop — send tool results back to LLM (no hard limit)
             continue;
         }
 
