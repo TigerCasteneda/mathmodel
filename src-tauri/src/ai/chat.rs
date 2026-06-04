@@ -2,7 +2,6 @@ use super::config::{AiConfig, AiConfigState, AiConfigStatus};
 use super::session::ChatSessionStore;
 use super::tools::{execute_tool, modeler_tool_definitions};
 use crate::agent::state::AgentState;
-use claude_code_rs::api::StreamChunk;
 use claude_code_rs::{ApiClient, ChatMessage};
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};

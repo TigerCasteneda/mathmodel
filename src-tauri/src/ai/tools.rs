@@ -1,7 +1,7 @@
 use crate::agent::state::AgentState;
-use claude_code_rs::api::{ChatMessage, ToolDefinition};
+use claude_code_rs::api::ToolDefinition;
 use serde_json::{json, Value};
-use tauri::State;
+use tauri::{Emitter, State};
 
 pub fn modeler_tool_definitions() -> Vec<ToolDefinition> {
     vec![
