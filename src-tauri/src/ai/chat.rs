@@ -53,6 +53,19 @@ fn estimate_tokens(text: &str) -> usize {
     (text.len() as f64 / 1.3) as usize
 }
 
+fn format_file_tree(item: &crate::agent::file_watcher::FileTreeItem, depth: usize) -> String {
+    let indent = "  ".repeat(depth);
+    let node_str = if item.node_type == "folder" {
+        format!("{indent}{}/", item.name)
+    } else {
+        format!("{indent}{}", item.name)
+    };
+    let children = item.children.as_ref()
+        .map(|c| c.iter().map(|ch| format_file_tree(ch, depth + 1)).collect::<Vec<_>>().join("\n"))
+        .unwrap_or_default();
+    if children.is_empty() { node_str } else { format!("{node_str}\n{children}") }
+}
+
 /// Trim `messages` to fit within `MAX_CONTEXT_TOKENS`, preserving the
 /// system prompt (always first) and recent conversation history.
 fn trim_context(mut messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
@@ -126,10 +139,15 @@ pub async fn ai_chat(
         .map_err(|e| e.to_string())?
         .clone();
 
-    let client = ApiClient::new(config.to_claude_settings(work_dir));
+    let client = ApiClient::new(config.to_claude_settings(work_dir.clone()));
     let tools = modeler_tool_definitions();
 
-    let mut messages = vec![ChatMessage::system(system_prompt())];
+    let tree_text = match crate::agent::file_watcher::scan_tree(&work_dir) {
+        Ok(tree) => format_file_tree(&tree, 0),
+        Err(_) => String::from("(file tree unavailable)"),
+    };
+
+    let mut messages = vec![ChatMessage::system(system_prompt(&tree_text))];
     messages.extend(sessions.history(&conversation_id)?);
 
     loop {
@@ -240,8 +258,16 @@ pub async fn ai_chat(
     }
 }
 
-fn system_prompt() -> String {
-    "You are Modeler AI, a mathematical modeling assistant embedded in a collaborative platform for MCM/ICM competition teams. You can search the web, fetch page content, read/write files, and save references. Provide mathematical reasoning, cite sources, and save valuable findings to the Research Library using the save_reference tool.".to_string()
+fn system_prompt(file_tree: &str) -> String {
+    format!(
+        "You are Modeler AI, a mathematical modeling assistant embedded in a collaborative platform for MCM/ICM competition teams.\n\
+         You can search the web, fetch page content, read/write files, and save references.\n\
+         Provide mathematical reasoning, cite sources, and save valuable findings to the Research Library using the save_reference tool.\n\
+         \n\
+         ## Current project files\n\
+         Use read_file(path) to see file contents, write_file(path, content) to create/overwrite.\n\
+         {file_tree}"
+    )
 }
 
 fn emit_stream(app: &AppHandle, conversation_id: &str, content: String, done: bool) {
