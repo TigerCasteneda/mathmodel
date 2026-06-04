@@ -16,6 +16,28 @@ pub struct ChatStreamEvent {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct ChatThinkingEvent {
+    pub conversation_id: String,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ChatToolCallEvent {
+    pub conversation_id: String,
+    pub name: String,
+    pub arguments: serde_json::Value,
+    pub output: String,
+    pub status: String, // "running" | "success" | "error"
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ChatTokenUsage {
+    pub conversation_id: String,
+    pub prompt_tokens: usize,
+    pub completion_tokens: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct ChatErrorEvent {
     pub conversation_id: String,
     pub message: String,
@@ -197,13 +219,15 @@ pub async fn ai_chat(
             for tc in &tool_calls {
                 let args: serde_json::Value = serde_json::from_str(&tc.function.arguments)
                     .unwrap_or(serde_json::json!({}));
+                emit_tool(&app, &conversation_id, &tc.function.name, &args, "", "running");
                 let result = execute_tool(&tc.function.name, &args, &agent_state).await;
-                emit_stream(&app, &conversation_id, format!("\n\n🔧 **{}**\n{result}\n", tc.function.name), false);
+                let status = if result.starts_with("Error") { "error" } else { "success" };
+                emit_tool(&app, &conversation_id, &tc.function.name, &args, &result, status);
                 messages.push(ChatMessage::tool(&tc.id, result));
                 tool_count += 1;
             }
 
-            sessions.push_assistant(&conversation_id, format!("{assistant_text}\n\n[Executed {tool_count} tool(s)]"))?;
+            sessions.push_assistant(&conversation_id, assistant_text)?;
 
             // Continue loop — send tool results back to LLM (no hard limit)
             continue;
@@ -227,6 +251,26 @@ fn emit_stream(app: &AppHandle, conversation_id: &str, content: String, done: bo
             conversation_id: conversation_id.to_string(),
             content,
             done,
+        },
+    );
+}
+
+fn emit_tool(
+    app: &AppHandle,
+    conversation_id: &str,
+    name: &str,
+    arguments: &serde_json::Value,
+    output: &str,
+    status: &str,
+) {
+    let _ = app.emit(
+        "chat:tool_call",
+        ChatToolCallEvent {
+            conversation_id: conversation_id.to_string(),
+            name: name.to_string(),
+            arguments: arguments.clone(),
+            output: output.to_string(),
+            status: status.to_string(),
         },
     );
 }

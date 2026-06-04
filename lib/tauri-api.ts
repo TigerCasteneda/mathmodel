@@ -207,8 +207,20 @@ export function onWorkDirChanged(callback: (path: string) => void): () => void {
   return listenEvent<WorkDirEvent>("work-dir", (e) => callback(e.path))
 }
 
+export interface ChatToolCallEvent {
+  conversation_id: string
+  name: string
+  arguments: Record<string, unknown>
+  output: string
+  status: string
+}
+
 export function onChatStream(callback: (event: ChatStreamEvent) => void): () => void {
   return listenEvent<ChatStreamEvent>("chat:stream", callback)
+}
+
+export function onChatToolCall(callback: (event: ChatToolCallEvent) => void): () => void {
+  return listenEvent<ChatToolCallEvent>("chat:tool_call", callback)
 }
 
 export function onChatError(callback: (event: ChatErrorEvent) => void): () => void {
