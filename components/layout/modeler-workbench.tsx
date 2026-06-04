@@ -375,8 +375,9 @@ export function ModelerWorkbench({ projectId }: { projectId: string }) {
             >
               {tab.kind === "chat" ? <MessageSquare className="h-4 w-4" /> : tab.kind === "research" ? <BookOpen className="h-4 w-4" /> : <FileCode className="h-4 w-4" />}
               <span className="truncate">{tab.title}</span>
-              <button
-                className="ml-1 flex h-4 w-4 items-center justify-center rounded hover:bg-[#373737]"
+              <span
+                role="button"
+                className="ml-1 flex h-4 w-4 items-center justify-center rounded hover:bg-[#373737] cursor-pointer"
                 onClick={(e) => {
                   e.stopPropagation()
                   setTabs((prev) => {
@@ -389,7 +390,7 @@ export function ModelerWorkbench({ projectId }: { projectId: string }) {
                 }}
               >
                 ✕
-              </button>
+              </span>
             </button>
           ))}
         </div>
