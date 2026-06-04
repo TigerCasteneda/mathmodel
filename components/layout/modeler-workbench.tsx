@@ -136,7 +136,7 @@ function SettingsPanel() {
   const save = async () => {
     await setAiConfig({
       api_key: apiKey || null,
-      base_url: "https://api.deepseek.com/anthropic",
+      base_url: "https://api.deepseek.com",
       model,
       firecrawl_api_key: null,
       searxng_url: "http://localhost:8080",

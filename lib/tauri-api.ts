@@ -144,7 +144,7 @@ export async function getAiConfigStatus(): Promise<AiConfigStatus> {
   if (!isTauri()) {
     return {
       configured: false,
-      base_url: "https://api.deepseek.com/anthropic",
+      base_url: "https://api.deepseek.com",
       model: "deepseek-v4-pro",
       firecrawl_configured: false,
       searxng_url: "http://localhost:8080",

@@ -16,7 +16,7 @@ impl Default for AiConfig {
     fn default() -> Self {
         Self {
             api_key: None,
-            base_url: "https://api.deepseek.com/anthropic".to_string(),
+            base_url: "https://api.deepseek.com".to_string(),
             model: "deepseek-v4-pro".to_string(),
             firecrawl_api_key: None,
             searxng_url: "http://localhost:8080".to_string(),

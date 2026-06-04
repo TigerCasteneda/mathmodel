@@ -48,7 +48,7 @@ pub fn build_router(state: AppState) -> Router {
 /// Spawns the server in a background tokio task.
 pub async fn serve(state: AppState) -> anyhow::Result<u16> {
     let app = build_router(state);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:0").await?;
     let port = listener.local_addr()?.port();
     tokio::spawn(async move {
         if let Err(e) = axum::serve(listener, app).await {
