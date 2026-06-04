@@ -44,3 +44,4 @@ out/
 claude-code-rust/
 server/target-tauri/
 src-tauri/gen/
+src-tauri/gen/
