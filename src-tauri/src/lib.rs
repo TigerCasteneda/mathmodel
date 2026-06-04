@@ -45,11 +45,13 @@ pub fn run() {
             app.manage(ServerPort(port));
             Ok(())
         })
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             agent::commands::list_files,
             agent::commands::read_file,
             agent::commands::create_file,
             agent::commands::change_work_dir,
+            agent::commands::open_folder,
             ai::chat::set_ai_config,
             ai::chat::get_ai_config_status,
             ai::chat::ai_chat,

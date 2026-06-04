@@ -43,3 +43,4 @@ sessions.md
 out/
 claude-code-rust/
 server/target-tauri/
+src-tauri/gen/

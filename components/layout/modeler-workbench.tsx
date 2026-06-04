@@ -270,9 +270,20 @@ export function ModelerWorkbench({ projectId }: { projectId: string }) {
         </div>
         <ScrollArea className="min-h-0 flex-1">
           {activeActivity === "explorer" && (
-            <div className="py-1">
-              <FileNode item={tree} depth={0} activePath={activeFilePath} onOpen={openFile} />
-            </div>
+            <>
+              <div className="border-b border-[#373737] px-3 py-2">
+                <button
+                  onClick={() => tauriAgent.openFolder()}
+                  className="flex w-full items-center gap-2 rounded-md border border-[#373737] bg-[#232323] px-3 py-1.5 text-xs text-[#b4b4b4] hover:border-[#d4a574] hover:text-[#e8e8e8] transition-colors"
+                >
+                  <FolderOpen className="h-3.5 w-3.5 text-[#d4a574]" />
+                  Open Folder
+                </button>
+              </div>
+              <div className="py-1">
+                <FileNode item={tree} depth={0} activePath={activeFilePath} onOpen={openFile} />
+              </div>
+            </>
           )}
           {activeActivity === "research" && (
             <button className="flex h-8 w-full items-center gap-2 px-3 text-left text-xs text-[#e8e8e8]" onClick={() => {

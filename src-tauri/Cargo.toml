@@ -8,15 +8,21 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+rfd = "0.15"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
+
+# HTTP client for tool calls
+reqwest = { version = "0.12", features = ["json"] }
 
 # Local workspace services
 notify = "7"
 anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = "0.3"
+chrono = "0.4"
 futures = "0.3"
 claude_code_rs = { path = "../claude-code-rust", default-features = false }
 

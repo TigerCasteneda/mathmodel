@@ -153,6 +153,11 @@ export async function getAiConfigStatus(): Promise<AiConfigStatus> {
   return invoke<AiConfigStatus>("get_ai_config_status")
 }
 
+export async function openFolder(): Promise<string | null> {
+  if (!isTauri()) return null
+  return invoke<string | null>("open_folder")
+}
+
 export async function aiChat(message: string, conversationId = "default"): Promise<void> {
   if (!isTauri()) return
   return invoke("ai_chat", { message, conversationId })

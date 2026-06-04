@@ -1,11 +1,12 @@
 use super::config::{AiConfig, AiConfigState, AiConfigStatus};
 use super::session::ChatSessionStore;
-use super::tools::modeler_tool_definitions;
+use super::tools::{execute_tool, modeler_tool_definitions};
 use crate::agent::state::AgentState;
 use claude_code_rs::api::StreamChunk;
 use claude_code_rs::{ApiClient, ChatMessage};
 use futures::StreamExt;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use tauri::{AppHandle, Emitter, State};
 
 #[derive(Debug, Clone, Serialize)]
@@ -20,6 +21,8 @@ pub struct ChatErrorEvent {
     pub conversation_id: String,
     pub message: String,
 }
+
+const MAX_TOOL_ROUNDS: usize = 5;
 
 #[tauri::command]
 pub fn set_ai_config(config: AiConfig, state: State<'_, AiConfigState>) -> Result<(), String> {
@@ -58,65 +61,127 @@ pub async fn ai_chat(
         .map_err(|e| e.to_string())?
         .clone();
 
+    let client = ApiClient::new(config.to_claude_settings(work_dir));
+    let tools = modeler_tool_definitions();
+
     let mut messages = vec![ChatMessage::system(system_prompt())];
     messages.extend(sessions.history(&conversation_id)?);
 
-    let client = ApiClient::new(config.to_claude_settings(work_dir));
-    let response = client
-        .chat_stream(messages, Some(modeler_tool_definitions()))
-        .await
-        .map_err(|e| {
-            let message = format!("API request failed: {e}");
-            emit_chat_error(&app, &conversation_id, &message);
-            message
-        })?;
+    let mut tool_rounds = 0;
 
-    if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        let message = format!("API error ({status}): {body}");
-        emit_chat_error(&app, &conversation_id, &message);
-        return Err(message);
-    }
+    loop {
+        let response = client
+            .chat_stream(messages.clone(), Some(tools.clone()))
+            .await
+            .map_err(|e| {
+                let msg = format!("API request failed: {e}");
+                emit_chat_error(&app, &conversation_id, &msg);
+                msg
+            })?;
 
-    let mut stream = response.bytes_stream();
-    let mut buffer = String::new();
-    let mut assistant = String::new();
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            let msg = format!("API error ({status}): {body}");
+            emit_chat_error(&app, &conversation_id, &msg);
+            return Err(msg);
+        }
 
-    while let Some(chunk) = stream.next().await {
-        let bytes = chunk.map_err(|e| {
-            let message = format!("Stream error: {e}");
-            emit_chat_error(&app, &conversation_id, &message);
-            message
-        })?;
-        buffer.push_str(&String::from_utf8_lossy(&bytes));
+        let mut stream = response.bytes_stream();
+        let mut buffer = String::new();
+        let mut assistant_text = String::new();
 
-        while let Some(idx) = buffer.find('\n') {
-            let line = buffer[..idx].trim_end_matches('\r').to_string();
-            buffer = buffer[idx + 1..].to_string();
+        // Accumulated tool calls: index → {id, name, arguments}
+        let mut tool_call_buf: HashMap<i64, ToolCallAccum> = HashMap::new();
+        let mut finish_reason: Option<String> = None;
 
-            match parse_sse_line(&line) {
-                StreamLine::Content(content) => {
-                    assistant.push_str(&content);
-                    emit_stream(&app, &conversation_id, content, false);
+        while let Some(chunk) = stream.next().await {
+            let bytes = chunk.map_err(|e| {
+                let msg = format!("Stream error: {e}");
+                emit_chat_error(&app, &conversation_id, &msg);
+                msg
+            })?;
+            buffer.push_str(&String::from_utf8_lossy(&bytes));
+
+            while let Some(idx) = buffer.find('\n') {
+                let line = buffer[..idx].trim_end_matches('\r').to_string();
+                buffer = buffer[idx + 1..].to_string();
+
+                match parse_sse_line(&line) {
+                    StreamLine::Content(content) => {
+                        assistant_text.push_str(&content);
+                        emit_stream(&app, &conversation_id, content, false);
+                    }
+                    StreamLine::ToolCall(tc) => {
+                        let entry = tool_call_buf.entry(tc.index).or_insert_with(|| ToolCallAccum {
+                            id: String::new(),
+                            name: String::new(),
+                            arguments: String::new(),
+                        });
+                        if let Some(id) = tc.id { entry.id = id; }
+                        if let Some(name) = tc.name { entry.name = name; }
+                        if let Some(args) = tc.arguments { entry.arguments.push_str(&args); }
+                    }
+                    StreamLine::Finish(reason) => {
+                        finish_reason = Some(reason);
+                    }
+                    StreamLine::Done => {
+                        finish_reason = Some("stop".to_string());
+                    }
+                    StreamLine::Ignore => {}
                 }
-                StreamLine::Done => {
-                    sessions.push_assistant(&conversation_id, assistant)?;
-                    emit_stream(&app, &conversation_id, String::new(), true);
-                    return Ok(());
-                }
-                StreamLine::Ignore => {}
             }
         }
-    }
 
-    sessions.push_assistant(&conversation_id, assistant)?;
-    emit_stream(&app, &conversation_id, String::new(), true);
-    Ok(())
+        // Handle tool calls
+        if finish_reason.as_deref() == Some("tool_calls") && !tool_call_buf.is_empty() {
+            // Build assistant message with tool_calls
+            let tool_calls: Vec<claude_code_rs::api::ToolCall> = tool_call_buf
+                .values()
+                .map(|tc| claude_code_rs::api::ToolCall {
+                    id: tc.id.clone(),
+                    r#type: "function".to_string(),
+                    function: claude_code_rs::api::ToolCallFunction {
+                        name: tc.name.clone(),
+                        arguments: tc.arguments.clone(),
+                    },
+                })
+                .collect();
+
+            messages.push(ChatMessage::assistant_with_tools(tool_calls.clone()));
+
+            // Execute each tool and add results
+            let mut tool_count = 0;
+            for tc in &tool_calls {
+                let args: serde_json::Value = serde_json::from_str(&tc.function.arguments)
+                    .unwrap_or(serde_json::json!({}));
+                let result = execute_tool(&tc.function.name, &args, &agent_state).await;
+                emit_stream(&app, &conversation_id, format!("\n\n🔧 **{}**\n{result}\n", tc.function.name), false);
+                messages.push(ChatMessage::tool(&tc.id, result));
+                tool_count += 1;
+            }
+
+            sessions.push_assistant(&conversation_id, format!("{assistant_text}\n\n[Executed {tool_count} tool(s)]"))?;
+
+            tool_rounds += 1;
+            if tool_rounds >= MAX_TOOL_ROUNDS {
+                sessions.push_assistant(&conversation_id, "[Tool loop limit reached]")?;
+                emit_stream(&app, &conversation_id, String::new(), true);
+                return Ok(());
+            }
+            // Continue loop — send tool results back to LLM
+            continue;
+        }
+
+        // Normal completion (no tool calls, or finish_reason is "stop")
+        sessions.push_assistant(&conversation_id, assistant_text)?;
+        emit_stream(&app, &conversation_id, String::new(), true);
+        return Ok(());
+    }
 }
 
 fn system_prompt() -> String {
-    "You are Modeler AI, a mathematical modeling assistant embedded in a collaborative platform for MCM/ICM competition teams. Provide mathematical reasoning, cite sources when available, and save valuable findings to the Research Library.".to_string()
+    "You are Modeler AI, a mathematical modeling assistant embedded in a collaborative platform for MCM/ICM competition teams. You can search the web, fetch page content, read/write files, and save references. Provide mathematical reasoning, cite sources, and save valuable findings to the Research Library using the save_reference tool.".to_string()
 }
 
 fn emit_stream(app: &AppHandle, conversation_id: &str, content: String, done: bool) {
@@ -140,11 +205,28 @@ fn emit_chat_error(app: &AppHandle, conversation_id: &str, message: &str) {
     );
 }
 
+#[derive(Debug, Default)]
+struct ToolCallAccum {
+    id: String,
+    name: String,
+    arguments: String,
+}
+
 #[derive(Debug, PartialEq)]
 enum StreamLine {
     Content(String),
+    ToolCall(ToolCallChunk),
+    Finish(String),
     Done,
     Ignore,
+}
+
+#[derive(Debug, PartialEq)]
+struct ToolCallChunk {
+    index: i64,
+    id: Option<String>,
+    name: Option<String>,
+    arguments: Option<String>,
 }
 
 fn parse_sse_line(line: &str) -> StreamLine {
@@ -155,16 +237,70 @@ fn parse_sse_line(line: &str) -> StreamLine {
         return StreamLine::Done;
     }
 
-    let Ok(chunk) = serde_json::from_str::<StreamChunk>(data) else {
+    let Ok(chunk) = serde_json::from_str::<ExtendedStreamChunk>(data) else {
         return StreamLine::Ignore;
     };
 
-    chunk
-        .choices
-        .first()
-        .and_then(|choice| choice.delta.content.clone())
-        .map(StreamLine::Content)
-        .unwrap_or(StreamLine::Ignore)
+    if let Some(choice) = chunk.choices.first() {
+        // Check finish_reason
+        if let Some(ref reason) = choice.finish_reason {
+            return StreamLine::Finish(reason.clone());
+        }
+
+        // Check text content
+        if let Some(ref content) = choice.delta.content {
+            return StreamLine::Content(content.clone());
+        }
+
+        // Check tool calls
+        if let Some(ref tcs) = choice.delta.tool_calls {
+            for tc in tcs {
+                let chunk = ToolCallChunk {
+                    index: tc.index,
+                    id: tc.id.clone(),
+                    name: tc.function.as_ref().and_then(|f| f.name.clone()),
+                    arguments: tc.function.as_ref().and_then(|f| f.arguments.clone()),
+                };
+                return StreamLine::ToolCall(chunk);
+            }
+        }
+    }
+
+    StreamLine::Ignore
+}
+
+/// Extended stream chunk with tool_call support (not in upstream claude_code_rs).
+#[derive(Debug, Deserialize)]
+struct ExtendedStreamChunk {
+    choices: Vec<ExtendedChoice>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ExtendedChoice {
+    delta: ExtendedDelta,
+    #[serde(default)]
+    finish_reason: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ExtendedDelta {
+    content: Option<String>,
+    #[serde(default)]
+    tool_calls: Option<Vec<ExtendedToolCall>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ExtendedToolCall {
+    index: i64,
+    #[serde(default)]
+    id: Option<String>,
+    function: Option<ExtendedFunction>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ExtendedFunction {
+    name: Option<String>,
+    arguments: Option<String>,
 }
 
 #[cfg(test)]
@@ -174,12 +310,25 @@ mod tests {
     #[test]
     fn parses_openai_compatible_stream_content() {
         let line = r#"data: {"id":"1","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"content":"hello"},"finish_reason":null}]}"#;
-
         assert_eq!(parse_sse_line(line), StreamLine::Content("hello".to_string()));
     }
 
     #[test]
     fn parses_done_marker() {
         assert_eq!(parse_sse_line("data: [DONE]"), StreamLine::Done);
+    }
+
+    #[test]
+    fn parses_tool_call_delta() {
+        let line = r#"data: {"id":"1","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"web_search","arguments":"{\"query\":\"SIR\"}"}}]},"finish_reason":null}]}"#;
+        match parse_sse_line(line) {
+            StreamLine::ToolCall(tc) => {
+                assert_eq!(tc.index, 0);
+                assert_eq!(tc.id.as_deref(), Some("call_1"));
+                assert_eq!(tc.name.as_deref(), Some("web_search"));
+                assert_eq!(tc.arguments.as_deref(), Some("{\"query\":\"SIR\"}"));
+            }
+            other => panic!("expected ToolCall, got {other:?}"),
+        }
     }
 }

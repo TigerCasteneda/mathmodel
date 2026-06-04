@@ -103,6 +103,15 @@ export function useTauriAgent() {
     await tauriApi.createFile(path, content)
   }, [])
 
+  const openFolder = useCallback(async () => {
+    const path = await tauriApi.openFolder()
+    if (!path) return null
+    setWorkDir(path)
+    const tree = await tauriApi.listFiles()
+    setFileTree(tree)
+    return path
+  }, [])
+
   const changeDir = useCallback(async (path: string) => {
     const tree = await tauriApi.changeWorkDir(path)
     setFileTree(tree)
@@ -136,6 +145,7 @@ export function useTauriAgent() {
     resizeTerminal,
     openFile,
     createFile: createFile_,
+    openFolder,
     changeDir,
     refreshFileTree,
     onTerminalData,

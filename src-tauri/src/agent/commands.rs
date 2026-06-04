@@ -4,7 +4,7 @@ use crate::agent::state::AgentState;
 use std::path::{Component, PathBuf};
 use tauri::{Emitter, State};
 
-fn validate_create_path(work_dir: &std::path::Path, relative_path: &str) -> Result<PathBuf, String> {
+pub fn validate_and_resolve_path(work_dir: &std::path::Path, relative_path: &str) -> Result<PathBuf, String> {
     let rel = std::path::Path::new(relative_path);
     if rel.is_absolute() {
         return Err("absolute path rejected".into());
@@ -50,7 +50,7 @@ pub async fn create_file(
     state: State<'_, AgentState>,
 ) -> Result<(), String> {
     let work_dir = state.work_dir.lock().map_err(|e| e.to_string())?.clone();
-    let resolved = validate_create_path(&work_dir, &path)?;
+    let resolved = validate_and_resolve_path(&work_dir, &path)?;
     if let Some(parent) = resolved.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("{e:#}"))?;
     }
@@ -89,14 +89,44 @@ pub async fn change_work_dir(
     Ok(tree)
 }
 
+#[tauri::command]
+pub async fn open_folder(state: State<'_, AgentState>) -> Result<Option<String>, String> {
+    let folder = rfd::AsyncFileDialog::new()
+        .pick_folder()
+        .await
+        .map(|handle| handle.path().to_string_lossy().to_string());
+
+    if let Some(ref path) = folder {
+        let new_dir = PathBuf::from(path);
+        {
+            let mut work_dir = state.work_dir.lock().map_err(|e| e.to_string())?;
+            *work_dir = new_dir.clone();
+        }
+        let _ = state.app_handle.emit(
+            "work-dir",
+            AgentEvent::WorkDir {
+                path: path.clone(),
+            },
+        );
+        if let Ok(tree) = file_watcher::scan_tree(&new_dir) {
+            let _ = state.app_handle.emit(
+                "file-tree",
+                AgentEvent::FileTree { tree },
+            );
+        }
+    }
+
+    Ok(folder)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::validate_create_path;
+    use super::validate_and_resolve_path;
     use std::path::Path;
 
     #[test]
     fn rejects_path_traversal() {
-        let err = validate_create_path(Path::new("."), "../outside.txt").unwrap_err();
+        let err = validate_and_resolve_path(Path::new("."), "../outside.txt").unwrap_err();
         assert!(err.contains("traversal"));
     }
 }
