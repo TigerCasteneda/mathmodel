@@ -22,14 +22,16 @@ pub fn run() {
                 app_handle: app.handle().clone(),
             });
             app.manage(AiConfigState::default());
-            app.manage(ai::session::ChatSessionStore::default());
 
-            // ── Embedded server startup ──
-            let handle = app.handle().clone();
-            let data_dir = app
+            let app_data = app
                 .path()
                 .app_data_dir()
                 .unwrap_or_else(|_| PathBuf::from("data"));
+            app.manage(ai::session::ChatSessionStore::new(app_data.clone()));
+
+            // ── Embedded server startup ──
+            let handle = app.handle().clone();
+            let data_dir = app_data;
 
             let port = tauri::async_runtime::block_on(async { start_server(data_dir).await })
                 .unwrap_or_else(|e| {
@@ -55,6 +57,9 @@ pub fn run() {
             ai::chat::set_ai_config,
             ai::chat::get_ai_config_status,
             ai::chat::ai_chat,
+            ai::session::list_sessions,
+            ai::session::load_session,
+            ai::session::delete_session,
             get_server_port,
         ])
         .run(tauri::generate_context!())

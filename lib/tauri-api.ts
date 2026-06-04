@@ -214,3 +214,41 @@ export function onChatStream(callback: (event: ChatStreamEvent) => void): () => 
 export function onChatError(callback: (event: ChatErrorEvent) => void): () => void {
   return listenEvent<ChatErrorEvent>("chat:error", callback)
 }
+
+// ─── Sessions ────────────────────────────────────────
+
+export interface SessionInfo {
+  id: string
+  name: string
+  created_at: number
+  message_count: number
+}
+
+export interface Session {
+  id: string
+  name: string
+  created_at: number
+  updated_at: number
+  messages: SessionMessage[]
+}
+
+export interface SessionMessage {
+  role: string
+  content: string
+  timestamp: number
+}
+
+export async function listSessions(): Promise<SessionInfo[]> {
+  if (!isTauri()) return []
+  return invoke<SessionInfo[]>("list_sessions")
+}
+
+export async function loadSession(conversationId?: string): Promise<Session> {
+  if (!isTauri()) return { id: "default", name: "New Chat", created_at: 0, updated_at: 0, messages: [] }
+  return invoke<Session>("load_session", { conversationId: conversationId || null })
+}
+
+export async function deleteSession(conversationId: string): Promise<void> {
+  if (!isTauri()) return
+  return invoke("delete_session", { conversationId })
+}

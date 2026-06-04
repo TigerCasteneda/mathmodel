@@ -311,12 +311,29 @@ export function ModelerWorkbench({ projectId }: { projectId: string }) {
               key={tab.id}
               onClick={() => setActiveTab(tab.id)}
               className={cn(
-                "flex h-full min-w-32 items-center gap-2 border-r border-[#373737] px-3 text-xs text-[#b4b4b4]",
-                activeTab === tab.id && "bg-[#0d0d0d] text-[#e8e8e8]",
+                "flex h-full min-w-32 items-center gap-2 border-r border-[#373737] px-3 text-xs",
+                activeTab === tab.id
+                  ? "bg-[#0d0d0d] text-[#e8e8e8]"
+                  : "text-[#b4b4b4] hover:bg-[#232323]",
               )}
             >
               {tab.kind === "chat" ? <MessageSquare className="h-4 w-4" /> : tab.kind === "research" ? <BookOpen className="h-4 w-4" /> : <FileCode className="h-4 w-4" />}
               <span className="truncate">{tab.title}</span>
+              <button
+                className="ml-1 flex h-4 w-4 items-center justify-center rounded hover:bg-[#373737]"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  setTabs((prev) => {
+                    const next = prev.filter((t) => t.id !== tab.id)
+                    if (activeTab === tab.id && next.length > 0) {
+                      setActiveTab(next[Math.min(prev.indexOf(tab), next.length - 1)].id)
+                    }
+                    return next
+                  })
+                }}
+              >
+                ✕
+              </button>
             </button>
           ))}
         </div>

@@ -5,7 +5,7 @@ import { Bot, Send, UserRound } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
 import { cn } from "@/lib/utils"
-import { aiChat, onChatError, onChatStream } from "@/lib/tauri-api"
+import { aiChat, loadSession, onChatError, onChatStream } from "@/lib/tauri-api"
 
 type Message = {
   id: string
@@ -18,6 +18,24 @@ export function ChatPanel({ conversationId = "default" }: { conversationId?: str
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState("")
   const [sending, setSending] = useState(false)
+  const [loaded, setLoaded] = useState(false)
+
+  // Load persisted session on mount / conversation change
+  useEffect(() => {
+    setLoaded(false)
+    loadSession(conversationId).then((session) => {
+      const restored: Message[] = (session.messages || []).map((m) => ({
+        id: crypto.randomUUID(),
+        role: m.role as Message["role"],
+        content: m.content,
+      }))
+      setMessages(restored)
+      setLoaded(true)
+    }).catch(() => {
+      setMessages([])
+      setLoaded(true)
+    })
+  }, [conversationId])
 
   useEffect(() => {
     const offStream = onChatStream((event) => {
