@@ -15,6 +15,7 @@ pub struct ProjectWithRole {
     pub name: String,
     pub owner_id: String,
     pub role: String,
+    pub capabilities: String,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -35,6 +36,7 @@ pub struct ProjectMember {
     pub email: String,
     pub display_name: String,
     pub role: String,
+    pub capabilities: String,
     pub joined_at: i64,
 }
 
@@ -42,15 +44,37 @@ pub struct ProjectMember {
 pub struct CreateInviteRequest {
     pub max_uses: Option<i32>,
     pub expires_in_hours: Option<i64>,
+    pub role: Option<String>,
+    pub capabilities: Option<Vec<String>>,
 }
 
 #[derive(Debug, Serialize)]
 pub struct InviteCodeResponse {
     pub code: String,
     pub expires_at: Option<i64>,
+    pub role: String,
+    pub capabilities: Vec<String>,
+}
+
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct ProjectInvite {
+    pub id: String,
+    pub code: String,
+    pub max_uses: i32,
+    pub used_count: i32,
+    pub expires_at: Option<i64>,
+    pub created_at: i64,
+    pub role: String,
+    pub capabilities: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct JoinRequest {
     pub code: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateMemberRequest {
+    pub role: Option<String>,
+    pub capabilities: Option<Vec<String>>,
 }

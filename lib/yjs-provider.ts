@@ -1,5 +1,5 @@
 import * as Y from "yjs"
-import { getToken } from "@/lib/api"
+import { getToken, getWebSocketBase } from "@/lib/api"
 
 export interface SyncMessage {
   type: "sync_update" | "sync_full" | "awareness"
@@ -34,7 +34,7 @@ export class YjsWebsocketProvider {
     this.doc.on("update", this.updateHandler)
   }
 
-  private connect() {
+  private async connect() {
     if (this.destroyed) return
     const token = getToken()
     if (!token) {
@@ -42,7 +42,8 @@ export class YjsWebsocketProvider {
       return
     }
 
-    const base = process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:3001"
+    const base = await getWebSocketBase()
+    if (this.destroyed) return
     const url = `${base}/sync?file_id=${encodeURIComponent(this.fileId)}&token=${encodeURIComponent(token)}`
     this.ws = new WebSocket(url)
 

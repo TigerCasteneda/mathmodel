@@ -4,7 +4,7 @@ use std::sync::Arc;
 use tokio::sync::{broadcast, RwLock};
 use uuid::Uuid;
 use yrs::updates::decoder::Decode;
-use yrs::ReadTxn;
+use yrs::{GetString, ReadTxn};
 use yrs::Transact;
 
 pub struct SyncRoom {
@@ -134,14 +134,35 @@ async fn persist_state(
     pool: &sqlx::SqlitePool,
 ) -> Result<(), sqlx::Error> {
     let now = chrono::Utc::now().timestamp();
+    let size = decode_state_text_len(state).unwrap_or(0) as i64;
     sqlx::query("UPDATE crdt_docs SET ydoc_state = ?, updated_at = ? WHERE file_id = ?")
         .bind(state)
         .bind(now)
         .bind(file_id)
         .execute(pool)
         .await?;
+    sqlx::query("UPDATE files SET size = ?, updated_at = ? WHERE id = ?")
+        .bind(size)
+        .bind(now)
+        .bind(file_id)
+        .execute(pool)
+        .await?;
 
     Ok(())
+}
+
+fn decode_state_text_len(state: &[u8]) -> Option<usize> {
+    if state.is_empty() {
+        return Some(0);
+    }
+    let doc = yrs::Doc::new();
+    let mut txn = doc.transact_mut();
+    let update = yrs::Update::decode_v1(state).ok()?;
+    txn.apply_update(update);
+    drop(txn);
+    let text = doc.get_or_insert_text("content");
+    let txn = doc.transact();
+    Some(text.get_string(&txn).len())
 }
 
 async fn auto_snapshot_after_persist(file_id: &str, state: &[u8], pool: &sqlx::SqlitePool) {

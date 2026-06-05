@@ -48,38 +48,49 @@ pub async fn ws_handler(
         return Err(AppError::Unauthorized("invalid token".into()));
     }
 
-    ensure_sync_access(&state.pool, &file_id, &claims.claims.sub).await?;
+    let can_write = ensure_sync_access(&state.pool, &file_id, &claims.claims.sub).await?;
 
     let pool = state.pool.clone();
     let registry = state.room_registry.clone();
 
-    Ok(ws.on_upgrade(move |socket| handle_socket(socket, file_id, pool, registry)))
+    Ok(ws.on_upgrade(move |socket| handle_socket(socket, file_id, pool, registry, can_write)))
 }
 
 async fn ensure_sync_access(
     pool: &sqlx::SqlitePool,
     file_id: &str,
     user_id: &str,
-) -> Result<(), AppError> {
-    let exists: i64 = sqlx::query_scalar(
-        "SELECT EXISTS(
-            SELECT 1
+) -> Result<bool, AppError> {
+    let row: Option<(String, Option<String>)> = sqlx::query_as(
+        "SELECT pm.role, pm.capabilities
             FROM files f
             JOIN project_members pm ON pm.project_id = f.project_id
             WHERE f.id = ?
               AND f.type = 'file'
               AND f.storage_path IS NULL
               AND pm.user_id = ?
-        )",
+            LIMIT 1",
     )
     .bind(file_id)
     .bind(user_id)
-    .fetch_one(pool)
+    .fetch_optional(pool)
     .await?;
 
-    if exists == 0 {
-        return Err(AppError::NotFound("sync file not found".into()));
-    }
+    let (role, raw_capabilities) = row
+        .ok_or_else(|| AppError::NotFound("sync file not found".into()))?;
+    let capabilities = match raw_capabilities {
+        Some(raw) if !raw.trim().is_empty() => serde_json::from_str::<Vec<String>>(&raw)
+            .map_err(|e| AppError::Internal(format!("capabilities decode: {e}")))?,
+        _ if role == "owner" => vec![
+            "files.read".into(),
+            "files.write".into(),
+        ],
+        _ if role == "editor" => vec![
+            "files.read".into(),
+            "files.write".into(),
+        ],
+        _ => vec!["files.read".into()],
+    };
 
     sqlx::query(
         "INSERT OR IGNORE INTO crdt_docs (file_id, ydoc_state, updated_at) VALUES (?, ?, ?)",
@@ -90,7 +101,7 @@ async fn ensure_sync_access(
     .execute(pool)
     .await?;
 
-    Ok(())
+    Ok(capabilities.iter().any(|cap| cap == "files.write"))
 }
 
 async fn handle_socket(
@@ -98,6 +109,7 @@ async fn handle_socket(
     file_id: String,
     pool: sqlx::SqlitePool,
     registry: Arc<RoomRegistry>,
+    can_write: bool,
 ) {
     let room = registry.get_or_create(&file_id, &pool).await;
 
@@ -119,6 +131,9 @@ async fn handle_socket(
             client_msg = socket.recv() => {
                 match client_msg {
                     Some(Ok(Message::Text(text))) => {
+                        if !can_write {
+                            continue;
+                        }
                         if let Ok(SyncMessage::SyncUpdate { update }) =
                             serde_json::from_str::<SyncMessage>(&text)
                         {

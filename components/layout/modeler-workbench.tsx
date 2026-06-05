@@ -1,7 +1,8 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
-import { Bot, BookOpen, FileCode, FileText, Folder, FolderOpen, KeyRound, MessageSquare, RefreshCw, Settings, SidebarIcon } from "lucide-react"
+import { useEffect, useMemo, useRef, useState } from "react"
+import { useRouter } from "next/navigation"
+import { BookOpen, Copy, FileCode, FileText, Folder, FolderOpen, LogOut, MessageSquare, MonitorUp, MonitorX, RefreshCw, RotateCcw, Save, Settings, SidebarIcon, Trash2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { ScrollArea } from "@/components/ui/scroll-area"
@@ -10,10 +11,49 @@ import { CodeEditor } from "@/components/editor/code-editor"
 import { cn } from "@/lib/utils"
 import { deleteSession, getAiConfigStatus, listSessions, setAiConfig, type AiConfigStatus, type FileTreeItem, type SessionInfo } from "@/lib/tauri-api"
 import { useTauriAgent } from "@/hooks/use-tauri-agent"
-import { listResearchItems, type ResearchItem } from "@/lib/api"
+import { useScreenShare } from "@/hooks/use-screen-share"
+import {
+  ALL_PROJECT_CAPABILITIES,
+  createProjectFile,
+  createProjectInvite,
+  deleteProjectFile,
+  getProject,
+  getProjectFileContent,
+  listProjectMembers,
+  listProjectInvites,
+  listProjectTree,
+  listResearchItems,
+  parseCapabilities,
+  removeProjectMember,
+  revokeProjectInvite,
+  updateProjectMember,
+  type Project,
+  type ProjectCapability,
+  type ProjectInvite,
+  type ProjectMember,
+  updateProjectFileContent,
+  type ProjectFileTreeItem,
+  type ProjectRole,
+  type ResearchItem,
+} from "@/lib/api"
+import { useAuth } from "@/hooks/use-auth"
 
 type Activity = "explorer" | "research" | "chat" | "settings"
-type Tab = { id: string; title: string; kind: "file" | "chat" | "research"; language?: string; content?: string }
+type Tab = {
+  id: string
+  title: string
+  kind: "file" | "chat" | "research" | "diff"
+  language?: string
+  content?: string
+  diff?: { left: string; right: string; leftTitle?: string; rightTitle?: string }
+  dirty?: boolean
+  remoteFileId?: string
+  remoteUpdatedAt?: number
+  readOnly?: boolean
+  localExternalConflict?: boolean
+  saveStatus?: "idle" | "saving" | "saved" | "error" | "conflict"
+}
+type WorkspaceMode = "host" | "guest"
 
 const sampleTree: FileTreeItem = {
   name: "workspace",
@@ -30,6 +70,29 @@ const sampleContent = `import numpy as np
 def objective(x):
     return np.sum(np.square(x))
 `
+
+function remoteTreeToFileTree(items: ProjectFileTreeItem[]): FileTreeItem {
+  const convert = (item: ProjectFileTreeItem, parentPath = ""): FileTreeItem => {
+    const path = parentPath ? `${parentPath}/${item.name}` : item.name
+    return {
+      id: item.id,
+      name: item.name,
+      path,
+      type: item.type,
+      zone: item.zone,
+      updated_at: item.updated_at,
+      language: item.type === "file" ? fileLanguage({ name: item.name, path, type: item.type }) : undefined,
+      children: item.children?.map((child) => convert(child, path)),
+    }
+  }
+
+  return {
+    name: "project",
+    path: "",
+    type: "folder",
+    children: items.map((item) => convert(item)),
+  }
+}
 
 const activities = [
   { id: "explorer" as const, icon: FileText, label: "Explorer" },
@@ -48,6 +111,110 @@ function fileLanguage(file: FileTreeItem) {
   if (ext === "md") return "markdown"
   if (ext === "tex") return "latex"
   return "plaintext"
+}
+
+type SyncStats = {
+  created: number
+  updated: number
+  deleted: number
+  skipped: number
+  conflicts: SyncConflict[]
+  failed: number
+}
+
+type SyncConflict = {
+  path: string
+  fileId: string
+  remoteUpdatedAt: number
+  localDeleted?: boolean
+}
+
+function emptySyncStats(): SyncStats {
+  return { created: 0, updated: 0, deleted: 0, skipped: 0, conflicts: [], failed: 0 }
+}
+
+type SyncManifestEntry = {
+  fileId: string
+  remoteUpdatedAt: number
+  localHash: string
+  remoteHash: string
+  localDeleted?: boolean
+}
+
+type SyncManifest = Record<string, SyncManifestEntry>
+
+function syncManifestKey(projectId: string) {
+  return `modeler:host-sync-manifest:${projectId}`
+}
+
+function hostFolderKey(projectId: string) {
+  return `modeler:host-folder:${projectId}`
+}
+
+function autoSyncKey(projectId: string) {
+  return `modeler:auto-sync:${projectId}`
+}
+
+function loadSyncManifest(projectId: string): SyncManifest {
+  if (typeof window === "undefined") return {}
+  try {
+    const raw = localStorage.getItem(syncManifestKey(projectId))
+    if (!raw) return {}
+    const parsed = JSON.parse(raw)
+    return parsed && typeof parsed === "object" ? parsed as SyncManifest : {}
+  } catch {
+    return {}
+  }
+}
+
+function saveSyncManifest(projectId: string, manifest: SyncManifest) {
+  if (typeof window === "undefined") return
+  localStorage.setItem(syncManifestKey(projectId), JSON.stringify(manifest))
+}
+
+function normalizePathKey(path: string) {
+  return path.replace(/\\/g, "/")
+}
+
+function decodeCurrentUserId(): string | null {
+  if (typeof window === "undefined") return null
+  const token = localStorage.getItem("auth_token")
+  if (!token) return null
+  try {
+    const payload = token.split(".")[1]?.replace(/-/g, "+").replace(/_/g, "/")
+    if (!payload) return null
+    const decoded = JSON.parse(window.atob(payload))
+    return typeof decoded.sub === "string" ? decoded.sub : null
+  } catch {
+    return null
+  }
+}
+
+function hashContent(content: string) {
+  let hash = 2166136261
+  for (let i = 0; i < content.length; i += 1) {
+    hash ^= content.charCodeAt(i)
+    hash = Math.imul(hash, 16777619)
+  }
+  return (hash >>> 0).toString(16)
+}
+
+function remoteVersion(node: ProjectFileTreeItem) {
+  return node.updated_at ?? 0
+}
+
+function addSyncConflict(stats: SyncStats, conflict: SyncConflict) {
+  if (!stats.conflicts.some((item) => item.path === conflict.path && item.fileId === conflict.fileId)) {
+    stats.conflicts.push(conflict)
+  }
+}
+
+function findRemoteChild(
+  nodes: ProjectFileTreeItem[],
+  name: string,
+  type: "file" | "folder",
+) {
+  return nodes.find((node) => node.name === name && node.type === type)
 }
 
 function FileNode({
@@ -121,7 +288,264 @@ const DEEPSEEK_MODELS = [
   { value: "deepseek-chat", label: "V3 Chat", desc: "General purpose, 64K context" },
 ]
 
-function SettingsPanel() {
+const ROLE_OPTIONS: ProjectRole[] = ["owner", "editor", "viewer"]
+
+function capabilityLabel(capability: ProjectCapability) {
+  return capability.replace(".", " ")
+}
+
+function ScreenPreview({ stream, onStop }: { stream: MediaStream; onStop: () => void }) {
+  const videoRef = useRef<HTMLVideoElement | null>(null)
+
+  useEffect(() => {
+    if (videoRef.current) videoRef.current.srcObject = stream
+  }, [stream])
+
+  return (
+    <div className="mt-3 overflow-hidden rounded-md border border-[#373737] bg-[#0d0d0d]">
+      <div className="flex h-8 items-center justify-between border-b border-[#373737] px-2">
+        <span className="text-[11px] text-[#b4b4b4]">Live app screen</span>
+        <button onClick={onStop} className="text-[11px] text-[#ffb4a8] hover:text-[#ffd1ca]">Stop watching</button>
+      </div>
+      <video ref={videoRef} autoPlay playsInline muted className="aspect-video w-full bg-black object-contain" />
+    </div>
+  )
+}
+
+function MembersPanel({
+  projectId,
+  project,
+  capabilities,
+  currentUserId,
+  screenShare,
+  onProjectRefresh,
+}: {
+  projectId: string
+  project: Project | null
+  capabilities: ProjectCapability[]
+  currentUserId: string | null
+  screenShare: ReturnType<typeof useScreenShare>
+  onProjectRefresh: () => Promise<void>
+}) {
+  const [members, setMembers] = useState<ProjectMember[]>([])
+  const [invites, setInvites] = useState<ProjectInvite[]>([])
+  const [invite, setInvite] = useState("")
+  const [inviteRole, setInviteRole] = useState<ProjectRole>("editor")
+  const canManageMembers = capabilities.includes("members.manage")
+  const canManageInvites = capabilities.includes("invites.manage")
+  const showShareControl = screenShare.canShare && project?.role !== "owner"
+  const showViewControl = screenShare.canView
+
+  const refreshMembers = async () => {
+    try { setMembers(await listProjectMembers(projectId)) } catch { setMembers([]) }
+  }
+
+  const refreshInvites = async () => {
+    if (!canManageInvites) return
+    try { setInvites(await listProjectInvites(projectId)) } catch { setInvites([]) }
+  }
+
+  useEffect(() => {
+    void refreshMembers()
+    void refreshInvites()
+  }, [projectId, canManageInvites])
+
+  const createInvite = async () => {
+    if (!canManageInvites) return
+    const result = await createProjectInvite(projectId, { role: inviteRole })
+    setInvite(result.code)
+    await refreshInvites()
+  }
+
+  const copyInvite = async (code = invite) => {
+    if (!code) return
+    await navigator.clipboard?.writeText(code)
+  }
+
+  const revokeInvites = async () => {
+    if (!canManageInvites) return
+    await revokeProjectInvite(projectId)
+    setInvite("")
+    await refreshInvites()
+  }
+
+  const resetInvite = async () => {
+    await revokeInvites()
+    await createInvite()
+  }
+
+  const removeMember = async (member: ProjectMember) => {
+    if (!canManageMembers || member.user_id === currentUserId) return
+    await removeProjectMember(projectId, member.user_id)
+    await refreshMembers()
+    await onProjectRefresh()
+  }
+
+  const updateMember = async (
+    member: ProjectMember,
+    role: ProjectRole,
+    nextCapabilities = parseCapabilities(member.capabilities),
+  ) => {
+    if (!canManageMembers) return
+    await updateProjectMember(projectId, member.user_id, { role, capabilities: nextCapabilities })
+    await refreshMembers()
+    await onProjectRefresh()
+  }
+
+  const toggleCapability = async (member: ProjectMember, capability: ProjectCapability) => {
+    const current = parseCapabilities(member.capabilities)
+    const next = current.includes(capability)
+      ? current.filter((cap) => cap !== capability)
+      : [...current, capability]
+    await updateMember(member, member.role, next)
+  }
+
+  return (
+    <div className="rounded-lg border border-[#373737] bg-[#1a1a1a] p-4">
+      <div className="mb-3">
+        <h3 className="text-sm font-medium text-[#e8e8e8]">Members</h3>
+        <p className="mt-1 text-xs text-[#787878]">
+          Your role: {project?.role ?? "unknown"}
+        </p>
+      </div>
+
+      {canManageInvites && (
+        <div className="mb-4 rounded-md border border-[#373737] bg-[#121212] p-3">
+          <div className="mb-2 flex items-center gap-2">
+            <select
+              value={inviteRole}
+              onChange={(event) => setInviteRole(event.target.value as ProjectRole)}
+              className="rounded-md border border-[#373737] bg-[#232323] px-2 py-1 text-xs text-[#b4b4b4]"
+            >
+              {ROLE_OPTIONS.map((role) => <option key={role} value={role}>{role}</option>)}
+            </select>
+            <Button onClick={createInvite} size="sm" className="h-7 bg-[#d4a574] text-[#111111] hover:bg-[#ebc396]">
+              Create invite
+            </Button>
+            <Button onClick={resetInvite} size="icon" variant="ghost" className="h-7 w-7" title="Reset invite">
+              <RotateCcw className="h-3.5 w-3.5" />
+            </Button>
+            <Button onClick={revokeInvites} size="icon" variant="ghost" className="h-7 w-7" title="Revoke invites">
+              <Trash2 className="h-3.5 w-3.5" />
+            </Button>
+          </div>
+          {invite && (
+            <div className="flex items-center gap-2">
+              <p className="min-w-0 flex-1 truncate font-mono text-xs text-[#d4a574]">Invite code: {invite}</p>
+              <Button onClick={() => copyInvite()} size="icon" variant="ghost" className="h-7 w-7" title="Copy invite">
+                <Copy className="h-3.5 w-3.5" />
+              </Button>
+            </div>
+          )}
+          {invites.length > 0 && (
+            <div className="mt-2 space-y-1">
+              {invites.slice(0, 3).map((item) => (
+                <div key={item.id} className="flex items-center gap-2 text-[11px] text-[#787878]">
+                  <span className="font-mono text-[#b4b4b4]">{item.code}</span>
+                  <span>{item.role}</span>
+                  <span>{item.used_count}/{item.max_uses}</span>
+                  <button onClick={() => copyInvite(item.code)} className="ml-auto text-[#d4a574] hover:text-[#ebc396]">copy</button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {(showShareControl || showViewControl) && (
+        <div className="mb-4 rounded-md border border-[#373737] bg-[#121212] p-3">
+          <div className="flex items-center gap-2">
+            {showShareControl && (
+              <Button
+                onClick={screenShare.sharing ? screenShare.stopShare : screenShare.startShare}
+                size="sm"
+                className={cn(
+                  "h-7",
+                  screenShare.sharing ? "bg-[#5f2424] text-[#ffb4a8] hover:bg-[#733030]" : "bg-[#232323] text-[#b4b4b4] hover:bg-[#2d2d2d]",
+                )}
+              >
+                {screenShare.sharing ? <MonitorX className="mr-1.5 h-3.5 w-3.5" /> : <MonitorUp className="mr-1.5 h-3.5 w-3.5" />}
+                {screenShare.sharing ? "Stop sharing" : "Share app screen"}
+              </Button>
+            )}
+            {showViewControl && !showShareControl && (
+              <span className="text-xs text-[#b4b4b4]">
+                {screenShare.remoteStream ? "Watching teammate screen" : "Waiting for teammate screen share"}
+              </span>
+            )}
+            <span className="ml-auto text-[11px] text-[#787878]">{screenShare.connected ? "screen relay connected" : "screen relay offline"}</span>
+          </div>
+          {screenShare.error && <p className="mt-2 text-[11px] text-[#ffb4a8]">{screenShare.error}</p>}
+          {showViewControl && screenShare.remoteStream && (
+            <ScreenPreview stream={screenShare.remoteStream} onStop={screenShare.stopWatching} />
+          )}
+        </div>
+      )}
+
+      <div className="space-y-2">
+        {members.map((member) => {
+          const memberCaps = parseCapabilities(member.capabilities)
+          return (
+            <div key={member.user_id} className="rounded-md border border-[#373737] bg-[#121212] p-3">
+              <div className="flex items-center gap-2">
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-xs font-medium text-[#e8e8e8]">{member.display_name || member.email}</p>
+                  <p className="truncate text-[11px] text-[#787878]">{member.email}</p>
+                </div>
+                <select
+                  value={member.role}
+                  disabled={!canManageMembers || member.user_id === currentUserId}
+                  onChange={(event) => updateMember(member, event.target.value as ProjectRole)}
+                  className="rounded-md border border-[#373737] bg-[#232323] px-2 py-1 text-xs text-[#b4b4b4] disabled:opacity-60"
+                >
+                  {ROLE_OPTIONS.map((role) => <option key={role} value={role}>{role}</option>)}
+                </select>
+                {canManageMembers && member.user_id !== currentUserId && (
+                  <Button onClick={() => removeMember(member)} size="icon" variant="ghost" className="h-7 w-7" title="Remove member">
+                    <Trash2 className="h-3.5 w-3.5 text-[#ff8a80]" />
+                  </Button>
+                )}
+              </div>
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {ALL_PROJECT_CAPABILITIES.map((capability) => (
+                  <button
+                    key={capability}
+                    disabled={!canManageMembers}
+                    onClick={() => toggleCapability(member, capability)}
+                    className={cn(
+                      "rounded-full border px-2 py-0.5 text-[10px] transition-colors disabled:cursor-not-allowed",
+                      memberCaps.includes(capability)
+                        ? "border-[#d4a574] bg-[#2d241a] text-[#ebc396]"
+                        : "border-[#373737] bg-[#1a1a1a] text-[#787878]",
+                    )}
+                  >
+                    {capabilityLabel(capability)}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+function SettingsPanel({
+  projectId,
+  project,
+  capabilities,
+  currentUserId,
+  screenShare,
+  onProjectRefresh,
+}: {
+  projectId: string
+  project: Project | null
+  capabilities: ProjectCapability[]
+  currentUserId: string | null
+  screenShare: ReturnType<typeof useScreenShare>
+  onProjectRefresh: () => Promise<void>
+}) {
   const [status, setStatus] = useState<AiConfigStatus | null>(null)
   const [apiKey, setApiKey] = useState("")
   const [model, setModel] = useState("deepseek-v4-pro")
@@ -146,8 +570,9 @@ function SettingsPanel() {
   }
 
   return (
-    <div className="flex h-full items-center justify-center bg-[#0d0d0d]">
-      <div className="w-full max-w-sm space-y-5 rounded-lg border border-[#373737] bg-[#1a1a1a] p-6">
+    <div className="h-full overflow-auto bg-[#0d0d0d] p-4">
+      <div className="mx-auto grid max-w-5xl gap-4 lg:grid-cols-[380px_1fr]">
+        <div className="space-y-5 rounded-lg border border-[#373737] bg-[#1a1a1a] p-6">
         <div>
           <h3 className="text-sm font-medium text-[#e8e8e8]">Model Provider</h3>
           <p className="mt-1 text-xs text-[#787878]">DeepSeek &middot; api.deepseek.com/anthropic</p>
@@ -198,6 +623,16 @@ function SettingsPanel() {
         >
           {status?.configured ? "Update API Key" : "Save API Key"}
         </Button>
+        </div>
+
+        <MembersPanel
+          projectId={projectId}
+          project={project}
+          capabilities={capabilities}
+          currentUserId={currentUserId}
+          screenShare={screenShare}
+          onProjectRefresh={onProjectRefresh}
+        />
       </div>
     </div>
   )
@@ -205,16 +640,450 @@ function SettingsPanel() {
 
 export function ModelerWorkbench({ projectId }: { projectId: string }) {
   const tauriAgent = useTauriAgent()
+  const router = useRouter()
+  const { logout, user } = useAuth()
+  const localWriteTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({})
+  const restoredHostFolderRef = useRef<string | null>(null)
   const [activeActivity, setActiveActivity] = useState<Activity>("explorer")
   const [activeTab, setActiveTab] = useState("chat")
   const [tabs, setTabs] = useState<Tab[]>([
     { id: "chat", title: "Chat", kind: "chat" },
   ])
   const [sessions, setSessions] = useState<SessionInfo[]>([])
+  const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>("host")
+  const [remoteTree, setRemoteTree] = useState<FileTreeItem | null>(null)
+  const [remoteStatus, setRemoteStatus] = useState<"idle" | "loading" | "error">("idle")
+  const [syncing, setSyncing] = useState(false)
+  const [syncStats, setSyncStats] = useState<SyncStats | null>(null)
+  const [pendingAutoSync, setPendingAutoSync] = useState(false)
+  const [autoSyncEnabled, setAutoSyncEnabled] = useState(false)
+  const [hostFolderMissing, setHostFolderMissing] = useState(false)
+  const [lastAutoSyncSignature, setLastAutoSyncSignature] = useState("")
+  const [project, setProject] = useState<Project | null>(null)
+  const capabilities = useMemo(() => parseCapabilities(project?.capabilities), [project])
+  const screenShare = useScreenShare(projectId, capabilities)
+  const currentUserId = user?.id || decodeCurrentUserId() || (project?.role === "owner" ? project.owner_id : null)
+  const canSyncWorkspace = capabilities.includes("workspace.sync") && capabilities.includes("files.write")
+  const canWriteFiles = capabilities.includes("files.write")
+  const localTreeSignature = useMemo(
+    () => tauriAgent.fileTree ? JSON.stringify({
+      tree: tauriAgent.fileTree,
+      contents: Object.fromEntries(
+        Object.entries(tauriAgent.fileContents)
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([path, content]) => [path, hashContent(content)]),
+      ),
+    }) : "",
+    [tauriAgent.fileTree, tauriAgent.fileContents],
+  )
 
   useEffect(() => {
     tauriAgent.connect()
   }, [tauriAgent.connect])
+
+  useEffect(() => {
+    return () => {
+      Object.values(localWriteTimers.current).forEach((timer) => clearTimeout(timer))
+    }
+  }, [])
+
+  const refreshProject = async () => {
+    try { setProject(await getProject(projectId)) } catch { setProject(null) }
+  }
+
+  useEffect(() => {
+    void refreshProject()
+  }, [projectId])
+
+  useEffect(() => {
+    const stored = localStorage.getItem(`modeler:workspace-mode:${projectId}`)
+    if (stored === "host" || stored === "guest") setWorkspaceMode(stored)
+  }, [projectId])
+
+  useEffect(() => {
+    localStorage.setItem(`modeler:workspace-mode:${projectId}`, workspaceMode)
+  }, [projectId, workspaceMode])
+
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    setHostFolderMissing(false)
+    const enabled = localStorage.getItem(autoSyncKey(projectId)) === "true"
+    setAutoSyncEnabled(enabled)
+  }, [projectId])
+
+  useEffect(() => {
+    if (!canSyncWorkspace || workspaceMode !== "host" || !autoSyncEnabled) return
+    const storedPath = localStorage.getItem(hostFolderKey(projectId))
+    if (!storedPath || restoredHostFolderRef.current === `${projectId}:${storedPath}`) return
+    restoredHostFolderRef.current = `${projectId}:${storedPath}`
+    tauriAgent.changeDir(storedPath)
+      .then(() => {
+        setHostFolderMissing(false)
+        setLastAutoSyncSignature("")
+      })
+      .catch(() => {
+        setHostFolderMissing(true)
+        setAutoSyncEnabled(false)
+      })
+  }, [autoSyncEnabled, canSyncWorkspace, projectId, tauriAgent, workspaceMode])
+
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    localStorage.setItem(autoSyncKey(projectId), autoSyncEnabled ? "true" : "false")
+  }, [autoSyncEnabled, projectId])
+
+  const refreshRemoteTree = async () => {
+    setRemoteStatus("loading")
+    try {
+      const items = await listProjectTree(projectId)
+      setRemoteTree(remoteTreeToFileTree(items))
+      setRemoteStatus("idle")
+    } catch {
+      setRemoteTree(null)
+      setRemoteStatus("error")
+    }
+  }
+
+  const signOut = () => {
+    logout()
+    router.push("/login")
+  }
+
+  const syncHostToRemote = async (sourceTree = tauriAgent.fileTree) => {
+    if (!sourceTree || syncing || !canSyncWorkspace) return
+
+    const stats = emptySyncStats()
+    setSyncing(true)
+    setSyncStats(null)
+
+    try {
+      const remoteItems = await listProjectTree(projectId)
+      const manifest = loadSyncManifest(projectId)
+      const nextManifest: SyncManifest = { ...manifest }
+      const desiredRemoteIds = new Set<string>()
+      const reservedRootNames = new Set(["Code", "Paper", "Research"])
+
+      let codeRoot = findRemoteChild(remoteItems, "Code", "folder")
+      if (!codeRoot) {
+        const created = await createProjectFile(projectId, {
+          name: "Code",
+          type: "folder",
+          parent_id: null,
+          zone: "code",
+        })
+        codeRoot = {
+          id: created.id,
+          name: created.name,
+          type: "folder",
+          zone: created.zone,
+          updated_at: created.updated_at,
+          children: [],
+        }
+        remoteItems.push(codeRoot)
+        stats.created += 1
+      }
+
+      const syncNodes = async (
+        localNodes: FileTreeItem[],
+        remoteNodes: ProjectFileTreeItem[],
+        parentId: string | null,
+      ) => {
+        const mirror = [...remoteNodes]
+
+        for (const localNode of localNodes) {
+          if (localNode.type === "folder") {
+            const conflict = mirror.find((node) => node.name === localNode.name && node.type !== "folder")
+            if (conflict) {
+              stats.skipped += 1
+              continue
+            }
+
+            let remoteFolder = findRemoteChild(mirror, localNode.name, "folder")
+            if (!remoteFolder) {
+              try {
+                const created = await createProjectFile(projectId, {
+                  name: localNode.name,
+                  type: "folder",
+                  parent_id: parentId,
+                  zone: "code",
+                })
+                remoteFolder = {
+                  id: created.id,
+                  name: created.name,
+                  type: "folder",
+                  zone: created.zone,
+                  updated_at: created.updated_at,
+                  children: [],
+                }
+                mirror.push(remoteFolder)
+                stats.created += 1
+              } catch {
+                stats.failed += 1
+                continue
+              }
+            }
+
+            desiredRemoteIds.add(remoteFolder.id)
+            remoteFolder.children = await syncNodes(
+              localNode.children ?? [],
+              remoteFolder.children ?? [],
+              remoteFolder.id,
+            )
+            continue
+          }
+
+          const content = await tauriAgent.openFile(localNode.path)
+          if (content == null) {
+            stats.skipped += 1
+            continue
+          }
+          const localHash = hashContent(content)
+          const pathKey = localNode.path.replace(/\\/g, "/")
+
+          const conflict = mirror.find((node) => node.name === localNode.name && node.type !== "file")
+          if (conflict) {
+            stats.skipped += 1
+            continue
+          }
+
+          let remoteFile = findRemoteChild(mirror, localNode.name, "file")
+          let createdFile = false
+          if (!remoteFile) {
+            try {
+              const created = await createProjectFile(projectId, {
+                name: localNode.name,
+                type: "file",
+                parent_id: parentId,
+                zone: "code",
+              })
+              remoteFile = {
+                id: created.id,
+                name: created.name,
+                type: "file",
+                zone: created.zone,
+                updated_at: created.updated_at,
+              }
+              mirror.push(remoteFile)
+              createdFile = true
+            } catch {
+              stats.failed += 1
+              continue
+            }
+          }
+
+          desiredRemoteIds.add(remoteFile.id)
+          try {
+            if (!createdFile) {
+              const previous = manifest[pathKey]
+              if (previous?.fileId === remoteFile.id) {
+                let currentRemoteHash = previous.remoteHash
+                let currentRemoteUpdatedAt = previous.remoteUpdatedAt
+                const knownDiverged = previous.localHash !== previous.remoteHash
+                const localChanged = localHash !== previous.localHash
+                if (previous.remoteUpdatedAt !== remoteVersion(remoteFile) || knownDiverged || localChanged) {
+                  const remoteContent = await getProjectFileContent(projectId, remoteFile.id)
+                  currentRemoteHash = hashContent(remoteContent.content)
+                  currentRemoteUpdatedAt = remoteContent.updated_at
+                  remoteFile.updated_at = remoteContent.updated_at
+                }
+
+                const remoteChanged = currentRemoteHash !== previous.remoteHash
+                if (!localChanged && !remoteChanged) {
+                  stats.skipped += 1
+                  continue
+                }
+                if (!localChanged && remoteChanged) {
+                  nextManifest[pathKey] = {
+                    fileId: remoteFile.id,
+                    remoteUpdatedAt: currentRemoteUpdatedAt,
+                    localHash: previous.localHash,
+                    remoteHash: currentRemoteHash,
+                  }
+                  stats.skipped += 1
+                  continue
+                }
+                if (localChanged && (remoteChanged || knownDiverged)) {
+                  if (localHash === currentRemoteHash) {
+                    nextManifest[pathKey] = {
+                      fileId: remoteFile.id,
+                      remoteUpdatedAt: currentRemoteUpdatedAt,
+                      localHash,
+                      remoteHash: currentRemoteHash,
+                    }
+                    stats.skipped += 1
+                    continue
+                  }
+                  addSyncConflict(stats, {
+                    path: pathKey,
+                    fileId: remoteFile.id,
+                    remoteUpdatedAt: currentRemoteUpdatedAt,
+                  })
+                  continue
+                }
+              } else {
+                const remoteContent = await getProjectFileContent(projectId, remoteFile.id)
+                const remoteHash = hashContent(remoteContent.content)
+                if (remoteHash !== localHash) {
+                  addSyncConflict(stats, {
+                    path: pathKey,
+                    fileId: remoteFile.id,
+                    remoteUpdatedAt: remoteContent.updated_at,
+                  })
+                  continue
+                }
+                nextManifest[pathKey] = {
+                  fileId: remoteFile.id,
+                  remoteUpdatedAt: remoteContent.updated_at,
+                  localHash,
+                  remoteHash,
+                }
+                stats.skipped += 1
+                continue
+              }
+            }
+
+            const saved = await updateProjectFileContent(
+              projectId,
+              remoteFile.id,
+              content,
+              createdFile ? undefined : remoteVersion(remoteFile),
+            )
+            nextManifest[pathKey] = {
+              fileId: remoteFile.id,
+              remoteUpdatedAt: saved.updated_at,
+              localHash,
+              remoteHash: localHash,
+            }
+            if (createdFile) stats.created += 1
+            else stats.updated += 1
+          } catch {
+            stats.failed += 1
+          }
+        }
+
+        return mirror
+      }
+
+      codeRoot.children = await syncNodes(sourceTree.children ?? [], codeRoot.children ?? [], codeRoot.id)
+
+      const pruneRemoteNodes = async (nodes: ProjectFileTreeItem[], parentPath = "") => {
+        for (const node of nodes) {
+          if (node.zone !== "code") continue
+          const pathKey = parentPath ? `${parentPath}/${node.name}` : node.name
+          if (desiredRemoteIds.has(node.id)) {
+            if (node.children?.length) await pruneRemoteNodes(node.children, pathKey)
+            continue
+          }
+          if (node.type !== "file") {
+            if (node.children?.length) await pruneRemoteNodes(node.children, pathKey)
+            continue
+          }
+          const previous = manifest[pathKey]
+          if (!previous || previous.fileId !== node.id) {
+            stats.skipped += 1
+            continue
+          }
+          try {
+            const remoteContent = await getProjectFileContent(projectId, node.id)
+            const remoteHash = hashContent(remoteContent.content)
+            if (previous.localDeleted) {
+              nextManifest[pathKey] = {
+                ...previous,
+                remoteUpdatedAt: remoteContent.updated_at,
+                remoteHash,
+              }
+              stats.skipped += 1
+              continue
+            }
+            if (remoteHash !== previous.remoteHash || previous.localHash !== previous.remoteHash) {
+              addSyncConflict(stats, {
+                path: pathKey,
+                fileId: node.id,
+                remoteUpdatedAt: remoteContent.updated_at,
+                localDeleted: true,
+              })
+              continue
+            }
+            await deleteProjectFile(projectId, node.id)
+            delete nextManifest[pathKey]
+            stats.deleted += 1
+          } catch {
+            stats.failed += 1
+          }
+        }
+      }
+
+      await pruneRemoteNodes(codeRoot.children ?? [])
+      for (const node of remoteItems) {
+        if (node.zone !== "code" || reservedRootNames.has(node.name)) continue
+        try {
+          await deleteProjectFile(projectId, node.id)
+          stats.deleted += 1
+        } catch {
+          stats.failed += 1
+        }
+      }
+      saveSyncManifest(projectId, nextManifest)
+      setSyncStats(stats)
+      await refreshRemoteTree()
+    } catch {
+      stats.failed += 1
+      setSyncStats(stats)
+    } finally {
+      setSyncing(false)
+    }
+  }
+
+  useEffect(() => {
+    if (workspaceMode === "guest") void refreshRemoteTree()
+  }, [workspaceMode, projectId])
+
+  useEffect(() => {
+    if (!pendingAutoSync || !tauriAgent.fileTree || syncing) return
+    setPendingAutoSync(false)
+    setAutoSyncEnabled(true)
+    void syncHostToRemote(tauriAgent.fileTree).then(() => setLastAutoSyncSignature(localTreeSignature))
+  }, [pendingAutoSync, tauriAgent.fileTree, syncing, localTreeSignature])
+
+  useEffect(() => {
+    if (!autoSyncEnabled || workspaceMode !== "host" || !canSyncWorkspace || !tauriAgent.fileTree || syncing) return
+    if (!localTreeSignature || localTreeSignature === lastAutoSyncSignature) return
+
+    const timer = window.setTimeout(() => {
+      void syncHostToRemote(tauriAgent.fileTree).then(() => setLastAutoSyncSignature(localTreeSignature))
+    }, 1500)
+
+    return () => window.clearTimeout(timer)
+  }, [
+    autoSyncEnabled,
+    workspaceMode,
+    canSyncWorkspace,
+    tauriAgent.fileTree,
+    syncing,
+    localTreeSignature,
+    lastAutoSyncSignature,
+  ])
+
+  const openFolderAndSync = async () => {
+    if (!canSyncWorkspace) return
+    setSyncStats(null)
+    const path = await tauriAgent.openFolder()
+    if (path) {
+      localStorage.setItem(hostFolderKey(projectId), path)
+      localStorage.setItem(autoSyncKey(projectId), "true")
+      setHostFolderMissing(false)
+    }
+    setPendingAutoSync(Boolean(path))
+  }
+
+  const syncCurrentHostTree = async () => {
+    if (!tauriAgent.fileTree || syncing || !canSyncWorkspace) return
+    setAutoSyncEnabled(true)
+    localStorage.setItem(autoSyncKey(projectId), "true")
+    if (tauriAgent.workDir) localStorage.setItem(hostFolderKey(projectId), tauriAgent.workDir)
+    await syncHostToRemote(tauriAgent.fileTree)
+    setLastAutoSyncSignature(localTreeSignature)
+  }
 
   const refreshSessions = async () => {
     try { setSessions(await listSessions()) } catch {}
@@ -245,29 +1114,204 @@ export function ModelerWorkbench({ projectId }: { projectId: string }) {
     await refreshSessions()
   }
 
-  const tree = tauriAgent.fileTree || sampleTree
+  const tree = workspaceMode === "guest" ? remoteTree || sampleTree : tauriAgent.fileTree || sampleTree
   const active = tabs.find((tab) => tab.id === activeTab) || tabs[0]
   const activeFilePath = active?.kind === "file" ? active.id : undefined
 
   const openFile = async (file: FileTreeItem) => {
-    const content = await tauriAgent.openFile(file.path)
+    const pathKey = normalizePathKey(file.path)
+    const hostManifestEntry = workspaceMode === "host" ? loadSyncManifest(projectId)[pathKey] : undefined
+    const remoteContent = workspaceMode === "guest" && file.id
+      ? await getProjectFileContent(projectId, file.id)
+      : null
+    const content = workspaceMode === "guest"
+      ? remoteContent?.content ?? null
+      : await tauriAgent.openFile(file.path)
     const next: Tab = {
       id: file.path,
       title: file.name,
       kind: "file",
       language: fileLanguage(file),
       content: content ?? sampleContent,
+      dirty: false,
+      remoteFileId: workspaceMode === "guest" ? file.id : hostManifestEntry?.fileId,
+      remoteUpdatedAt: remoteContent?.updated_at ?? hostManifestEntry?.remoteUpdatedAt ?? file.updated_at,
+      saveStatus: "idle",
     }
     setTabs((prev) => prev.some((tab) => tab.id === next.id) ? prev.map((tab) => tab.id === next.id ? next : tab) : [...prev, next])
     setActiveTab(next.id)
   }
 
+  const scheduleHostCollaborativeWrite = (path: string, content: string) => {
+    if (workspaceMode !== "host") return
+    const previous = localWriteTimers.current[path]
+    if (previous) clearTimeout(previous)
+    localWriteTimers.current[path] = setTimeout(() => {
+      void tauriAgent.writeFile(path, content).catch(() => {})
+      delete localWriteTimers.current[path]
+    }, 700)
+  }
+
+  const updateActiveFileContent = (content: string, collaborative = false) => {
+    setTabs((prev) => prev.map((tab) => (
+      tab.id === activeTab && tab.kind === "file" && !tab.readOnly
+        ? {
+          ...tab,
+          content,
+          dirty: collaborative ? false : true,
+          localExternalConflict: false,
+          saveStatus: "idle",
+        }
+        : tab
+    )))
+    const fileTab = tabs.find((tab) => tab.id === activeTab && tab.kind === "file")
+    if (collaborative && fileTab?.remoteFileId && workspaceMode === "host") {
+      scheduleHostCollaborativeWrite(fileTab.id, content)
+    }
+  }
+
+  useEffect(() => {
+    if (workspaceMode !== "host") return
+    setTabs((prev) => prev.map((tab) => {
+      if (tab.kind !== "file" || !tab.remoteFileId) return tab
+      const localContent = tauriAgent.fileContents[tab.id]
+      if (localContent == null || localContent === tab.content) return tab
+      return { ...tab, localExternalConflict: true, saveStatus: "conflict" }
+    }))
+  }, [tauriAgent.fileContents, workspaceMode])
+
+  const saveActiveFile = async () => {
+    const fileTab = tabs.find((tab) => tab.id === activeTab && tab.kind === "file")
+    if (!fileTab || fileTab.readOnly || fileTab.saveStatus === "saving") return
+    if (workspaceMode === "guest" && !canWriteFiles) return
+
+    setTabs((prev) => prev.map((tab) => (
+      tab.id === fileTab.id ? { ...tab, saveStatus: "saving" } : tab
+    )))
+
+    try {
+      if (workspaceMode === "guest") {
+        if (!fileTab.remoteFileId) throw new Error("remote file id missing")
+        const saved = await updateProjectFileContent(
+          projectId,
+          fileTab.remoteFileId,
+          fileTab.content ?? "",
+          fileTab.remoteUpdatedAt,
+        )
+        setTabs((prev) => prev.map((tab) => (
+          tab.id === fileTab.id
+            ? { ...tab, dirty: false, remoteUpdatedAt: saved.updated_at, saveStatus: "saved" }
+            : tab
+        )))
+        await refreshRemoteTree()
+        return
+      }
+
+      await tauriAgent.writeFile(fileTab.id, fileTab.content ?? "")
+      setTabs((prev) => prev.map((tab) => (
+        tab.id === fileTab.id ? { ...tab, dirty: false, saveStatus: "saved" } : tab
+      )))
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      const saveStatus = message.toLowerCase().includes("changed since") || message.includes("409")
+        ? "conflict"
+        : "error"
+      setTabs((prev) => prev.map((tab) => (
+        tab.id === fileTab.id ? { ...tab, saveStatus } : tab
+      )))
+    }
+  }
+
+  const removeSyncConflict = (conflict: SyncConflict) => {
+    setSyncStats((prev) => prev
+      ? { ...prev, conflicts: prev.conflicts.filter((item) => item.path !== conflict.path || item.fileId !== conflict.fileId) }
+      : prev)
+  }
+
+  const keepRemoteConflict = async (conflict: SyncConflict) => {
+    const remoteContent = await getProjectFileContent(projectId, conflict.fileId)
+    const remoteHash = hashContent(remoteContent.content)
+    const localContent = conflict.localDeleted ? null : await tauriAgent.openFile(conflict.path)
+    const manifest = loadSyncManifest(projectId)
+    manifest[conflict.path] = {
+      fileId: conflict.fileId,
+      remoteUpdatedAt: remoteContent.updated_at,
+      localHash: localContent == null ? "__deleted__" : hashContent(localContent),
+      remoteHash,
+      localDeleted: localContent == null,
+    }
+    saveSyncManifest(projectId, manifest)
+    removeSyncConflict(conflict)
+    await refreshRemoteTree()
+  }
+
+  const overwriteRemoteConflict = async (conflict: SyncConflict) => {
+    const localContent = await tauriAgent.openFile(conflict.path)
+    const manifest = loadSyncManifest(projectId)
+
+    if (localContent == null) {
+      await deleteProjectFile(projectId, conflict.fileId)
+      delete manifest[conflict.path]
+      saveSyncManifest(projectId, manifest)
+      removeSyncConflict(conflict)
+      setSyncStats((prev) => prev ? { ...prev, deleted: prev.deleted + 1 } : prev)
+      await refreshRemoteTree()
+      return
+    }
+
+    const remoteContent = await getProjectFileContent(projectId, conflict.fileId)
+    const saved = await updateProjectFileContent(projectId, conflict.fileId, localContent, remoteContent.updated_at)
+    const localHash = hashContent(localContent)
+    manifest[conflict.path] = {
+      fileId: conflict.fileId,
+      remoteUpdatedAt: saved.updated_at,
+      localHash,
+      remoteHash: localHash,
+      localDeleted: false,
+    }
+    saveSyncManifest(projectId, manifest)
+    removeSyncConflict(conflict)
+    setSyncStats((prev) => prev ? { ...prev, updated: prev.updated + 1 } : prev)
+    await refreshRemoteTree()
+  }
+
+  const openDiffConflict = async (conflict: SyncConflict) => {
+    const remoteContent = await getProjectFileContent(projectId, conflict.fileId)
+    const localContent = conflict.localDeleted ? null : await tauriAgent.openFile(conflict.path)
+    const name = conflict.path.split("/").pop() || conflict.path
+    const nextTab: Tab = {
+      id: `diff:${conflict.fileId}:${remoteContent.updated_at}`,
+      title: `${name} diff`,
+      kind: "diff",
+      language: fileLanguage({ name, path: conflict.path, type: "file" }),
+      diff: {
+        left: localContent ?? "",
+        right: remoteContent.content,
+        leftTitle: conflict.localDeleted ? "Local deleted" : "Local",
+        rightTitle: "Remote",
+      },
+      dirty: false,
+      remoteFileId: conflict.fileId,
+      remoteUpdatedAt: remoteContent.updated_at,
+      readOnly: true,
+      saveStatus: "idle",
+    }
+
+    setTabs((prev) => {
+      return [...prev.filter((tab) => tab.id !== nextTab.id), nextTab]
+    })
+    setActiveTab(nextTab.id)
+  }
+
   const sidebarTitle = useMemo(() => {
-    if (activeActivity === "explorer") return tauriAgent.workDir?.split(/[/\\]/).pop() || "Explorer"
+    if (activeActivity === "explorer") {
+      if (workspaceMode === "guest") return "Project Files"
+      return tauriAgent.workDir?.split(/[/\\]/).pop() || "Explorer"
+    }
     if (activeActivity === "research") return "Research"
     if (activeActivity === "chat") return "Chats"
     return "Settings"
-  }, [activeActivity, tauriAgent.workDir])
+  }, [activeActivity, tauriAgent.workDir, workspaceMode])
 
   return (
     <main className="flex h-screen overflow-hidden bg-[#0d0d0d] text-[#e8e8e8]">
@@ -293,22 +1337,123 @@ export function ModelerWorkbench({ projectId }: { projectId: string }) {
           <SidebarIcon className="h-4 w-4 text-[#787878]" />
           <span className="truncate text-xs font-medium uppercase tracking-wide text-[#b4b4b4]">{sidebarTitle}</span>
           {activeActivity === "explorer" && (
-            <Button size="icon" variant="ghost" className="ml-auto h-7 w-7" onClick={tauriAgent.refreshFileTree}>
-              <RefreshCw className="h-3.5 w-3.5" />
+            <Button
+              size="icon"
+              variant="ghost"
+              className="ml-auto h-7 w-7"
+              onClick={workspaceMode === "guest" ? refreshRemoteTree : tauriAgent.refreshFileTree}
+            >
+              <RefreshCw className={cn("h-3.5 w-3.5", workspaceMode === "guest" && remoteStatus === "loading" && "animate-spin")} />
             </Button>
           )}
         </div>
         <ScrollArea className="min-h-0 flex-1">
           {activeActivity === "explorer" && (
             <>
-              <div className="border-b border-[#373737] px-3 py-2">
-                <button
-                  onClick={() => tauriAgent.openFolder()}
-                  className="flex w-full items-center gap-2 rounded-md border border-[#373737] bg-[#232323] px-3 py-1.5 text-xs text-[#b4b4b4] hover:border-[#d4a574] hover:text-[#e8e8e8] transition-colors"
-                >
-                  <FolderOpen className="h-3.5 w-3.5 text-[#d4a574]" />
-                  Open Folder
-                </button>
+              <div className="space-y-2 border-b border-[#373737] px-3 py-2">
+                <div className="grid grid-cols-2 gap-1 rounded-md border border-[#373737] bg-[#121212] p-1">
+                  {(["host", "guest"] as const).map((mode) => (
+                    <button
+                      key={mode}
+                      onClick={() => setWorkspaceMode(mode)}
+                      className={cn(
+                        "rounded px-2 py-1 text-xs transition-colors",
+                        workspaceMode === mode
+                          ? "bg-[#d4a574] text-[#111111]"
+                          : "text-[#787878] hover:bg-[#232323] hover:text-[#e8e8e8]",
+                      )}
+                    >
+                      {mode === "host" ? "Host Local" : "Guest Remote"}
+                    </button>
+                  ))}
+                </div>
+                {workspaceMode === "host" ? (
+                  <div className="space-y-1.5">
+                    <button
+                      onClick={openFolderAndSync}
+                      disabled={!canSyncWorkspace}
+                      className={cn(
+                        "flex w-full items-center gap-2 rounded-md border border-[#373737] bg-[#232323] px-3 py-1.5 text-xs transition-colors",
+                        canSyncWorkspace
+                          ? "text-[#b4b4b4] hover:border-[#d4a574] hover:text-[#e8e8e8]"
+                          : "cursor-not-allowed text-[#5f5f5f]",
+                      )}
+                    >
+                      <FolderOpen className="h-3.5 w-3.5 text-[#d4a574]" />
+                      Open Folder + Sync
+                    </button>
+                    <button
+                      onClick={syncCurrentHostTree}
+                      disabled={!tauriAgent.fileTree || syncing || !canSyncWorkspace}
+                      className={cn(
+                        "flex w-full items-center gap-2 rounded-md border border-[#373737] bg-[#232323] px-3 py-1.5 text-xs transition-colors",
+                        tauriAgent.fileTree && !syncing && canSyncWorkspace
+                          ? "text-[#b4b4b4] hover:border-[#d4a574] hover:text-[#e8e8e8]"
+                          : "cursor-not-allowed text-[#5f5f5f]",
+                      )}
+                    >
+                      <RefreshCw className={cn("h-3.5 w-3.5 text-[#d4a574]", syncing && "animate-spin")} />
+                      {syncing ? "Syncing Remote" : "Sync to Remote"}
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    onClick={refreshRemoteTree}
+                    className="flex w-full items-center gap-2 rounded-md border border-[#373737] bg-[#232323] px-3 py-1.5 text-xs text-[#b4b4b4] transition-colors hover:border-[#d4a574] hover:text-[#e8e8e8]"
+                  >
+                    <RefreshCw className={cn("h-3.5 w-3.5 text-[#d4a574]", remoteStatus === "loading" && "animate-spin")} />
+                    {remoteStatus === "loading" ? "Loading Remote" : "Refresh Remote"}
+                  </button>
+                )}
+                {workspaceMode === "guest" && remoteStatus === "error" && (
+                  <p className="text-[11px] leading-4 text-[#f44336]">Remote project files unavailable.</p>
+                )}
+                {workspaceMode === "host" && syncStats && (
+                  <div className="space-y-2">
+                    <p className="text-[11px] leading-4 text-[#787878]">
+                      Synced: {syncStats.created} created, {syncStats.updated} updated, {syncStats.deleted} deleted, {syncStats.skipped} skipped, {syncStats.conflicts.length} conflicts, {syncStats.failed} failed.
+                    </p>
+                    {syncStats.conflicts.length > 0 && (
+                      <div className="space-y-1 rounded-md border border-[#5f3f24] bg-[#1f1a14] p-2">
+                        <p className="text-[11px] font-medium text-[#ebc396]">Conflicts need a decision</p>
+                        {syncStats.conflicts.map((conflict) => (
+                          <div key={`${conflict.fileId}:${conflict.path}`} className="space-y-1 border-t border-[#373737] pt-1 first:border-t-0 first:pt-0">
+                            <p className="truncate font-mono text-[10px] text-[#b4b4b4]">{conflict.path}</p>
+                            <div className="grid grid-cols-3 gap-1">
+                              <button
+                                onClick={() => keepRemoteConflict(conflict)}
+                                className="rounded border border-[#373737] px-1.5 py-1 text-[10px] text-[#b4b4b4] hover:border-[#d4a574] hover:text-[#e8e8e8]"
+                              >
+                                Keep Remote
+                              </button>
+                              <button
+                                onClick={() => overwriteRemoteConflict(conflict)}
+                                className="rounded border border-[#5f3f24] px-1.5 py-1 text-[10px] text-[#ebc396] hover:bg-[#2d241a]"
+                              >
+                                Overwrite
+                              </button>
+                              <button
+                                onClick={() => openDiffConflict(conflict)}
+                                className="rounded border border-[#373737] px-1.5 py-1 text-[10px] text-[#b4b4b4] hover:border-[#d4a574] hover:text-[#e8e8e8]"
+                              >
+                                Diff
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+                {workspaceMode === "host" && !canSyncWorkspace && (
+                  <p className="text-[11px] leading-4 text-[#787878]">workspace.sync and files.write permissions are required to publish local files.</p>
+                )}
+                {workspaceMode === "host" && hostFolderMissing && (
+                  <p className="text-[11px] leading-4 text-[#ffb4a8]">Previous host folder is unavailable. Choose the folder again to resume auto sync.</p>
+                )}
+                {workspaceMode === "host" && canSyncWorkspace && autoSyncEnabled && (
+                  <p className="text-[11px] leading-4 text-[#787878]">Auto sync is watching local file changes.</p>
+                )}
               </div>
               <div className="py-1">
                 <FileNode item={tree} depth={0} activePath={activeFilePath} onOpen={openFile} />
@@ -337,9 +1482,18 @@ export function ModelerWorkbench({ projectId }: { projectId: string }) {
                 {sessions.length === 0 ? (
                   <p className="px-3 py-4 text-center text-xs text-[#787878]">No conversations yet</p>
                 ) : sessions.map((s) => (
-                  <button
+                  <div
                     key={s.id}
+                    role="button"
+                    tabIndex={0}
                     onClick={() => { refreshSessions(); switchToChat(s.id, s.name || "Chat") }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault()
+                        refreshSessions()
+                        switchToChat(s.id, s.name || "Chat")
+                      }
+                    }}
                     className="group flex h-8 w-full items-center gap-2 px-3 text-left text-xs text-[#b4b4b4] hover:bg-[#232323] hover:text-[#e8e8e8] transition-colors"
                   >
                     <MessageSquare className="h-3.5 w-3.5 text-[#d4a574]" />
@@ -351,7 +1505,7 @@ export function ModelerWorkbench({ projectId }: { projectId: string }) {
                     >
                       ✕
                     </button>
-                  </button>
+                  </div>
                 ))}
               </div>
             </>
@@ -374,7 +1528,7 @@ export function ModelerWorkbench({ projectId }: { projectId: string }) {
               )}
             >
               {tab.kind === "chat" ? <MessageSquare className="h-4 w-4" /> : tab.kind === "research" ? <BookOpen className="h-4 w-4" /> : <FileCode className="h-4 w-4" />}
-              <span className="truncate">{tab.title}</span>
+              <span className="truncate">{tab.title}{tab.dirty ? " *" : ""}</span>
               <span
                 role="button"
                 className="ml-1 flex h-4 w-4 items-center justify-center rounded hover:bg-[#373737] cursor-pointer"
@@ -393,21 +1547,99 @@ export function ModelerWorkbench({ projectId }: { projectId: string }) {
               </span>
             </button>
           ))}
+          {active?.kind === "file" && (
+            <button
+              onClick={saveActiveFile}
+              disabled={Boolean(active.remoteFileId) || active.readOnly || active.saveStatus === "saving" || (workspaceMode === "guest" && !canWriteFiles)}
+              className={cn(
+                "ml-auto mr-2 flex h-7 items-center gap-1.5 rounded-md border px-2 text-xs transition-colors",
+                active.dirty
+                  ? "border-[#d4a574] bg-[#2d241a] text-[#ebc396]"
+                  : "border-[#373737] bg-[#232323] text-[#787878]",
+                active.saveStatus === "saving" && "opacity-60",
+              )}
+            >
+              <Save className="h-3.5 w-3.5" />
+              {active.remoteFileId ? "Collaborative" : active.readOnly ? "Read only" : active.saveStatus === "saving" ? "Saving" : active.saveStatus === "conflict" ? "Conflict" : active.saveStatus === "error" ? "Save failed" : "Save"}
+            </button>
+          )}
         </div>
         <div className="min-h-0 flex-1">
           {activeActivity === "settings" ? (
-            <SettingsPanel />
+            <SettingsPanel
+              projectId={projectId}
+              project={project}
+              capabilities={capabilities}
+              currentUserId={currentUserId}
+              screenShare={screenShare}
+              onProjectRefresh={refreshProject}
+            />
           ) : active?.kind === "chat" ? (
-            <ChatPanel conversationId={active.id} />
+            <ChatPanel
+              conversationId={active.id}
+              projectId={projectId}
+              workspaceMode={workspaceMode}
+              capabilities={capabilities}
+            />
           ) : active?.kind === "research" ? (
             <ResearchLibrary projectId={projectId} />
+          ) : active?.kind === "diff" ? (
+            <div className="flex h-full flex-col">
+              <div className="flex h-8 items-center gap-3 border-b border-[#373737] bg-[#121212] px-3 text-xs text-[#b4b4b4]">
+                <span>{active.diff?.leftTitle ?? "Local"}</span>
+                <span className="text-[#787878]">vs</span>
+                <span>{active.diff?.rightTitle ?? "Remote"}</span>
+              </div>
+              <div className="min-h-0 flex-1">
+                <CodeEditor
+                  language={active.language || "plaintext"}
+                  value=""
+                  diff={active.diff}
+                />
+              </div>
+            </div>
           ) : active?.kind === "file" ? (
-            <CodeEditor language={active.language || "plaintext"} value={active.content || ""} />
+            <div className="flex h-full flex-col">
+              {active.localExternalConflict && (
+                <div className="border-b border-[#5f3f24] bg-[#2d241a] px-3 py-2 text-xs text-[#ebc396]">
+                  Local file changed outside the collaborative editor. Yjs remains the source of truth; use Sync conflict controls before overwriting remote.
+                </div>
+              )}
+              {active.saveStatus === "conflict" && (
+                <div className="border-b border-[#5f3f24] bg-[#2d241a] px-3 py-2 text-xs text-[#ebc396]">
+                  Remote file changed after you opened it. Refresh the remote tree and reopen the file before saving.
+                </div>
+              )}
+              {active.saveStatus === "error" && (
+                <div className="border-b border-[#5f2424] bg-[#2d1a1a] px-3 py-2 text-xs text-[#ffb4a8]">
+                  Save failed. Check permissions and server status.
+                </div>
+              )}
+              <div className="min-h-0 flex-1">
+                <CodeEditor
+                  language={active.language || "plaintext"}
+                  value={active.content || ""}
+                  readOnly={active.readOnly || (workspaceMode === "guest" && !canWriteFiles)}
+                  onChange={(value) => updateActiveFileContent(value, Boolean(active.remoteFileId))}
+                  collaborative={active.remoteFileId ? {
+                    fileId: active.remoteFileId,
+                    user: { id: currentUserId ?? undefined, name: user?.display_name || "User" },
+                    readOnly: active.readOnly || (workspaceMode === "guest" && !canWriteFiles),
+                  } : undefined}
+                />
+              </div>
+            </div>
           ) : null}
         </div>
         <footer className="flex h-7 items-center justify-between border-t border-[#373737] bg-[#1a1a1a] px-3 text-xs text-[#787878]">
-          <span>{tauriAgent.status}</span>
-          <span>Host: local</span>
+          <button
+            onClick={signOut}
+            className="flex items-center gap-1.5 text-[#787878] transition-colors hover:text-[#e8e8e8]"
+          >
+            <LogOut className="h-3.5 w-3.5" />
+            Sign out
+          </button>
+          <span>{workspaceMode === "guest" ? "Guest: remote project" : "Host: local folder"} &middot; {project?.role ?? "unknown"}</span>
         </footer>
       </section>
     </main>

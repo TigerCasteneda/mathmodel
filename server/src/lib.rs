@@ -7,6 +7,7 @@ pub mod file;
 pub mod history;
 pub mod project;
 pub mod research;
+pub mod screen;
 pub mod sync;
 
 use axum::routing::get;
@@ -30,6 +31,7 @@ pub fn build_router(state: AppState) -> Router {
         .nest("/auth", auth::handlers::routes())
         .nest("/projects", project::handlers::routes())
         .merge(file::handlers::routes())
+        .merge(screen::handlers::routes())
         .route("/sync", get(sync::handlers::ws_handler))
         .merge(compute::handlers::routes())
         .merge(history::handlers::routes())

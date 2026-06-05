@@ -5,8 +5,10 @@ use axum::{
     Json, Router,
 };
 use chrono::Utc;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+use yrs::updates::decoder::Decode;
+use yrs::{GetString, ReadTxn, Text, Transact};
 
 use super::model::*;
 use crate::auth::middleware::AuthUser;
@@ -19,6 +21,19 @@ struct DeleteTarget {
     storage_path: Option<String>,
 }
 
+#[derive(Serialize)]
+struct FileContentResponse {
+    file_id: String,
+    content: String,
+    updated_at: i64,
+}
+
+#[derive(Deserialize)]
+struct UpdateFileContentRequest {
+    content: String,
+    expected_updated_at: Option<i64>,
+}
+
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route(
@@ -29,6 +44,10 @@ pub fn routes() -> Router<AppState> {
         .route(
             "/projects/{project_id}/files/{file_id}",
             get(get_file).delete(delete_file),
+        )
+        .route(
+            "/projects/{project_id}/files/{file_id}/content",
+            get(get_file_content).put(update_file_content),
         )
         .route(
             "/projects/{project_id}/files/{file_id}/rename",
@@ -46,24 +65,96 @@ struct ListQuery {
     parent_id: Option<String>,
 }
 
-async fn verify_membership(
+fn default_capabilities(role: &str) -> Vec<String> {
+    match role {
+        "owner" => [
+            "files.read",
+            "files.write",
+            "ai.read",
+            "ai.write",
+            "workspace.sync",
+            "members.manage",
+            "invites.manage",
+            "screen.share",
+            "screen.view",
+        ]
+        .iter()
+        .map(|cap| cap.to_string())
+        .collect(),
+        "editor" => ["files.read", "files.write", "ai.read", "ai.write", "screen.share"]
+            .iter()
+            .map(|cap| cap.to_string())
+            .collect(),
+        "viewer" => ["files.read", "ai.read"]
+            .iter()
+            .map(|cap| cap.to_string())
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+async fn member_capabilities(
     pool: &sqlx::SqlitePool,
     project_id: &str,
     user_id: &str,
-) -> Result<(), AppError> {
-    let exists: i64 = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM project_members WHERE project_id = ? AND user_id = ?)",
+) -> Result<Vec<String>, AppError> {
+    let row: (String, Option<String>) = sqlx::query_as(
+        "SELECT role, capabilities FROM project_members WHERE project_id = ? AND user_id = ? LIMIT 1",
     )
     .bind(project_id)
     .bind(user_id)
-    .fetch_one(pool)
-    .await?;
+    .fetch_optional(pool)
+    .await?
+    .ok_or_else(|| AppError::Forbidden("not a member of this project".into()))?;
 
-    if exists == 0 {
-        Err(AppError::Forbidden("not a member of this project".into()))
-    } else {
-        Ok(())
+    let (role, capabilities) = row;
+    match capabilities {
+        Some(raw) if !raw.trim().is_empty() => serde_json::from_str::<Vec<String>>(&raw)
+            .map_err(|e| AppError::Internal(format!("capabilities decode: {e}"))),
+        _ => Ok(default_capabilities(&role)),
     }
+}
+
+async fn ensure_capability(
+    pool: &sqlx::SqlitePool,
+    project_id: &str,
+    user_id: &str,
+    capability: &str,
+) -> Result<(), AppError> {
+    let capabilities = member_capabilities(pool, project_id, user_id).await?;
+    if capabilities.iter().any(|cap| cap == capability) {
+        Ok(())
+    } else {
+        Err(AppError::Forbidden(format!("{capability} required")))
+    }
+}
+
+fn decode_crdt_to_text(data: &[u8]) -> Result<String, AppError> {
+    if data.is_empty() {
+        return Ok(String::new());
+    }
+
+    let doc = yrs::Doc::new();
+    let mut txn = doc.transact_mut();
+    let update = yrs::Update::decode_v1(data)
+        .map_err(|e| AppError::Internal(format!("crdt decode: {}", e)))?;
+    txn.apply_update(update);
+    drop(txn);
+
+    let text = doc.get_or_insert_text("content");
+    let txn = doc.transact();
+    Ok(text.get_string(&txn))
+}
+
+fn encode_text_as_crdt(content: &str) -> Vec<u8> {
+    let doc = yrs::Doc::new();
+    let text = doc.get_or_insert_text("content");
+    {
+        let mut txn = doc.transact_mut();
+        text.insert(&mut txn, 0, content);
+    }
+    let txn = doc.transact();
+    txn.encode_state_as_update_v1(&yrs::StateVector::default())
 }
 
 fn validate_file_name(name: &str) -> Result<String, AppError> {
@@ -160,7 +251,7 @@ async fn list_files(
     Path(project_id): Path<String>,
     Query(query): Query<ListQuery>,
 ) -> Result<Json<Vec<FileNode>>, AppError> {
-    verify_membership(&state.pool, &project_id, &auth.user_id).await?;
+    ensure_capability(&state.pool, &project_id, &auth.user_id, "files.read").await?;
 
     let files = if let Some(pid) = &query.parent_id {
         sqlx::query_as(
@@ -188,7 +279,7 @@ async fn create_file(
     Path(project_id): Path<String>,
     Json(req): Json<CreateFileRequest>,
 ) -> Result<Json<FileNode>, AppError> {
-    verify_membership(&state.pool, &project_id, &auth.user_id).await?;
+    ensure_capability(&state.pool, &project_id, &auth.user_id, "files.write").await?;
 
     let name = validate_file_name(&req.name)?;
     let node_type = validate_node_type(&req.node_type)?;
@@ -256,7 +347,7 @@ async fn upload_file(
     Path(project_id): Path<String>,
     mut multipart: Multipart,
 ) -> Result<Json<FileNode>, AppError> {
-    verify_membership(&state.pool, &project_id, &auth.user_id).await?;
+    ensure_capability(&state.pool, &project_id, &auth.user_id, "files.write").await?;
 
     let mut file_name = String::new();
     let mut data = Vec::new();
@@ -320,7 +411,7 @@ async fn get_file(
     auth: AuthUser,
     Path((project_id, file_id)): Path<(String, String)>,
 ) -> Result<Json<FileNode>, AppError> {
-    verify_membership(&state.pool, &project_id, &auth.user_id).await?;
+    ensure_capability(&state.pool, &project_id, &auth.user_id, "files.read").await?;
 
     let file: FileNode = sqlx::query_as("SELECT * FROM files WHERE id = ? AND project_id = ?")
         .bind(&file_id)
@@ -332,12 +423,109 @@ async fn get_file(
     Ok(Json(file))
 }
 
+async fn get_file_content(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path((project_id, file_id)): Path<(String, String)>,
+) -> Result<Json<FileContentResponse>, AppError> {
+    ensure_capability(&state.pool, &project_id, &auth.user_id, "files.read").await?;
+
+    let file: FileNode = sqlx::query_as("SELECT * FROM files WHERE id = ? AND project_id = ?")
+        .bind(&file_id)
+        .bind(&project_id)
+        .fetch_optional(&state.pool)
+        .await?
+        .ok_or_else(|| AppError::NotFound("file not found".into()))?;
+
+    if file.node_type != "file" {
+        return Err(AppError::BadRequest("path is not a file".into()));
+    }
+
+    let content = if let Some(storage_path) = &file.storage_path {
+        let full_path = std::path::Path::new(&state.config.data_dir).join(storage_path);
+        let data = std::fs::read(full_path)
+            .map_err(|_| AppError::NotFound("file data not found".into()))?;
+        String::from_utf8(data)
+            .map_err(|_| AppError::BadRequest("file is not valid UTF-8 text".into()))?
+    } else {
+        let row: Option<(Vec<u8>,)> =
+            sqlx::query_as("SELECT ydoc_state FROM crdt_docs WHERE file_id = ?")
+                .bind(&file_id)
+                .fetch_optional(&state.pool)
+                .await?;
+        decode_crdt_to_text(&row.map(|(state,)| state).unwrap_or_default())?
+    };
+
+    Ok(Json(FileContentResponse {
+        file_id,
+        content,
+        updated_at: file.updated_at,
+    }))
+}
+
+async fn update_file_content(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path((project_id, file_id)): Path<(String, String)>,
+    Json(req): Json<UpdateFileContentRequest>,
+) -> Result<Json<FileContentResponse>, AppError> {
+    ensure_capability(&state.pool, &project_id, &auth.user_id, "files.write").await?;
+
+    let file: FileNode = sqlx::query_as("SELECT * FROM files WHERE id = ? AND project_id = ?")
+        .bind(&file_id)
+        .bind(&project_id)
+        .fetch_optional(&state.pool)
+        .await?
+        .ok_or_else(|| AppError::NotFound("file not found".into()))?;
+
+    if file.node_type != "file" {
+        return Err(AppError::BadRequest("path is not a file".into()));
+    }
+    if file.storage_path.is_some() {
+        return Err(AppError::BadRequest(
+            "uploaded binary files cannot be edited as CRDT text".into(),
+        ));
+    }
+    if let Some(expected_updated_at) = req.expected_updated_at {
+        if file.updated_at != expected_updated_at {
+            return Err(AppError::Conflict("file changed since it was opened".into()));
+        }
+    }
+
+    let now = Utc::now().timestamp_millis();
+    let ydoc_state = encode_text_as_crdt(&req.content);
+
+    let mut tx = state.pool.begin().await?;
+    sqlx::query(
+        "INSERT OR REPLACE INTO crdt_docs (file_id, ydoc_state, updated_at) VALUES (?, ?, ?)",
+    )
+    .bind(&file_id)
+    .bind(&ydoc_state)
+    .bind(now)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query("UPDATE files SET size = ?, updated_at = ? WHERE id = ? AND project_id = ?")
+        .bind(req.content.len() as i64)
+        .bind(now)
+        .bind(&file_id)
+        .bind(&project_id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+
+    Ok(Json(FileContentResponse {
+        file_id,
+        content: req.content,
+        updated_at: now,
+    }))
+}
+
 async fn delete_file(
     State(state): State<AppState>,
     auth: AuthUser,
     Path((project_id, file_id)): Path<(String, String)>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    verify_membership(&state.pool, &project_id, &auth.user_id).await?;
+    ensure_capability(&state.pool, &project_id, &auth.user_id, "files.write").await?;
 
     let targets: Vec<DeleteTarget> = sqlx::query_as(
         "WITH RECURSIVE descendants(id, depth) AS (
@@ -396,7 +584,7 @@ async fn rename_file(
     Path((project_id, file_id)): Path<(String, String)>,
     Json(req): Json<RenameRequest>,
 ) -> Result<Json<FileNode>, AppError> {
-    verify_membership(&state.pool, &project_id, &auth.user_id).await?;
+    ensure_capability(&state.pool, &project_id, &auth.user_id, "files.write").await?;
 
     let existing: FileNode = sqlx::query_as("SELECT * FROM files WHERE id = ? AND project_id = ?")
         .bind(&file_id)
@@ -438,7 +626,7 @@ async fn download_file(
     auth: AuthUser,
     Path((project_id, file_id)): Path<(String, String)>,
 ) -> Result<(axum::http::HeaderMap, Bytes), AppError> {
-    verify_membership(&state.pool, &project_id, &auth.user_id).await?;
+    ensure_capability(&state.pool, &project_id, &auth.user_id, "files.read").await?;
 
     let file: FileNode = sqlx::query_as("SELECT * FROM files WHERE id = ? AND project_id = ?")
         .bind(&file_id)
@@ -479,7 +667,7 @@ async fn get_file_tree(
     auth: AuthUser,
     Path(project_id): Path<String>,
 ) -> Result<Json<Vec<FileTree>>, AppError> {
-    verify_membership(&state.pool, &project_id, &auth.user_id).await?;
+    ensure_capability(&state.pool, &project_id, &auth.user_id, "files.read").await?;
 
     let files: Vec<FileNode> =
         sqlx::query_as("SELECT * FROM files WHERE project_id = ? ORDER BY type DESC, name")
@@ -496,6 +684,7 @@ async fn get_file_tree(
                 name: n.name.clone(),
                 node_type: n.node_type.clone(),
                 zone: n.zone.clone(),
+                updated_at: n.updated_at,
                 children: if n.node_type == "folder" {
                     Some(build_tree(nodes, Some(&n.id)))
                 } else {
