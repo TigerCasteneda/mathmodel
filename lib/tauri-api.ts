@@ -81,6 +81,8 @@ export interface ChatErrorEvent {
   message: string
 }
 
+export type AiPermissionMode = "default" | "accept_edit" | "auto" | "bypass"
+
 export function isTauri(): boolean {
   if (typeof window === "undefined") return false
   // Tauri v2 injects __TAURI_INTERNALS__ even with withGlobalTauri: false
@@ -174,6 +176,7 @@ export async function openFolder(): Promise<string | null> {
 
 export interface AiChatOptions {
   workspaceMode?: "host" | "guest"
+  permissionMode?: AiPermissionMode
   projectId?: string
   authToken?: string | null
   serverBase?: string | null
@@ -191,6 +194,7 @@ export async function aiChat(
     message,
     conversationId,
     workspaceMode: options.workspaceMode ?? "host",
+    permissionMode: options.permissionMode ?? "default",
     projectId: options.projectId ?? null,
     authToken: options.authToken ?? null,
     serverBase,
@@ -250,6 +254,15 @@ export interface ChatToolCallEvent {
   status: string
 }
 
+export interface ChatBackgroundTaskEvent {
+  conversation_id: string
+  task_id: string
+  task_type: string
+  prompt: string
+  status: "running" | "completed" | "error"
+  result: string
+}
+
 export function onChatStream(callback: (event: ChatStreamEvent) => void): () => void {
   return listenEvent<ChatStreamEvent>("chat:stream", callback)
 }
@@ -260,6 +273,10 @@ export function onChatToolCall(callback: (event: ChatToolCallEvent) => void): ()
 
 export function onChatError(callback: (event: ChatErrorEvent) => void): () => void {
   return listenEvent<ChatErrorEvent>("chat:error", callback)
+}
+
+export function onChatBackgroundTask(callback: (event: ChatBackgroundTaskEvent) => void): () => void {
+  return listenEvent<ChatBackgroundTaskEvent>("chat:background_task", callback)
 }
 
 // ─── Sessions ────────────────────────────────────────

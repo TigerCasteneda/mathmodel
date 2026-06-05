@@ -1,7 +1,6 @@
 use super::config::{AiConfig, AiConfigState, AiConfigStatus};
-use super::runtime::ModelerAiRuntime;
+use super::runtime::{ModelerAiRuntime, PermissionMode};
 use super::session::ChatSessionStore;
-use super::tools::{execute_tool, modeler_tool_definitions};
 use super::workspace::WorkspaceContext;
 use crate::agent::state::AgentState;
 use claude_code_rs::ChatMessage;
@@ -145,12 +144,13 @@ pub async fn ai_chat(
     message: String,
     conversation_id: Option<String>,
     workspace_mode: Option<String>,
+    permission_mode: Option<String>,
     project_id: Option<String>,
     auth_token: Option<String>,
     server_base: Option<String>,
     capabilities: Option<Vec<String>>,
     app: AppHandle,
-    agent_state: State<'_, AgentState>,
+    _agent_state: State<'_, AgentState>,
     config_state: State<'_, AiConfigState>,
     sessions: State<'_, ChatSessionStore>,
 ) -> Result<(), String> {
@@ -166,7 +166,7 @@ pub async fn ai_chat(
     }
 
     sessions.push_user(&conversation_id, message.clone())?;
-    let work_dir = agent_state
+    let work_dir = _agent_state
         .work_dir
         .lock()
         .map_err(|e| e.to_string())?
@@ -180,15 +180,21 @@ pub async fn ai_chat(
         server_base,
         capabilities,
     );
-    let runtime = ModelerAiRuntime::new(config, workspace, app.clone())
-        .await
-        .map_err(|e| {
-            let msg = format!("Workspace runtime failed: {e}");
-            emit_chat_error(&app, &conversation_id, &msg);
-            msg
-        })?;
+    let permission_mode = PermissionMode::from_option(permission_mode);
+    let runtime = ModelerAiRuntime::new(
+        config,
+        workspace,
+        app.clone(),
+        conversation_id.clone(),
+        permission_mode,
+    )
+    .await
+    .map_err(|e| {
+        let msg = format!("Workspace runtime failed: {e}");
+        emit_chat_error(&app, &conversation_id, &msg);
+        msg
+    })?;
     let mut tools = runtime.tool_definitions().await;
-    tools.extend(modeler_compat_tool_definitions());
 
     let tree_text = match runtime.workspace_tree().await {
         Ok(tree) => format_file_tree(&tree, 0),
@@ -197,6 +203,7 @@ pub async fn ai_chat(
 
     let mut messages = vec![ChatMessage::system(system_prompt(
         runtime.workspace_label(),
+        runtime.permission_label(),
         &tree_text,
     ))];
     messages.extend(sessions.history(&conversation_id)?);
@@ -306,15 +313,11 @@ pub async fn ai_chat(
                     "",
                     "running",
                 );
-                let result = match runtime.execute_tool(&tc.function.name, args.clone()).await {
-                    Some(result) => result,
-                    None => execute_tool(&tc.function.name, &args, &agent_state).await,
-                };
-                let status = if result.starts_with("Error") {
-                    "error"
-                } else {
-                    "success"
-                };
+                let result = runtime
+                    .execute_tool(&tc.function.name, args.clone())
+                    .await
+                    .unwrap_or_else(|| format!("Unknown tool: {}", tc.function.name));
+                let status = tool_result_status(&result);
                 emit_tool(
                     &app,
                     &conversation_id,
@@ -327,6 +330,7 @@ pub async fn ai_chat(
             }
 
             sessions.push_assistant(&conversation_id, assistant_text)?;
+            tools = runtime.tool_definitions().await;
 
             // Continue loop — send tool results back to LLM (no hard limit)
             continue;
@@ -340,31 +344,37 @@ pub async fn ai_chat(
     }
 }
 
-fn modeler_compat_tool_definitions() -> Vec<claude_code_rs::api::ToolDefinition> {
-    modeler_tool_definitions()
-        .into_iter()
-        .filter(|tool| matches!(tool.function.name.as_str(), "save_reference"))
-        .collect()
-}
-
 fn mark_stream_done(finish_reason: &mut Option<String>) {
     if finish_reason.is_none() {
         *finish_reason = Some("stop".to_string());
     }
 }
 
-fn system_prompt(workspace_label: &str, file_tree: &str) -> String {
+fn tool_result_status(result: &str) -> &'static str {
+    if result.starts_with("Error") {
+        return "error";
+    }
+    match serde_json::from_str::<serde_json::Value>(result) {
+        Ok(value) if value["success"].as_bool() == Some(false) => "error",
+        _ => "success",
+    }
+}
+
+fn system_prompt(workspace_label: &str, permission_label: &str, file_tree: &str) -> String {
     format!(
         "You are Modeler AI, a mathematical modeling assistant embedded in a collaborative platform for MCM/ICM competition teams.\n\
          You are running on the claude-code-rust runtime layer inside a Tauri desktop app.\n\
          Current workspace source: {workspace_label}.\n\
-         Prefer Claude Code style tools: file_read, file_write, file_edit, list_files, execute_command, and search_files.\n\
-         Backward-compatible aliases read_file/write_file and the save_reference tool are also available.\n\
+         Current permission mode: {permission_label}.\n\
+         Core tools are always visible: tool_search, file_read/read_file, file_write/write_file when workspace permissions allow writes, web_search, and save_reference.\n\
+         Deferred tools such as file_edit, list_files, execute_command, search_files, fetch_url, and start_background_task must be discovered with tool_search before use.\n\
+         fetch_url uses a Jina Reader markdown fallback. Firecrawl and Context7 are intentionally not wired in this phase.\n\
          In Guest Remote mode, execute_command is unavailable because teammates do not own the host shell.\n\
+         Default mode is read/search only. Accept Edit allows file edits. Auto allows edits and low-risk commands. Bypass allows broader shell execution.\n\
          Provide mathematical reasoning and make concrete workspace changes when asked.\n\
          \n\
          ## Current project files\n\
-         Use file_read(path) to inspect contents, file_write(path, content) to create/overwrite, and file_edit(path, old_content, new_content) for targeted edits.\n\
+         Use file_read(path) to inspect contents, file_write(path, content) to create/overwrite when allowed, and tool_search before targeted edits or shell commands.\n\
          {file_tree}"
     )
 }
@@ -549,14 +559,11 @@ mod tests {
     }
 
     #[test]
-    fn compat_tool_definitions_hide_web_search_until_search_pipeline_is_ready() {
-        let names = super::modeler_compat_tool_definitions()
-            .into_iter()
-            .map(|tool| tool.function.name)
-            .collect::<Vec<_>>();
+    fn system_prompt_documents_deferred_tools() {
+        let prompt = super::system_prompt("Host Local", "Auto", "model.py");
 
-        assert!(names.contains(&"save_reference".to_string()));
-        assert!(!names.contains(&"web_search".to_string()));
-        assert!(!names.contains(&"fetch_url".to_string()));
+        assert!(prompt.contains("tool_search"));
+        assert!(prompt.contains("Deferred tools"));
+        assert!(prompt.contains("Firecrawl and Context7 are intentionally not wired"));
     }
 }

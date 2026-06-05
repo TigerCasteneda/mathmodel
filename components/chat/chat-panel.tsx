@@ -8,12 +8,14 @@ import {
   ChevronRight,
   FileText,
   FolderTree,
+  Globe2,
+  Link2,
   Loader2,
   PencilLine,
+  Play,
   Save,
   Search,
   Send,
-  Sparkles,
   Terminal,
   UserRound,
   Wrench,
@@ -27,7 +29,19 @@ import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
 import { cn } from "@/lib/utils"
-import { aiChat, getAiConfigStatus, loadSession, onChatError, onChatStream, onChatToolCall, setAiModel, type ChatToolCallEvent } from "@/lib/tauri-api"
+import {
+  aiChat,
+  getAiConfigStatus,
+  loadSession,
+  onChatBackgroundTask,
+  onChatError,
+  onChatStream,
+  onChatToolCall,
+  setAiModel,
+  type AiPermissionMode,
+  type ChatBackgroundTaskEvent,
+  type ChatToolCallEvent,
+} from "@/lib/tauri-api"
 import { getToken, type ProjectCapability } from "@/lib/api"
 
 // ── types ──
@@ -48,10 +62,25 @@ type ToolCallEntry = {
   status: "running" | "success" | "error"
 }
 
+type BackgroundTaskEntry = {
+  taskId: string
+  taskType: string
+  prompt: string
+  status: "running" | "completed" | "error"
+  result: string
+}
+
 const MODELS = [
   { value: "deepseek-v4-pro", label: "V4 Pro (Deep Reasoning)" },
   { value: "deepseek-v4-flash", label: "V4 Flash (Fast)" },
   { value: "deepseek-chat", label: "V3 Chat (General)" },
+]
+
+const PERMISSION_MODES: Array<{ value: AiPermissionMode; label: string }> = [
+  { value: "default", label: "Default" },
+  { value: "accept_edit", label: "Accept Edit" },
+  { value: "auto", label: "Auto" },
+  { value: "bypass", label: "Bypass" },
 ]
 
 const SLASH_COMMANDS: Record<string, string> = {
@@ -62,6 +91,20 @@ const SLASH_COMMANDS: Record<string, string> = {
   "/explain": "Explain code/math",
   "/optimize": "Optimize code",
   "/refs": "List saved references",
+}
+
+function OrangeMark({ className }: { className?: string }) {
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center justify-center rounded-full border border-[#f59e0b]/70 bg-[#1f1308] text-[#f59e0b] shadow-[0_0_18px_rgba(245,158,11,0.18)]",
+        className,
+      )}
+      aria-hidden="true"
+    >
+      <Play className="ml-0.5 h-[58%] w-[58%] fill-current stroke-[2.5]" />
+    </span>
+  )
 }
 
 // ── markdown renderer ──
@@ -134,6 +177,7 @@ function MarkdownContent({ content }: { content: string }) {
 // ── Claude Code-style tool call card ──
 
 const TOOL_META: Record<string, { label: string; tone: string; icon: typeof Wrench }> = {
+  tool_search: { label: "Find Tools", tone: "neutral", icon: Wrench },
   file_read: { label: "View", tone: "info", icon: FileText },
   read_file: { label: "View", tone: "info", icon: FileText },
   file_write: { label: "Write", tone: "success", icon: FileText },
@@ -142,6 +186,9 @@ const TOOL_META: Record<string, { label: string; tone: string; icon: typeof Wren
   list_files: { label: "List", tone: "neutral", icon: FolderTree },
   execute_command: { label: "Bash", tone: "warning", icon: Terminal },
   search_files: { label: "Search", tone: "info", icon: Search },
+  web_search: { label: "Web Search", tone: "info", icon: Globe2 },
+  fetch_url: { label: "Fetch URL", tone: "info", icon: Link2 },
+  start_background_task: { label: "Background", tone: "warning", icon: Loader2 },
   save_reference: { label: "Save Reference", tone: "success", icon: Save },
 }
 
@@ -163,7 +210,7 @@ function compactValue(value: unknown): string {
 }
 
 function primaryToolArg(args: Record<string, unknown>) {
-  return compactValue(args.path ?? args.file_path ?? args.command ?? args.pattern ?? args.title ?? args.url ?? "")
+  return compactValue(args.path ?? args.file_path ?? args.command ?? args.pattern ?? args.query ?? args.title ?? args.url ?? args.prompt ?? "")
 }
 
 function ToolCallCard({ tc }: { tc: ToolCallEntry }) {
@@ -237,6 +284,43 @@ function ToolCallCard({ tc }: { tc: ToolCallEntry }) {
   )
 }
 
+function BackgroundTaskCard({ task }: { task: BackgroundTaskEntry }) {
+  const done = task.status === "completed"
+  const failed = task.status === "error"
+
+  return (
+    <div className="my-2 rounded-lg border border-[#373737] bg-[#151515] px-3 py-2 text-xs shadow-[0_0_0_1px_rgba(245,158,11,0.08)]">
+      <div className="flex items-center gap-2">
+        <OrangeMark className="h-6 w-6 shrink-0" />
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <span className="font-semibold text-[#e8e8e8]">Background {task.taskType}</span>
+            <span className={cn(
+              "rounded-full border px-1.5 py-0.5 text-[10px] uppercase",
+              failed ? "border-[#f44336]/40 text-[#ffb4b4]" : done ? "border-[#4caf50]/40 text-[#9fd89f]" : "border-[#f59e0b]/40 text-[#f7be62]",
+            )}>
+              {task.status}
+            </span>
+          </div>
+          <div className="mt-0.5 truncate font-mono text-[11px] text-[#b4b4b4]">{task.prompt}</div>
+        </div>
+        {failed ? (
+          <AlertCircle className="h-4 w-4 text-[#f44336]" />
+        ) : done ? (
+          <CheckCircle2 className="h-4 w-4 text-[#4caf50]" />
+        ) : (
+          <Loader2 className="h-4 w-4 animate-spin text-[#f59e0b]" />
+        )}
+      </div>
+      {task.result && (
+        <pre className="mt-2 max-h-40 overflow-y-auto rounded-md border border-[#2a2a2a] bg-[#0d0d0d] p-2 font-mono text-[11px] leading-5 text-[#b4b4b4]">
+          {task.result}
+        </pre>
+      )}
+    </div>
+  )
+}
+
 function ThinkingStrip() {
   return (
     <div className="cc-thinking-strip flex items-center gap-2 rounded-lg border border-[#373737] bg-[#151515] px-3 py-2 text-xs text-[#b4b4b4]">
@@ -269,6 +353,8 @@ export function ChatPanel({
   const [sending, setSending] = useState(false)
   const [loaded, setLoaded] = useState(false)
   const [selectedModel, setSelectedModel] = useState("deepseek-v4-pro")
+  const [permissionMode, setPermissionMode] = useState<AiPermissionMode>("default")
+  const [backgroundTasks, setBackgroundTasks] = useState<BackgroundTaskEntry[]>([])
   const [showSlashMenu, setShowSlashMenu] = useState(false)
   const scrollRef = useRef<HTMLDivElement>(null)
   const seenStreamEventsRef = useRef<Set<string>>(new Set())
@@ -283,6 +369,7 @@ export function ChatPanel({
   useEffect(() => {
     seenStreamEventsRef.current.clear()
     setLoaded(false)
+    setBackgroundTasks([])
     loadSession(conversationId).then((session) => {
       const restored: Message[] = (session.messages || []).map((m) => ({
         id: crypto.randomUUID(),
@@ -356,7 +443,25 @@ export function ChatPanel({
       setMessages((prev) => [...prev, { id: crypto.randomUUID(), role: "system", content: event.message }])
     })
 
-    return () => { offStream(); offTool(); offError() }
+    const offBackground = onChatBackgroundTask((event: ChatBackgroundTaskEvent) => {
+      if (event.conversation_id !== conversationId) return
+      const entry: BackgroundTaskEntry = {
+        taskId: event.task_id,
+        taskType: event.task_type,
+        prompt: event.prompt,
+        status: event.status,
+        result: event.result,
+      }
+      setBackgroundTasks((prev) => {
+        const index = prev.findIndex((task) => task.taskId === entry.taskId)
+        if (index < 0) return [...prev, entry]
+        const next = [...prev]
+        next[index] = entry
+        return next
+      })
+    })
+
+    return () => { offStream(); offTool(); offError(); offBackground() }
   }, [conversationId])
 
   const canSend = useMemo(() => input.trim().length > 0 && !sending && loaded, [input, sending, loaded])
@@ -372,6 +477,7 @@ export function ChatPanel({
     try {
       await aiChat(message, conversationId, {
         workspaceMode,
+        permissionMode,
         projectId,
         authToken: getToken(),
         capabilities,
@@ -407,9 +513,7 @@ export function ChatPanel({
     <section className="flex h-full min-h-0 flex-col bg-[#0d0d0d] text-[#e8e8e8]">
       {/* Header bar */}
       <div className="flex h-11 items-center gap-2 border-b border-[#373737] bg-[#121212]/95 px-3 shrink-0">
-        <span className="cc-claude-mark flex h-7 w-7 items-center justify-center rounded-lg border border-[#373737] bg-[#232323] text-[#d4a574]">
-          <Sparkles className="h-4 w-4" />
-        </span>
+        <OrangeMark className="cc-claude-mark h-7 w-7" />
         <div className="flex flex-col leading-none">
           <span className="text-sm font-medium">Modeler AI</span>
           <span className="mt-1 text-[10px] uppercase tracking-[0.18em] text-[#787878]">Claude Code Runtime</span>
@@ -424,9 +528,7 @@ export function ChatPanel({
       <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto">
         {messages.length === 0 ? (
           <div className="mx-auto flex h-full max-w-2xl flex-col justify-center px-4">
-            <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-[#232323] text-[#d4a574]">
-              <Sparkles className="h-6 w-6" />
-            </div>
+            <OrangeMark className="mb-4 h-12 w-12" />
             <h2 className="text-xl font-semibold">Modeler AI</h2>
             <p className="mt-2 text-sm text-[#787878]">Mathematical modeling assistant. Search papers, write code, analyze data.</p>
             <div className="mt-4 flex flex-wrap gap-2 text-xs text-[#b4b4b4]">
@@ -443,9 +545,7 @@ export function ChatPanel({
             {messages.map((message) => (
               <div key={message.id} className={cn("flex gap-3", message.role === "user" && "justify-end")}>
                 {message.role !== "user" && (
-                  <div className="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#232323] text-[#d4a574]">
-                    <Sparkles className="h-4 w-4" />
-                  </div>
+                  <OrangeMark className="mt-1 h-8 w-8 shrink-0" />
                 )}
                 <div className={cn(
                   "max-w-[80%] rounded-2xl px-4 py-3 text-sm transition-shadow",
@@ -502,11 +602,16 @@ export function ChatPanel({
                 )}
               </div>
             ))}
+            {backgroundTasks.length > 0 && (
+              <div className="ml-11 max-w-[80%]">
+                {backgroundTasks.map((task) => (
+                  <BackgroundTaskCard key={task.taskId} task={task} />
+                ))}
+              </div>
+            )}
             {waitingForAssistant && (
               <div className="flex gap-3">
-                <div className="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#232323] text-[#d4a574]">
-                  <Sparkles className="h-4 w-4" />
-                </div>
+                <OrangeMark className="mt-1 h-8 w-8 shrink-0" />
                 <div className="max-w-[80%]">
                   <ThinkingStrip />
                 </div>
@@ -520,7 +625,7 @@ export function ChatPanel({
       <form onSubmit={handleSubmit} className="border-t border-[#373737] bg-[#121212] p-3 shrink-0">
         <div className="mx-auto max-w-3xl">
           {/* Model selector + slash menu */}
-          <div className="mb-2 flex items-center gap-2">
+          <div className="mb-2 flex flex-wrap items-center gap-2">
             <select
               value={selectedModel}
               onChange={(e) => handleModelChange(e.target.value)}
@@ -530,6 +635,22 @@ export function ChatPanel({
                 <option key={m.value} value={m.value}>{m.label}</option>
               ))}
             </select>
+            <div className="flex overflow-hidden rounded-md border border-[#373737] bg-[#1a1a1a]">
+              {PERMISSION_MODES.map((mode) => (
+                <button
+                  key={mode.value}
+                  type="button"
+                  onClick={() => setPermissionMode(mode.value)}
+                  className={cn(
+                    "border-r border-[#373737] px-2 py-1 text-xs text-[#787878] last:border-r-0 hover:bg-[#232323] hover:text-[#e8e8e8]",
+                    permissionMode === mode.value && "bg-[#232323] text-[#e8e8e8]",
+                    permissionMode === mode.value && mode.value === "bypass" && "bg-[#3a1717] text-[#ffb4b4]",
+                  )}
+                >
+                  {mode.label}
+                </button>
+              ))}
+            </div>
             <span className="text-xs text-[#787878]">/ for commands</span>
           </div>
           {showSlashMenu && (
