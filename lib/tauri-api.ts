@@ -58,6 +58,7 @@ export interface AiConfig {
   base_url: string
   model: string
   firecrawl_api_key?: string | null
+  context7_api_key?: string | null
   searxng_url: string
 }
 
@@ -66,6 +67,7 @@ export interface AiConfigStatus {
   base_url: string
   model: string
   firecrawl_configured: boolean
+  context7_configured: boolean
   searxng_url: string
 }
 
@@ -158,6 +160,7 @@ export async function getAiConfigStatus(): Promise<AiConfigStatus> {
       base_url: "https://api.deepseek.com",
       model: "deepseek-v4-pro",
       firecrawl_configured: false,
+      context7_configured: false,
       searxng_url: "http://localhost:8080",
     }
   }
@@ -203,6 +206,73 @@ export async function aiChat(
 }
 
 // ─── Events ─────────────────────────────────────────
+
+export type ResearchSearchKind = "auto" | "web" | "paper" | "dataset" | "code" | "docs"
+
+export interface NativeResearchSearchItem {
+  title: string
+  url: string
+  content: string
+  provider: string
+  source: string
+  category: string
+  authors?: string | null
+  publish_year?: number | null
+  keywords?: string | null
+  relevance_score: number
+  raw_json: Record<string, unknown>
+  planned_kind?: ResearchSearchKind | null
+  planned_query?: string | null
+  reason?: string | null
+  rank?: number | null
+}
+
+export interface NativeResearchSearchResponse {
+  query: string
+  kind: ResearchSearchKind
+  results: NativeResearchSearchItem[]
+  warning?: string | null
+}
+
+export interface NativeResearchSaveRequest {
+  project_id: string
+  results: NativeResearchSearchItem[]
+  kind: ResearchSearchKind
+  auth_token?: string | null
+  server_base?: string | null
+}
+
+export interface NativeResearchSaveResponse {
+  saved: number
+  items: unknown[]
+  files_created: number
+}
+
+export async function researchSearchNative(
+  query: string,
+  kind: ResearchSearchKind,
+  maxResults = 8,
+): Promise<NativeResearchSearchResponse> {
+  if (!isTauri()) return { query, kind, results: [] }
+  return invoke<NativeResearchSearchResponse>("research_search_native", {
+    query,
+    kind,
+    maxResults,
+  })
+}
+
+export async function researchExtractAndSave(
+  request: NativeResearchSaveRequest,
+): Promise<NativeResearchSaveResponse> {
+  if (!isTauri()) return { saved: 0, items: [], files_created: 0 }
+  const serverBase = request.server_base ?? `http://127.0.0.1:${await getServerPort()}`
+  return invoke<NativeResearchSaveResponse>("research_extract_and_save", {
+    request: {
+      ...request,
+      server_base: serverBase,
+    },
+  })
+}
 
 function listenEvent<T>(event: string, callback: (payload: T) => void): () => void {
   let cancelled = false

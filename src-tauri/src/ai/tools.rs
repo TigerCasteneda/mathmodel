@@ -19,7 +19,7 @@ pub fn modeler_tool_definitions() -> Vec<ToolDefinition> {
         ),
         ToolDefinition::new(
             "fetch_url",
-            "Fetch and extract a web page as markdown through Firecrawl.",
+            "Fetch and extract a web page as markdown through Jina Reader fallback.",
             json!({
                 "type": "object",
                 "properties": {

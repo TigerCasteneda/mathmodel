@@ -45,6 +45,7 @@ pub struct SaveItemInput {
     pub key_parameters: Option<String>,
     pub ai_relevance: Option<String>,
     pub relevance_score: Option<f64>,
+    pub bibtex: Option<String>,
     pub raw_json: Option<serde_json::Value>,
 }
 

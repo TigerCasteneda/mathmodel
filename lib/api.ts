@@ -366,6 +366,7 @@ export interface SaveItemInput {
   key_parameters?: string
   ai_relevance?: string
   relevance_score?: number
+  bibtex?: string
   raw_json?: Record<string, unknown>
 }
 

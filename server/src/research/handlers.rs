@@ -78,6 +78,7 @@ async fn save_items(
         let cat = validate_category(&input.category)?;
         let item_id = Uuid::new_v4().to_string();
         let cloud_file_id = Uuid::new_v4().to_string();
+        let bib_file_id = Uuid::new_v4().to_string();
         let summary = input.summary.clone().unwrap_or_default();
         let authors = input.authors.clone().unwrap_or_default();
         let keywords = input.keywords.clone().unwrap_or_default();
@@ -85,11 +86,15 @@ async fn save_items(
         let key_parameters = input.key_parameters.clone().unwrap_or_default();
         let ai_relevance = input.ai_relevance.clone().unwrap_or_default();
         let relevance = input.relevance_score.unwrap_or(0.0);
-        let raw_json = input
+        let mut raw_value = input
             .raw_json
-            .as_ref()
-            .map(|v| v.to_string())
-            .unwrap_or_else(|| "{}".to_string());
+            .clone()
+            .unwrap_or_else(|| serde_json::json!({}));
+        raw_value["bib_file_id"] = serde_json::json!(bib_file_id);
+        if let Some(bibtex) = &input.bibtex {
+            raw_value["bibtex"] = serde_json::json!(bibtex);
+        }
+        let raw_json = raw_value.to_string();
 
         sqlx::query(
             "INSERT INTO research_items
@@ -120,17 +125,34 @@ async fn save_items(
         .await?;
 
         let md_content = references::render_md(input);
-        match references::create_cloud_md_file(
+        let bib_content = input.bibtex.clone().unwrap_or_default();
+        match references::create_cloud_text_file(
             &state.pool,
             &req.project_id,
             &cloud_file_id,
             &input.title,
+            "md",
             &md_content,
         )
         .await
         {
             Ok(()) => {
                 files_created += 1;
+                if !bib_content.trim().is_empty() {
+                    match references::create_cloud_text_file(
+                        &state.pool,
+                        &req.project_id,
+                        &bib_file_id,
+                        &input.title,
+                        "bib",
+                        &bib_content,
+                    )
+                    .await
+                    {
+                        Ok(()) => files_created += 1,
+                        Err(err) => tracing::warn!("Failed to create cloud bib file: {err:?}"),
+                    }
+                }
             }
             Err(err) => {
                 tracing::warn!("Failed to create cloud md file: {err:?}");
@@ -261,17 +283,27 @@ async fn delete_item(
         return Err(AppError::NotFound("research item not found".into()));
     }
 
+    let mut linked_file_ids = Vec::new();
     if let Some(cloud_file_id) = item.cloud_file_id {
+        linked_file_ids.push(cloud_file_id);
+    }
+    if let Ok(raw_json) = serde_json::from_str::<serde_json::Value>(&item.raw_json) {
+        if let Some(bib_file_id) = raw_json["bib_file_id"].as_str() {
+            linked_file_ids.push(bib_file_id.to_string());
+        }
+    }
+
+    for file_id in linked_file_ids {
         sqlx::query("DELETE FROM crdt_docs WHERE file_id = ?")
-            .bind(&cloud_file_id)
+            .bind(&file_id)
             .execute(&mut *tx)
             .await?;
         sqlx::query("DELETE FROM file_blobs WHERE file_id = ?")
-            .bind(&cloud_file_id)
+            .bind(&file_id)
             .execute(&mut *tx)
             .await?;
         sqlx::query("DELETE FROM files WHERE id = ? AND project_id = ?")
-            .bind(&cloud_file_id)
+            .bind(&file_id)
             .bind(&item.project_id)
             .execute(&mut *tx)
             .await?;

@@ -1,8 +1,8 @@
 use crate::error::AppError;
 use chrono::Utc;
 use yrs::ReadTxn;
-use yrs::Transact;
 use yrs::Text;
+use yrs::Transact;
 
 use super::model::SaveItemInput;
 
@@ -19,6 +19,7 @@ pub fn render_md(input: &SaveItemInput) -> String {
     let methodology = input.methodology.as_deref().unwrap_or("");
     let key_parameters = input.key_parameters.as_deref().unwrap_or("");
     let ai_relevance = input.ai_relevance.as_deref().unwrap_or("");
+    let bibtex = input.bibtex.as_deref().unwrap_or("");
     let date = Utc::now().format("%Y-%m-%d");
 
     format!(
@@ -37,6 +38,10 @@ pub fn render_md(input: &SaveItemInput) -> String {
          {key_parameters}\n\n\
          ## Relevance to Project\n\
          {ai_relevance}\n\n\
+         ## BibTeX\n\
+         ```bibtex\n\
+         {bibtex}\n\
+         ```\n\n\
          ## Notes\n\
          <!-- Add your notes here -->\n",
         title = input.title,
@@ -50,6 +55,7 @@ pub fn render_md(input: &SaveItemInput) -> String {
         methodology = methodology,
         key_parameters = key_parameters,
         ai_relevance = ai_relevance,
+        bibtex = bibtex,
     )
 }
 
@@ -69,7 +75,13 @@ pub fn title_to_slug(title: &str) -> String {
     let slug = title
         .to_lowercase()
         .chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect::<String>()
         .trim_matches('_')
         .to_string();
@@ -86,17 +98,18 @@ pub fn title_to_slug(title: &str) -> String {
 }
 
 /// Create a cloud file entry using existing project file + CRDT storage path.
-pub async fn create_cloud_md_file(
+pub async fn create_cloud_text_file(
     pool: &sqlx::SqlitePool,
     project_id: &str,
     file_id: &str,
     title: &str,
-    md_content: &str,
+    extension: &str,
+    content: &str,
 ) -> Result<(), AppError> {
     let now = Utc::now().timestamp();
     let slug = title_to_slug(title);
     let suffix = file_id.chars().take(8).collect::<String>();
-    let file_name = format!("{slug}-{suffix}.md");
+    let file_name = format!("{slug}-{suffix}.{extension}");
     let parent_id: Option<String> = sqlx::query_scalar(
         "SELECT id FROM files
          WHERE project_id = ?
@@ -127,7 +140,7 @@ pub async fn create_cloud_md_file(
     let text = ydoc.get_or_insert_text("content");
     {
         let mut txn = ydoc.transact_mut();
-        text.insert(&mut txn, 0, md_content);
+        text.insert(&mut txn, 0, content);
     }
     let state = {
         let txn = ydoc.transact();
@@ -163,6 +176,7 @@ mod tests {
             key_parameters: Some("{\"beta\":0.3}".to_string()),
             ai_relevance: Some("Useful for parameter estimation".to_string()),
             relevance_score: Some(0.9),
+            bibtex: Some("@article{bayesian_sir,title={Bayesian SIR}}".to_string()),
             raw_json: None,
         };
 
@@ -173,5 +187,6 @@ mod tests {
         assert!(md.contains("Bayesian inference"));
         assert!(md.contains("## Key Parameters"));
         assert!(md.contains("## Relevance to Project"));
+        assert!(md.contains("## BibTeX"));
     }
 }

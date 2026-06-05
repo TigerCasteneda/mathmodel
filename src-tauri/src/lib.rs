@@ -60,6 +60,8 @@ pub fn run() {
             ai::chat::get_ai_config_status,
             ai::chat::set_ai_model,
             ai::chat::ai_chat,
+            ai::research::research_search_native,
+            ai::research::research_extract_and_save,
             ai::session::list_sessions,
             ai::session::load_session,
             ai::session::delete_session,

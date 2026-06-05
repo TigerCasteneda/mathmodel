@@ -120,7 +120,27 @@ fn trim_context(mut messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
 
 #[tauri::command]
 pub fn set_ai_config(config: AiConfig, state: State<'_, AiConfigState>) -> Result<(), String> {
-    state.set(config)
+    let current = state.get().unwrap_or_default();
+    state.set(AiConfig {
+        api_key: config.api_key.or(current.api_key),
+        base_url: if config.base_url.trim().is_empty() {
+            current.base_url
+        } else {
+            config.base_url
+        },
+        model: if config.model.trim().is_empty() {
+            current.model
+        } else {
+            config.model
+        },
+        firecrawl_api_key: config.firecrawl_api_key.or(current.firecrawl_api_key),
+        context7_api_key: config.context7_api_key.or(current.context7_api_key),
+        searxng_url: if config.searxng_url.trim().is_empty() {
+            current.searxng_url
+        } else {
+            config.searxng_url
+        },
+    })
 }
 
 #[tauri::command]
@@ -368,7 +388,7 @@ fn system_prompt(workspace_label: &str, permission_label: &str, file_tree: &str)
          Current permission mode: {permission_label}.\n\
          Core tools are always visible: tool_search, file_read/read_file, file_write/write_file when workspace permissions allow writes, web_search, and save_reference.\n\
          Deferred tools such as file_edit, list_files, execute_command, search_files, fetch_url, and start_background_task must be discovered with tool_search before use.\n\
-         fetch_url uses a Jina Reader markdown fallback. Firecrawl and Context7 are intentionally not wired in this phase.\n\
+         fetch_url uses a Jina Reader markdown fallback inside chat. Use the Research panel for Firecrawl web search and Context7 docs search.\n\
          In Guest Remote mode, execute_command is unavailable because teammates do not own the host shell.\n\
          Default mode is read/search only. Accept Edit allows file edits. Auto allows edits and low-risk commands. Bypass allows broader shell execution.\n\
          Provide mathematical reasoning and make concrete workspace changes when asked.\n\
@@ -564,6 +584,6 @@ mod tests {
 
         assert!(prompt.contains("tool_search"));
         assert!(prompt.contains("Deferred tools"));
-        assert!(prompt.contains("Firecrawl and Context7 are intentionally not wired"));
+        assert!(prompt.contains("Research panel for Firecrawl web search and Context7 docs search"));
     }
 }

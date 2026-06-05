@@ -122,7 +122,7 @@ const TOOL_CATALOG: &[ToolCatalogEntry] = &[
     ToolCatalogEntry {
         name: "fetch_url",
         description:
-            "Fetch a URL as markdown through Jina Reader fallback. Firecrawl is not wired yet.",
+            "Fetch a URL as markdown through Jina Reader fallback. Use Research for Firecrawl search.",
         exposure: ToolExposure::Deferred,
         keywords: &["fetch", "url", "markdown", "webpage", "jina"],
     },
@@ -326,7 +326,7 @@ async fn register_workspace_tools(
         .register(
             McpTool::new(
                 "fetch_url",
-                "Fetch a URL as markdown through Jina Reader fallback. Firecrawl is not wired yet.",
+                "Fetch a URL as markdown through Jina Reader fallback. Use Research for Firecrawl search.",
                 json!({
                     "type": "object",
                     "properties": {

@@ -2,14 +2,26 @@
 
 import { useEffect, useMemo, useRef, useState } from "react"
 import { useRouter } from "next/navigation"
-import { BookOpen, Copy, FileCode, FileText, Folder, FolderOpen, LogOut, MessageSquare, MonitorUp, MonitorX, RefreshCw, RotateCcw, Save, Settings, SidebarIcon, Trash2 } from "lucide-react"
+import { AlertCircle, BookOpen, CheckCircle2, Copy, Database, FileCode, FileText, Folder, FolderOpen, Globe2, Library, Loader2, LogOut, MessageSquare, MonitorUp, MonitorX, RefreshCw, RotateCcw, Save, Search, Settings, SidebarIcon, Trash2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { ChatPanel } from "@/components/chat/chat-panel"
 import { CodeEditor } from "@/components/editor/code-editor"
 import { cn } from "@/lib/utils"
-import { deleteSession, getAiConfigStatus, listSessions, setAiConfig, type AiConfigStatus, type FileTreeItem, type SessionInfo } from "@/lib/tauri-api"
+import {
+  deleteSession,
+  getAiConfigStatus,
+  listSessions,
+  researchExtractAndSave,
+  researchSearchNative,
+  setAiConfig,
+  type AiConfigStatus,
+  type FileTreeItem,
+  type NativeResearchSearchItem,
+  type ResearchSearchKind,
+  type SessionInfo,
+} from "@/lib/tauri-api"
 import { useTauriAgent } from "@/hooks/use-tauri-agent"
 import { useScreenShare } from "@/hooks/use-screen-share"
 import {
@@ -17,6 +29,7 @@ import {
   createProjectFile,
   createProjectInvite,
   deleteProjectFile,
+  getToken,
   getProject,
   getProjectFileContent,
   listProjectMembers,
@@ -255,29 +268,242 @@ function FileNode({
   )
 }
 
-function ResearchLibrary({ projectId }: { projectId: string }) {
+const RESEARCH_KINDS: Array<{ value: ResearchSearchKind; label: string; icon: typeof Search }> = [
+  { value: "auto", label: "Auto", icon: Search },
+  { value: "web", label: "Web", icon: Globe2 },
+  { value: "paper", label: "Paper", icon: BookOpen },
+  { value: "dataset", label: "Dataset", icon: Database },
+  { value: "code", label: "Code", icon: FileCode },
+  { value: "docs", label: "Docs", icon: Library },
+]
+
+function errorText(error: unknown, fallback: string) {
+  if (error instanceof Error) return error.message
+  if (typeof error === "string" && error.trim()) return error
+  return fallback
+}
+
+function ResearchSearchPanel({
+  projectId,
+  capabilities,
+  onKeepOpen,
+}: {
+  projectId: string
+  capabilities: ProjectCapability[]
+  onKeepOpen: () => void
+}) {
   const [items, setItems] = useState<ResearchItem[]>([])
+  const [query, setQuery] = useState("")
+  const [kind, setKind] = useState<ResearchSearchKind>("auto")
+  const [results, setResults] = useState<NativeResearchSearchItem[]>([])
+  const [selected, setSelected] = useState<Set<number>>(new Set())
+  const [loading, setLoading] = useState(false)
+  const [loadingStage, setLoadingStage] = useState<"planning" | "searching" | "ranking">("planning")
+  const [saving, setSaving] = useState(false)
+  const [message, setMessage] = useState<string | null>(null)
 
   useEffect(() => {
     listResearchItems(projectId).then(setItems).catch(() => setItems([]))
   }, [projectId])
 
+  const canSave = capabilities.includes("files.write") && capabilities.includes("ai.write")
+  const selectedResults = Array.from(selected).map((index) => results[index]).filter(Boolean)
+
+  const runSearch = async () => {
+    if (!query.trim()) return
+    setLoading(true)
+    setLoadingStage(kind === "auto" ? "planning" : "searching")
+    setMessage(null)
+    setSelected(new Set())
+    const timers: Array<ReturnType<typeof setTimeout>> = []
+    if (kind === "auto") {
+      timers.push(setTimeout(() => setLoadingStage("searching"), 700))
+      timers.push(setTimeout(() => setLoadingStage("ranking"), 1800))
+    } else {
+      timers.push(setTimeout(() => setLoadingStage("ranking"), 1200))
+    }
+    try {
+      const response = await researchSearchNative(query.trim(), kind, 8)
+      setResults(response.results)
+      setSelected(new Set(response.results.map((_, index) => index)))
+      if (response.warning) setMessage(response.warning)
+      else if (response.results.length === 0) setMessage("No research results found.")
+    } catch (error) {
+      setResults([])
+      setMessage(errorText(error, "Research search failed."))
+    } finally {
+      timers.forEach(clearTimeout)
+      setLoading(false)
+    }
+  }
+
+  const toggleResult = (index: number) => {
+    setSelected((prev) => {
+      const next = new Set(prev)
+      if (next.has(index)) next.delete(index)
+      else next.add(index)
+      return next
+    })
+  }
+
+  const saveSelected = async () => {
+    if (selectedResults.length === 0 || !canSave) return
+    setSaving(true)
+    setMessage(null)
+    try {
+      const response = await researchExtractAndSave({
+        project_id: projectId,
+        results: selectedResults,
+        kind,
+        auth_token: getToken(),
+      })
+      setMessage(`Saved ${response.saved} item(s) and created ${response.files_created} research file(s).`)
+      setSelected(new Set())
+      onKeepOpen()
+      try {
+        setItems(await listResearchItems(projectId))
+      } catch {
+        /* Keep the saved state visible even if the recent list refresh fails. */
+      }
+    } catch (error) {
+      setMessage(errorText(error, "Research save failed."))
+    } finally {
+      setSaving(false)
+    }
+  }
+
   return (
-    <div className="h-full overflow-auto bg-[#0d0d0d] p-4 text-[#e8e8e8]">
-      <div className="mx-auto max-w-3xl space-y-3">
-        {items.length === 0 ? (
-          <div className="py-16 text-center text-sm text-[#787878]">No references saved.</div>
-        ) : items.map((item) => (
-          <article key={item.id} className="rounded-md border border-[#373737] bg-[#1a1a1a] p-3">
-            <div className="mb-1 text-xs uppercase text-[#d4a574]">{item.category}</div>
-            <h3 className="text-sm font-medium">{item.title || "Untitled"}</h3>
-            <p className="mt-2 line-clamp-3 text-xs leading-5 text-[#b4b4b4]">{item.summary}</p>
-            {item.ai_relevance && (
-              <p className="mt-2 text-xs leading-5 text-[#b4b4b4]">{item.ai_relevance}</p>
-            )}
-          </article>
-        ))}
+    <div className="flex h-full min-h-0 flex-col bg-[#0d0d0d] text-[#e8e8e8]">
+      <div className="border-b border-[#373737] bg-[#121212] p-3">
+        <div className="mx-auto flex max-w-5xl flex-col gap-3">
+          <div className="flex flex-wrap items-center gap-2">
+            {RESEARCH_KINDS.map((item) => {
+              const Icon = item.icon
+              return (
+                <button
+                  key={item.value}
+                  onClick={() => setKind(item.value)}
+                  className={cn(
+                    "flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-xs",
+                    kind === item.value
+                      ? "border-[#d4a574] bg-[#2d241a] text-[#ebc396]"
+                      : "border-[#373737] bg-[#1a1a1a] text-[#b4b4b4] hover:border-[#464646]",
+                  )}
+                >
+                  <Icon className="h-3.5 w-3.5" />
+                  {item.label}
+                </button>
+              )
+            })}
+          </div>
+          <div className="flex gap-2">
+            <div className="relative flex-1">
+              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#787878]" />
+              <Input
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                onKeyDown={(event) => { if (event.key === "Enter") runSearch() }}
+                placeholder={kind === "docs" ? "Search library docs, e.g. scipy optimize linprog" : "Search methods, datasets, papers, code, or competition references"}
+                className="border-[#373737] bg-[#232323] pl-9 text-sm"
+              />
+            </div>
+            <Button onClick={runSearch} disabled={loading || !query.trim()} className="bg-[#d4a574] text-[#111111] hover:bg-[#ebc396]">
+              {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
+            </Button>
+          </div>
+          {message && (
+            <div className="flex items-center gap-2 rounded-md border border-[#373737] bg-[#1a1a1a] px-3 py-2 text-xs text-[#b4b4b4]">
+              <AlertCircle className="h-3.5 w-3.5 text-[#d4a574]" />
+              {message}
+            </div>
+          )}
+        </div>
       </div>
+
+      <ScrollArea className="min-h-0 flex-1">
+        <div className="mx-auto grid max-w-5xl gap-4 p-4 lg:grid-cols-[1fr_320px]">
+          <div className="space-y-3">
+            {loading ? (
+              <div className="rounded-md border border-[#373737] bg-[#1a1a1a] p-5 text-sm text-[#b4b4b4]">
+                {loadingStage === "planning" ? "Planning research search..." : loadingStage === "searching" ? "Searching sources..." : "Ranking results..."}
+              </div>
+            ) : results.length === 0 ? (
+              <div className="rounded-md border border-[#373737] bg-[#1a1a1a] p-8 text-center text-sm text-[#787878]">
+                Search results will appear here. Saving selected results automatically extracts modeling notes and creates Markdown/BibTeX files.
+              </div>
+            ) : results.map((result, index) => (
+              <article
+                key={`${result.provider}-${result.url}-${index}`}
+                className={cn("rounded-md border bg-[#1a1a1a] p-3 transition-colors", selected.has(index) ? "border-[#d4a574]" : "border-[#373737]")}
+              >
+                <div className="flex items-start gap-3">
+                  <button
+                    onClick={() => toggleResult(index)}
+                    className={cn(
+                      "mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded border",
+                      selected.has(index) ? "border-[#d4a574] bg-[#d4a574] text-[#111111]" : "border-[#464646] text-transparent",
+                    )}
+                  >
+                    <CheckCircle2 className="h-3.5 w-3.5" />
+                  </button>
+                  <div className="min-w-0 flex-1">
+                    <div className="mb-1 flex flex-wrap items-center gap-2">
+                      <span className="rounded-full border border-[#373737] px-1.5 py-0.5 text-[10px] uppercase text-[#d4a574]">{result.provider}</span>
+                      {result.planned_kind && (
+                        <span className="rounded-full border border-[#373737] px-1.5 py-0.5 text-[10px] uppercase text-[#9fb7ff]">{result.planned_kind}</span>
+                      )}
+                      {typeof result.rank === "number" && (
+                        <span className="rounded-full border border-[#373737] px-1.5 py-0.5 text-[10px] uppercase text-[#9bd6b5]">#{result.rank}</span>
+                      )}
+                      <span className="text-[10px] uppercase text-[#787878]">{result.category}</span>
+                    </div>
+                    <h3 className="text-sm font-medium text-[#e8e8e8]">{result.title || "Untitled"}</h3>
+                    {result.url && <div className="mt-1 truncate text-xs text-[#787878]">{result.url}</div>}
+                    {result.reason && <p className="mt-1 text-[11px] leading-4 text-[#ebc396]">{result.reason}</p>}
+                    {result.planned_query && result.planned_query !== query.trim() && (
+                      <div className="mt-1 truncate text-[11px] text-[#787878]">Task: {result.planned_query}</div>
+                    )}
+                    <p className="mt-2 line-clamp-4 text-xs leading-5 text-[#b4b4b4]">{result.content}</p>
+                  </div>
+                </div>
+              </article>
+            ))}
+          </div>
+
+          <aside className="space-y-3">
+            <div className="rounded-md border border-[#373737] bg-[#1a1a1a] p-3">
+              <div className="text-xs font-medium text-[#e8e8e8]">Selected</div>
+              <div className="mt-1 text-2xl font-semibold text-[#ebc396]">{selectedResults.length}</div>
+              <p className="mt-2 text-xs leading-5 text-[#787878]">Save runs AI extraction, then creates a Markdown note and BibTeX file in the Research folder.</p>
+              {!canSave && (
+                <p className="mt-2 rounded-md border border-[#5f3f24] bg-[#2d241a] px-2 py-1.5 text-xs text-[#ebc396]">files.write and ai.write permissions are required.</p>
+              )}
+              <Button onClick={saveSelected} disabled={saving || selectedResults.length === 0 || !canSave} className="mt-3 w-full bg-[#d4a574] text-[#111111] hover:bg-[#ebc396]">
+                {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
+                Save & Extract
+              </Button>
+            </div>
+
+            <div className="rounded-md border border-[#373737] bg-[#1a1a1a] p-3">
+              <div className="mb-2 flex items-center justify-between">
+                <div className="text-xs font-medium text-[#e8e8e8]">Recent References</div>
+                <button onClick={() => listResearchItems(projectId).then(setItems).catch(() => setItems([]))} className="text-[11px] text-[#d4a574]">Refresh</button>
+              </div>
+              <div className="space-y-2">
+                {items.length === 0 ? (
+                  <div className="py-4 text-center text-xs text-[#787878]">No references saved.</div>
+                ) : items.slice(0, 8).map((item) => (
+                  <article key={item.id} className="rounded border border-[#2a2a2a] bg-[#111111] p-2">
+                    <div className="text-[10px] uppercase text-[#d4a574]">{item.category}</div>
+                    <h4 className="mt-1 line-clamp-2 text-xs font-medium text-[#e8e8e8]">{item.title || "Untitled"}</h4>
+                    {item.summary && <p className="mt-1 line-clamp-2 text-[11px] leading-4 text-[#787878]">{item.summary}</p>}
+                  </article>
+                ))}
+              </div>
+            </div>
+          </aside>
+        </div>
+      </ScrollArea>
     </div>
   )
 }
@@ -548,25 +774,32 @@ function SettingsPanel({
 }) {
   const [status, setStatus] = useState<AiConfigStatus | null>(null)
   const [apiKey, setApiKey] = useState("")
+  const [firecrawlKey, setFirecrawlKey] = useState("")
+  const [context7Key, setContext7Key] = useState("")
+  const [searxngUrl, setSearxngUrl] = useState("http://localhost:8080")
   const [model, setModel] = useState("deepseek-v4-pro")
 
   useEffect(() => {
     getAiConfigStatus().then((value) => {
       setStatus(value)
       setModel(value.model)
+      setSearxngUrl(value.searxng_url || "http://localhost:8080")
     }).catch(() => {})
   }, [])
 
   const save = async () => {
     await setAiConfig({
       api_key: apiKey || null,
-      base_url: "https://api.deepseek.com",
+      base_url: status?.base_url || "https://api.deepseek.com",
       model,
-      firecrawl_api_key: null,
-      searxng_url: "http://localhost:8080",
+      firecrawl_api_key: firecrawlKey || null,
+      context7_api_key: context7Key || null,
+      searxng_url: searxngUrl || "http://localhost:8080",
     })
     setStatus(await getAiConfigStatus())
     setApiKey("")
+    setFirecrawlKey("")
+    setContext7Key("")
   }
 
   return (
@@ -616,12 +849,49 @@ function SettingsPanel({
           </div>
         </div>
 
+        <div className="space-y-3 border-t border-[#373737] pt-4">
+          <div>
+            <h3 className="text-sm font-medium text-[#e8e8e8]">Research Providers</h3>
+            <p className="mt-1 text-xs text-[#787878]">Firecrawl powers web search. Context7 powers docs search.</p>
+          </div>
+          <div className="space-y-2">
+            <label className="text-xs font-medium text-[#b4b4b4]">Firecrawl API Key</label>
+            <Input
+              value={firecrawlKey}
+              onChange={(event) => setFirecrawlKey(event.target.value)}
+              placeholder={status?.firecrawl_configured ? "Configured" : "fc-xxxxxxxxxxxxxxxx"}
+              className="border-[#373737] bg-[#232323] text-sm"
+              type="password"
+            />
+          </div>
+          <div className="space-y-2">
+            <label className="text-xs font-medium text-[#b4b4b4]">Context7 API Key</label>
+            <Input
+              value={context7Key}
+              onChange={(event) => setContext7Key(event.target.value)}
+              placeholder={status?.context7_configured ? "Configured" : "Optional"}
+              className="border-[#373737] bg-[#232323] text-sm"
+              type="password"
+            />
+          </div>
+          <div className="space-y-2 border-t border-[#373737] pt-3">
+            <label className="text-xs font-medium text-[#b4b4b4]">SearXNG URL · Chat fallback</label>
+            <Input
+              value={searxngUrl}
+              onChange={(event) => setSearxngUrl(event.target.value)}
+              className="border-[#373737] bg-[#232323] text-sm"
+            />
+            <p className="text-xs leading-5 text-[#787878]">
+              Research Search uses Firecrawl and Context7. SearXNG is only used by chat web_search fallback tools.
+            </p>
+          </div>
+        </div>
+
         <Button
           onClick={save}
-          disabled={!apiKey.trim()}
           className="w-full bg-[#d4a574] text-[#111111] hover:bg-[#ebc396]"
         >
-          {status?.configured ? "Update API Key" : "Save API Key"}
+          Save AI Settings
         </Button>
         </div>
 
@@ -1107,6 +1377,15 @@ export function ModelerWorkbench({ projectId }: { projectId: string }) {
     setActiveTab(sessionId)
   }
 
+  const openResearchTab = () => {
+    setTabs((prev) => (
+      prev.some((tab) => tab.id === "research")
+        ? prev
+        : [...prev, { id: "research", title: "Research", kind: "research" }]
+    ))
+    setActiveTab("research")
+  }
+
   const deleteChat = async (sessionId: string) => {
     try { await deleteSession(sessionId) } catch {}
     setTabs((prev) => prev.filter((t) => t.id !== sessionId))
@@ -1320,7 +1599,10 @@ export function ModelerWorkbench({ projectId }: { projectId: string }) {
           <button
             key={item.id}
             title={item.label}
-            onClick={() => setActiveActivity(item.id)}
+            onClick={() => {
+              setActiveActivity(item.id)
+              if (item.id === "research") openResearchTab()
+            }}
             className={cn(
               "relative flex h-11 w-12 items-center justify-center text-[#787878] hover:text-[#e8e8e8]",
               activeActivity === item.id && "text-[#e8e8e8]",
@@ -1461,10 +1743,7 @@ export function ModelerWorkbench({ projectId }: { projectId: string }) {
             </>
           )}
           {activeActivity === "research" && (
-            <button className="flex h-8 w-full items-center gap-2 px-3 text-left text-xs text-[#e8e8e8]" onClick={() => {
-              if (!tabs.some((tab) => tab.id === "research")) setTabs((prev) => [...prev, { id: "research", title: "Research", kind: "research" }])
-              setActiveTab("research")
-            }}>
+            <button className="flex h-8 w-full items-center gap-2 px-3 text-left text-xs text-[#e8e8e8]" onClick={openResearchTab}>
               <BookOpen className="h-4 w-4 text-[#d4a574]" />
               Library
             </button>
@@ -1582,7 +1861,7 @@ export function ModelerWorkbench({ projectId }: { projectId: string }) {
               capabilities={capabilities}
             />
           ) : active?.kind === "research" ? (
-            <ResearchLibrary projectId={projectId} />
+            <ResearchSearchPanel projectId={projectId} capabilities={capabilities} onKeepOpen={openResearchTab} />
           ) : active?.kind === "diff" ? (
             <div className="flex h-full flex-col">
               <div className="flex h-8 items-center gap-3 border-b border-[#373737] bg-[#121212] px-3 text-xs text-[#b4b4b4]">
