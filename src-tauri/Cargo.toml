@@ -24,6 +24,7 @@ tracing = "0.1"
 tracing-subscriber = "0.3"
 chrono = "0.4"
 futures = "0.3"
+async-trait = "0.1"
 claude_code_rs = { path = "../claude-code-rust", default-features = false }
 
 # Server deps for Host Mode (Phase 8e)

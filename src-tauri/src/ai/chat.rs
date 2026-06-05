@@ -1,8 +1,10 @@
 use super::config::{AiConfig, AiConfigState, AiConfigStatus};
+use super::runtime::ModelerAiRuntime;
 use super::session::ChatSessionStore;
 use super::tools::{execute_tool, modeler_tool_definitions};
+use super::workspace::WorkspaceContext;
 use crate::agent::state::AgentState;
-use claude_code_rs::{ApiClient, ChatMessage};
+use claude_code_rs::ChatMessage;
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -11,6 +13,7 @@ use tauri::{AppHandle, Emitter, State};
 #[derive(Debug, Clone, Serialize)]
 pub struct ChatStreamEvent {
     pub conversation_id: String,
+    pub seq: u64,
     pub content: String,
     pub done: bool,
 }
@@ -60,10 +63,21 @@ fn format_file_tree(item: &crate::agent::file_watcher::FileTreeItem, depth: usiz
     } else {
         format!("{indent}{}", item.name)
     };
-    let children = item.children.as_ref()
-        .map(|c| c.iter().map(|ch| format_file_tree(ch, depth + 1)).collect::<Vec<_>>().join("\n"))
+    let children = item
+        .children
+        .as_ref()
+        .map(|c| {
+            c.iter()
+                .map(|ch| format_file_tree(ch, depth + 1))
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
         .unwrap_or_default();
-    if children.is_empty() { node_str } else { format!("{node_str}\n{children}") }
+    if children.is_empty() {
+        node_str
+    } else {
+        format!("{node_str}\n{children}")
+    }
 }
 
 /// Trim `messages` to fit within `MAX_CONTEXT_TOKENS`, preserving the
@@ -76,7 +90,10 @@ fn trim_context(mut messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
         messages
     };
 
-    let system_tokens = system.as_ref().map(|s| s.content.as_deref().map(estimate_tokens).unwrap_or(0)).unwrap_or(0);
+    let system_tokens = system
+        .as_ref()
+        .map(|s| s.content.as_deref().map(estimate_tokens).unwrap_or(0))
+        .unwrap_or(0);
     let mut budget = MAX_CONTEXT_TOKENS.saturating_sub(system_tokens);
 
     // Keep recent messages; drop oldest non-system messages first
@@ -113,9 +130,25 @@ pub fn get_ai_config_status(state: State<'_, AiConfigState>) -> Result<AiConfigS
 }
 
 #[tauri::command]
+pub fn set_ai_model(
+    model: String,
+    state: State<'_, AiConfigState>,
+) -> Result<AiConfigStatus, String> {
+    let mut config = state.get()?;
+    config.model = model;
+    state.set(config.clone())?;
+    Ok(config.into())
+}
+
+#[tauri::command]
 pub async fn ai_chat(
     message: String,
     conversation_id: Option<String>,
+    workspace_mode: Option<String>,
+    project_id: Option<String>,
+    auth_token: Option<String>,
+    server_base: Option<String>,
+    capabilities: Option<Vec<String>>,
     app: AppHandle,
     agent_state: State<'_, AgentState>,
     config_state: State<'_, AiConfigState>,
@@ -139,20 +172,40 @@ pub async fn ai_chat(
         .map_err(|e| e.to_string())?
         .clone();
 
-    let client = ApiClient::new(config.to_claude_settings(work_dir.clone()));
-    let tools = modeler_tool_definitions();
+    let workspace = WorkspaceContext::new(
+        work_dir,
+        workspace_mode,
+        project_id,
+        auth_token,
+        server_base,
+        capabilities,
+    );
+    let runtime = ModelerAiRuntime::new(config, workspace, app.clone())
+        .await
+        .map_err(|e| {
+            let msg = format!("Workspace runtime failed: {e}");
+            emit_chat_error(&app, &conversation_id, &msg);
+            msg
+        })?;
+    let mut tools = runtime.tool_definitions().await;
+    tools.extend(modeler_compat_tool_definitions());
 
-    let tree_text = match crate::agent::file_watcher::scan_tree(&work_dir) {
+    let tree_text = match runtime.workspace_tree().await {
         Ok(tree) => format_file_tree(&tree, 0),
         Err(_) => String::from("(file tree unavailable)"),
     };
 
-    let mut messages = vec![ChatMessage::system(system_prompt(&tree_text))];
+    let mut messages = vec![ChatMessage::system(system_prompt(
+        runtime.workspace_label(),
+        &tree_text,
+    ))];
     messages.extend(sessions.history(&conversation_id)?);
+    let mut stream_seq = 0u64;
 
     loop {
         let trimmed = trim_context(messages.clone());
-        let response = client
+        let response = runtime
+            .client()
             .chat_stream(trimmed, Some(tools.clone()))
             .await
             .map_err(|e| {
@@ -172,7 +225,6 @@ pub async fn ai_chat(
         let mut stream = response.bytes_stream();
         let mut buffer = String::new();
         let mut assistant_text = String::new();
-
         // Accumulated tool calls: index → {id, name, arguments}
         let mut tool_call_buf: HashMap<i64, ToolCallAccum> = HashMap::new();
         let mut finish_reason: Option<String> = None;
@@ -192,23 +244,33 @@ pub async fn ai_chat(
                 match parse_sse_line(&line) {
                     StreamLine::Content(content) => {
                         assistant_text.push_str(&content);
-                        emit_stream(&app, &conversation_id, content, false);
+                        stream_seq += 1;
+                        emit_stream(&app, &conversation_id, stream_seq, content, false);
                     }
                     StreamLine::ToolCall(tc) => {
-                        let entry = tool_call_buf.entry(tc.index).or_insert_with(|| ToolCallAccum {
-                            id: String::new(),
-                            name: String::new(),
-                            arguments: String::new(),
-                        });
-                        if let Some(id) = tc.id { entry.id = id; }
-                        if let Some(name) = tc.name { entry.name = name; }
-                        if let Some(args) = tc.arguments { entry.arguments.push_str(&args); }
+                        let entry =
+                            tool_call_buf
+                                .entry(tc.index)
+                                .or_insert_with(|| ToolCallAccum {
+                                    id: String::new(),
+                                    name: String::new(),
+                                    arguments: String::new(),
+                                });
+                        if let Some(id) = tc.id {
+                            entry.id = id;
+                        }
+                        if let Some(name) = tc.name {
+                            entry.name = name;
+                        }
+                        if let Some(args) = tc.arguments {
+                            entry.arguments.push_str(&args);
+                        }
                     }
                     StreamLine::Finish(reason) => {
                         finish_reason = Some(reason);
                     }
                     StreamLine::Done => {
-                        finish_reason = Some("stop".to_string());
+                        mark_stream_done(&mut finish_reason);
                     }
                     StreamLine::Ignore => {}
                 }
@@ -233,16 +295,35 @@ pub async fn ai_chat(
             messages.push(ChatMessage::assistant_with_tools(tool_calls.clone()));
 
             // Execute each tool and add results
-            let mut tool_count = 0;
             for tc in &tool_calls {
-                let args: serde_json::Value = serde_json::from_str(&tc.function.arguments)
-                    .unwrap_or(serde_json::json!({}));
-                emit_tool(&app, &conversation_id, &tc.function.name, &args, "", "running");
-                let result = execute_tool(&tc.function.name, &args, &agent_state).await;
-                let status = if result.starts_with("Error") { "error" } else { "success" };
-                emit_tool(&app, &conversation_id, &tc.function.name, &args, &result, status);
+                let args: serde_json::Value =
+                    serde_json::from_str(&tc.function.arguments).unwrap_or(serde_json::json!({}));
+                emit_tool(
+                    &app,
+                    &conversation_id,
+                    &tc.function.name,
+                    &args,
+                    "",
+                    "running",
+                );
+                let result = match runtime.execute_tool(&tc.function.name, args.clone()).await {
+                    Some(result) => result,
+                    None => execute_tool(&tc.function.name, &args, &agent_state).await,
+                };
+                let status = if result.starts_with("Error") {
+                    "error"
+                } else {
+                    "success"
+                };
+                emit_tool(
+                    &app,
+                    &conversation_id,
+                    &tc.function.name,
+                    &args,
+                    &result,
+                    status,
+                );
                 messages.push(ChatMessage::tool(&tc.id, result));
-                tool_count += 1;
             }
 
             sessions.push_assistant(&conversation_id, assistant_text)?;
@@ -253,28 +334,47 @@ pub async fn ai_chat(
 
         // Normal completion (no tool calls, or finish_reason is "stop")
         sessions.push_assistant(&conversation_id, assistant_text)?;
-        emit_stream(&app, &conversation_id, String::new(), true);
+        stream_seq += 1;
+        emit_stream(&app, &conversation_id, stream_seq, String::new(), true);
         return Ok(());
     }
 }
 
-fn system_prompt(file_tree: &str) -> String {
+fn modeler_compat_tool_definitions() -> Vec<claude_code_rs::api::ToolDefinition> {
+    modeler_tool_definitions()
+        .into_iter()
+        .filter(|tool| matches!(tool.function.name.as_str(), "save_reference"))
+        .collect()
+}
+
+fn mark_stream_done(finish_reason: &mut Option<String>) {
+    if finish_reason.is_none() {
+        *finish_reason = Some("stop".to_string());
+    }
+}
+
+fn system_prompt(workspace_label: &str, file_tree: &str) -> String {
     format!(
         "You are Modeler AI, a mathematical modeling assistant embedded in a collaborative platform for MCM/ICM competition teams.\n\
-         You can search the web, fetch page content, read/write files, and save references.\n\
-         Provide mathematical reasoning, cite sources, and save valuable findings to the Research Library using the save_reference tool.\n\
+         You are running on the claude-code-rust runtime layer inside a Tauri desktop app.\n\
+         Current workspace source: {workspace_label}.\n\
+         Prefer Claude Code style tools: file_read, file_write, file_edit, list_files, execute_command, and search_files.\n\
+         Backward-compatible aliases read_file/write_file and the save_reference tool are also available.\n\
+         In Guest Remote mode, execute_command is unavailable because teammates do not own the host shell.\n\
+         Provide mathematical reasoning and make concrete workspace changes when asked.\n\
          \n\
          ## Current project files\n\
-         Use read_file(path) to see file contents, write_file(path, content) to create/overwrite.\n\
+         Use file_read(path) to inspect contents, file_write(path, content) to create/overwrite, and file_edit(path, old_content, new_content) for targeted edits.\n\
          {file_tree}"
     )
 }
 
-fn emit_stream(app: &AppHandle, conversation_id: &str, content: String, done: bool) {
+fn emit_stream(app: &AppHandle, conversation_id: &str, seq: u64, content: String, done: bool) {
     let _ = app.emit(
         "chat:stream",
         ChatStreamEvent {
             conversation_id: conversation_id.to_string(),
+            seq,
             content,
             done,
         },
@@ -416,7 +516,10 @@ mod tests {
     #[test]
     fn parses_openai_compatible_stream_content() {
         let line = r#"data: {"id":"1","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"content":"hello"},"finish_reason":null}]}"#;
-        assert_eq!(parse_sse_line(line), StreamLine::Content("hello".to_string()));
+        assert_eq!(
+            parse_sse_line(line),
+            StreamLine::Content("hello".to_string())
+        );
     }
 
     #[test]
@@ -436,5 +539,24 @@ mod tests {
             }
             other => panic!("expected ToolCall, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn done_marker_does_not_override_tool_calls_finish_reason() {
+        let mut finish_reason = Some("tool_calls".to_string());
+        super::mark_stream_done(&mut finish_reason);
+        assert_eq!(finish_reason.as_deref(), Some("tool_calls"));
+    }
+
+    #[test]
+    fn compat_tool_definitions_hide_web_search_until_search_pipeline_is_ready() {
+        let names = super::modeler_compat_tool_definitions()
+            .into_iter()
+            .map(|tool| tool.function.name)
+            .collect::<Vec<_>>();
+
+        assert!(names.contains(&"save_reference".to_string()));
+        assert!(!names.contains(&"web_search".to_string()));
+        assert!(!names.contains(&"fetch_url".to_string()));
     }
 }

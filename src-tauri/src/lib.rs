@@ -19,6 +19,7 @@ pub fn run() {
             let work_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
             app.manage(AgentState {
                 work_dir: std::sync::Mutex::new(work_dir),
+                watcher_task: std::sync::Mutex::new(None),
                 app_handle: app.handle().clone(),
             });
             app.manage(AiConfigState::default());
@@ -51,11 +52,13 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             agent::commands::list_files,
             agent::commands::read_file,
+            agent::commands::write_file,
             agent::commands::create_file,
             agent::commands::change_work_dir,
             agent::commands::open_folder,
             ai::chat::set_ai_config,
             ai::chat::get_ai_config_status,
+            ai::chat::set_ai_model,
             ai::chat::ai_chat,
             ai::session::list_sessions,
             ai::session::load_session,

@@ -127,6 +127,12 @@ export function useTauriAgent() {
     }
   }, [])
 
+  const writeFile = useCallback(async (path: string, content: string) => {
+    await tauriApi.writeFile(path, content)
+    setFileContents((prev) => ({ ...prev, [path]: content }))
+    await refreshFileTree()
+  }, [refreshFileTree])
+
   const onTerminalData = useCallback((callback: (data: string) => void) => {
     terminalCallbackRef.current = callback
     return () => {
@@ -145,6 +151,7 @@ export function useTauriAgent() {
     resizeTerminal,
     openFile,
     createFile: createFile_,
+    writeFile,
     openFolder,
     changeDir,
     refreshFileTree,

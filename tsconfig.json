@@ -38,6 +38,8 @@
   "exclude": [
     "node_modules",
     "morphic",
+    "claude-code",
+    "peri",
     "claude-code-rust"
   ]
 }

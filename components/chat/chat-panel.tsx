@@ -1,7 +1,23 @@
 "use client"
 
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { Bot, ChevronDown, ChevronRight, Send, Sparkles, UserRound } from "lucide-react"
+import {
+  AlertCircle,
+  CheckCircle2,
+  ChevronDown,
+  ChevronRight,
+  FileText,
+  FolderTree,
+  Loader2,
+  PencilLine,
+  Save,
+  Search,
+  Send,
+  Sparkles,
+  Terminal,
+  UserRound,
+  Wrench,
+} from "lucide-react"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import remarkMath from "remark-math"
@@ -11,7 +27,8 @@ import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
 import { cn } from "@/lib/utils"
-import { aiChat, loadSession, onChatError, onChatStream, onChatToolCall, type ChatToolCallEvent } from "@/lib/tauri-api"
+import { aiChat, getAiConfigStatus, loadSession, onChatError, onChatStream, onChatToolCall, setAiModel, type ChatToolCallEvent } from "@/lib/tauri-api"
+import { getToken, type ProjectCapability } from "@/lib/api"
 
 // ── types ──
 
@@ -114,42 +131,139 @@ function MarkdownContent({ content }: { content: string }) {
   )
 }
 
-// ── tool call card ──
+// ── Claude Code-style tool call card ──
+
+const TOOL_META: Record<string, { label: string; tone: string; icon: typeof Wrench }> = {
+  file_read: { label: "View", tone: "info", icon: FileText },
+  read_file: { label: "View", tone: "info", icon: FileText },
+  file_write: { label: "Write", tone: "success", icon: FileText },
+  write_file: { label: "Write", tone: "success", icon: FileText },
+  file_edit: { label: "Edit", tone: "success", icon: PencilLine },
+  list_files: { label: "List", tone: "neutral", icon: FolderTree },
+  execute_command: { label: "Bash", tone: "warning", icon: Terminal },
+  search_files: { label: "Search", tone: "info", icon: Search },
+  save_reference: { label: "Save Reference", tone: "success", icon: Save },
+}
+
+function toolToneClasses(tone: string, status: ToolCallEntry["status"]) {
+  if (status === "error") return "border-l-[#f44336] bg-[#1a1111] shadow-[0_0_0_1px_rgba(244,67,54,0.18)]"
+  if (status === "running") return "border-l-[#64b5f6] bg-[#121820] shadow-[0_0_28px_rgba(100,181,246,0.10)]"
+  if (tone === "success") return "border-l-[#4caf50] bg-[#111811] shadow-[0_0_0_1px_rgba(76,175,80,0.12)]"
+  if (tone === "warning") return "border-l-[#ff9800] bg-[#1b150d] shadow-[0_0_0_1px_rgba(255,152,0,0.12)]"
+  if (tone === "info") return "border-l-[#64b5f6] bg-[#10161d] shadow-[0_0_0_1px_rgba(100,181,246,0.12)]"
+  return "border-l-[#8d6e63] bg-[#171412] shadow-[0_0_0_1px_rgba(212,165,116,0.10)]"
+}
+
+function compactValue(value: unknown): string {
+  if (typeof value === "string") return value.length > 120 ? `${value.slice(0, 120)}...` : value
+  if (typeof value === "number" || typeof value === "boolean") return String(value)
+  if (value == null) return ""
+  const text = JSON.stringify(value)
+  return text.length > 120 ? `${text.slice(0, 120)}...` : text
+}
+
+function primaryToolArg(args: Record<string, unknown>) {
+  return compactValue(args.path ?? args.file_path ?? args.command ?? args.pattern ?? args.title ?? args.url ?? "")
+}
 
 function ToolCallCard({ tc }: { tc: ToolCallEntry }) {
-  const [expanded, setExpanded] = useState(false)
-  const iconMap: Record<string, string> = {
-    web_search: "🔍", fetch_url: "📄", save_reference: "💾",
-    read_file: "📖", write_file: "📝",
-  }
-  const colorMap: Record<string, string> = {
-    running: "border-[#64b5f6]", success: "border-[#4caf50]", error: "border-[#f44336]",
-  }
-  const statusIcon: Record<string, string> = { running: "⏳", success: "✅", error: "❌" }
+  const [expanded, setExpanded] = useState(tc.status === "running")
+  const meta = TOOL_META[tc.name] || { label: tc.name, tone: "neutral", icon: Wrench }
+  const Icon = meta.icon
+  const summary = primaryToolArg(tc.arguments)
+  const statusLabel = tc.status === "running" ? "Running" : tc.status === "success" ? "Done" : "Error"
 
   return (
-    <div className={cn("my-2 rounded-lg border bg-[#1a1a1a] p-3", colorMap[tc.status] || "border-[#373737]")}>
-      <div
-        className="flex cursor-pointer items-center gap-2 text-xs"
-        onClick={() => setExpanded(!expanded)}
+    <div
+      className={cn(
+        "cc-tool-card my-2 overflow-hidden rounded-lg border border-[#373737] border-l-2",
+        toolToneClasses(meta.tone, tc.status),
+        tc.status === "running" && "cc-tool-card-running",
+      )}
+    >
+      <button
+        type="button"
+        className="flex w-full items-center gap-2 px-3 py-2 text-left"
+        onClick={() => setExpanded((value) => !value)}
       >
-        <span>{iconMap[tc.name] || "🔧"}</span>
-        <span className="font-medium text-[#e8e8e8]">{tc.name}</span>
-        <span className="ml-auto">{statusIcon[tc.status] || "✅"}</span>
-        {expanded ? <ChevronDown className="h-3 w-3 text-[#787878]" /> : <ChevronRight className="h-3 w-3 text-[#787878]" />}
-      </div>
-      {expanded && tc.output && (
-        <div className="mt-2 border-t border-[#373737] pt-2">
-          <pre className="max-h-40 overflow-y-auto whitespace-pre-wrap text-xs text-[#b4b4b4]">{tc.output}</pre>
+        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-[#373737] bg-[#232323] text-[#d4a574]">
+          <Icon className="h-3.5 w-3.5" />
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="flex items-center gap-2">
+            <span className="text-xs font-semibold text-[#e8e8e8]">{meta.label}</span>
+            <span className="rounded-full border border-[#373737] bg-[#0d0d0d] px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-[#787878]">
+              {tc.name}
+            </span>
+          </span>
+          {summary && <span className="mt-0.5 block truncate font-mono text-[11px] text-[#b4b4b4]">{summary}</span>}
+        </span>
+        <span className="flex items-center gap-1.5 text-[11px] text-[#b4b4b4]">
+          {tc.status === "running" ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin text-[#64b5f6]" />
+          ) : tc.status === "success" ? (
+            <CheckCircle2 className="h-3.5 w-3.5 text-[#4caf50]" />
+          ) : (
+            <AlertCircle className="h-3.5 w-3.5 text-[#f44336]" />
+          )}
+          {statusLabel}
+        </span>
+        {expanded ? <ChevronDown className="h-3.5 w-3.5 text-[#787878]" /> : <ChevronRight className="h-3.5 w-3.5 text-[#787878]" />}
+      </button>
+
+      {expanded && (
+        <div className="border-t border-[#373737] bg-[#0d0d0d]/45 px-3 py-2">
+          <div className="mb-2 grid gap-1.5">
+            {Object.entries(tc.arguments).slice(0, 6).map(([key, value]) => (
+              <div key={key} className="grid grid-cols-[88px_1fr] gap-2 text-[11px]">
+                <span className="text-[#787878]">{key}</span>
+                <span className="truncate font-mono text-[#b4b4b4]">{compactValue(value)}</span>
+              </div>
+            ))}
+          </div>
+          {tc.output ? (
+            <pre className="max-h-52 overflow-y-auto rounded-md border border-[#2a2a2a] bg-[#111111] p-2 font-mono text-[11px] leading-5 text-[#b4b4b4]">
+              {tc.output}
+            </pre>
+          ) : (
+            <div className="flex items-center gap-2 rounded-md border border-[#2a2a2a] bg-[#111111] p-2 text-[11px] text-[#787878]">
+              <span className="cc-thinking-dot" />
+              Waiting for tool result
+            </div>
+          )}
         </div>
       )}
     </div>
   )
 }
 
+function ThinkingStrip() {
+  return (
+    <div className="cc-thinking-strip flex items-center gap-2 rounded-lg border border-[#373737] bg-[#151515] px-3 py-2 text-xs text-[#b4b4b4]">
+      <span className="cc-thinking-dot" />
+      <span>Modeler AI is thinking</span>
+      <span className="cc-thinking-ellipsis" aria-hidden="true">
+        <span />
+        <span />
+        <span />
+      </span>
+    </div>
+  )
+}
+
 // ── main panel ──
 
-export function ChatPanel({ conversationId = "default" }: { conversationId?: string }) {
+export function ChatPanel({
+  conversationId = "default",
+  projectId,
+  workspaceMode = "host",
+  capabilities = [],
+}: {
+  conversationId?: string
+  projectId?: string
+  workspaceMode?: "host" | "guest"
+  capabilities?: ProjectCapability[]
+}) {
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState("")
   const [sending, setSending] = useState(false)
@@ -157,9 +271,17 @@ export function ChatPanel({ conversationId = "default" }: { conversationId?: str
   const [selectedModel, setSelectedModel] = useState("deepseek-v4-pro")
   const [showSlashMenu, setShowSlashMenu] = useState(false)
   const scrollRef = useRef<HTMLDivElement>(null)
+  const seenStreamEventsRef = useRef<Set<string>>(new Set())
+
+  useEffect(() => {
+    getAiConfigStatus()
+      .then((status) => setSelectedModel(status.model))
+      .catch(() => {})
+  }, [])
 
   // Load persisted session
   useEffect(() => {
+    seenStreamEventsRef.current.clear()
     setLoaded(false)
     loadSession(conversationId).then((session) => {
       const restored: Message[] = (session.messages || []).map((m) => ({
@@ -182,6 +304,11 @@ export function ChatPanel({ conversationId = "default" }: { conversationId?: str
   useEffect(() => {
     const offStream = onChatStream((event) => {
       if (event.conversation_id !== conversationId) return
+      if (typeof event.seq === "number") {
+        const key = `${event.conversation_id}:${event.seq}`
+        if (seenStreamEventsRef.current.has(key)) return
+        seenStreamEventsRef.current.add(key)
+      }
       setMessages((prev) => {
         const next = [...prev]
         const last = next[next.length - 1]
@@ -233,6 +360,7 @@ export function ChatPanel({ conversationId = "default" }: { conversationId?: str
   }, [conversationId])
 
   const canSend = useMemo(() => input.trim().length > 0 && !sending && loaded, [input, sending, loaded])
+  const waitingForAssistant = sending && messages[messages.length - 1]?.role === "user"
 
   const handleSubmit = async (event?: FormEvent) => {
     event?.preventDefault()
@@ -241,8 +369,16 @@ export function ChatPanel({ conversationId = "default" }: { conversationId?: str
     setInput("")
     setSending(true)
     setMessages((prev) => [...prev, { id: crypto.randomUUID(), role: "user", content: message }])
-    try { await aiChat(message, conversationId) } catch {
+    try {
+      await aiChat(message, conversationId, {
+        workspaceMode,
+        projectId,
+        authToken: getToken(),
+        capabilities,
+      })
+    } catch {
       setMessages((prev) => [...prev, { id: crypto.randomUUID(), role: "system", content: "Chat request failed." }])
+    } finally {
       setSending(false)
     }
   }
@@ -257,13 +393,31 @@ export function ChatPanel({ conversationId = "default" }: { conversationId?: str
     setShowSlashMenu(false)
   }
 
+  const handleModelChange = async (model: string) => {
+    setSelectedModel(model)
+    try {
+      const status = await setAiModel(model)
+      if (status) setSelectedModel(status.model)
+    } catch {
+      setMessages((prev) => [...prev, { id: crypto.randomUUID(), role: "system", content: "Failed to update model." }])
+    }
+  }
+
   return (
     <section className="flex h-full min-h-0 flex-col bg-[#0d0d0d] text-[#e8e8e8]">
       {/* Header bar */}
-      <div className="flex h-10 items-center gap-2 border-b border-[#373737] px-3 shrink-0">
-        <Bot className="h-4 w-4 text-[#d4a574]" />
-        <span className="text-sm font-medium">Modeler AI</span>
-        <span className="ml-auto text-xs text-[#787878]">Native</span>
+      <div className="flex h-11 items-center gap-2 border-b border-[#373737] bg-[#121212]/95 px-3 shrink-0">
+        <span className="cc-claude-mark flex h-7 w-7 items-center justify-center rounded-lg border border-[#373737] bg-[#232323] text-[#d4a574]">
+          <Sparkles className="h-4 w-4" />
+        </span>
+        <div className="flex flex-col leading-none">
+          <span className="text-sm font-medium">Modeler AI</span>
+          <span className="mt-1 text-[10px] uppercase tracking-[0.18em] text-[#787878]">Claude Code Runtime</span>
+        </div>
+        <span className="ml-auto flex items-center gap-1.5 rounded-full border border-[#373737] bg-[#1a1a1a] px-2 py-1 text-[11px] text-[#b4b4b4]">
+          <span className={cn("h-1.5 w-1.5 rounded-full", sending ? "cc-live-dot bg-[#64b5f6]" : "bg-[#4caf50]")} />
+          {sending ? "Streaming" : workspaceMode === "guest" ? "Guest Remote" : "Host Local"}
+        </span>
       </div>
 
       {/* Messages */}
@@ -290,14 +444,15 @@ export function ChatPanel({ conversationId = "default" }: { conversationId?: str
               <div key={message.id} className={cn("flex gap-3", message.role === "user" && "justify-end")}>
                 {message.role !== "user" && (
                   <div className="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#232323] text-[#d4a574]">
-                    <Bot className="h-4 w-4" />
+                    <Sparkles className="h-4 w-4" />
                   </div>
                 )}
                 <div className={cn(
-                  "max-w-[80%] rounded-2xl px-4 py-3 text-sm",
+                  "max-w-[80%] rounded-2xl px-4 py-3 text-sm transition-shadow",
                   message.role === "user" ? "bg-[#d4a574] text-[#111111]" :
                   message.role === "system" ? "border border-[#f44336]/40 bg-[#2d1b1b] text-[#ffb4b4]" :
-                  "bg-[#232323]",
+                  "border border-[#373737] bg-[#1a1a1a] shadow-[0_0_0_1px_rgba(212,165,116,0.04)]",
+                  message.role === "assistant" && message.streaming && "shadow-[0_0_32px_rgba(212,165,116,0.08)]",
                 )}>
                   {/* Thinking block */}
                   {message.thinking && (
@@ -327,7 +482,10 @@ export function ChatPanel({ conversationId = "default" }: { conversationId?: str
                   {message.role === "user" ? (
                     <div className="whitespace-pre-wrap">{message.content}</div>
                   ) : message.role === "assistant" ? (
-                    <MarkdownContent content={message.content + (message.streaming ? "▋" : "")} />
+                    <>
+                      <MarkdownContent content={message.content} />
+                      {message.streaming && <span className="cc-stream-cursor mt-1 inline-block" />}
+                    </>
                   ) : (
                     <div>{message.content}</div>
                   )}
@@ -344,6 +502,16 @@ export function ChatPanel({ conversationId = "default" }: { conversationId?: str
                 )}
               </div>
             ))}
+            {waitingForAssistant && (
+              <div className="flex gap-3">
+                <div className="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#232323] text-[#d4a574]">
+                  <Sparkles className="h-4 w-4" />
+                </div>
+                <div className="max-w-[80%]">
+                  <ThinkingStrip />
+                </div>
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -355,7 +523,7 @@ export function ChatPanel({ conversationId = "default" }: { conversationId?: str
           <div className="mb-2 flex items-center gap-2">
             <select
               value={selectedModel}
-              onChange={(e) => setSelectedModel(e.target.value)}
+              onChange={(e) => handleModelChange(e.target.value)}
               className="rounded-md border border-[#373737] bg-[#232323] px-2 py-1 text-xs text-[#b4b4b4]"
             >
               {MODELS.map((m) => (

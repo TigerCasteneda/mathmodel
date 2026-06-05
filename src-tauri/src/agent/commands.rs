@@ -4,7 +4,44 @@ use crate::agent::state::AgentState;
 use std::path::{Component, PathBuf};
 use tauri::{Emitter, State};
 
-pub fn validate_and_resolve_path(work_dir: &std::path::Path, relative_path: &str) -> Result<PathBuf, String> {
+fn start_workspace_watcher(state: &AgentState, work_dir: PathBuf) -> Result<(), String> {
+    if let Some(task) = state
+        .watcher_task
+        .lock()
+        .map_err(|e| e.to_string())?
+        .take()
+    {
+        task.abort();
+    }
+
+    let app_handle = state.app_handle.clone();
+    let watcher_dir = work_dir.clone();
+    let mut watcher = file_watcher::FileWatcher::new(&work_dir).map_err(|e| format!("{e:#}"))?;
+    let task = tauri::async_runtime::spawn(async move {
+        while let Some(event) = watcher.next_event().await {
+            if let Some(content) = event.content {
+                let _ = app_handle.emit(
+                    "file-change",
+                    AgentEvent::FileChange {
+                        path: event.path,
+                        content,
+                    },
+                );
+            }
+            if let Ok(tree) = file_watcher::scan_tree(&watcher_dir) {
+                let _ = app_handle.emit("file-tree", AgentEvent::FileTree { tree });
+            }
+        }
+    });
+
+    *state.watcher_task.lock().map_err(|e| e.to_string())? = Some(task);
+    Ok(())
+}
+
+pub fn validate_and_resolve_path(
+    work_dir: &std::path::Path,
+    relative_path: &str,
+) -> Result<PathBuf, String> {
     let rel = std::path::Path::new(relative_path);
     if rel.is_absolute() {
         return Err("absolute path rejected".into());
@@ -44,6 +81,23 @@ pub async fn read_file(path: String, state: State<'_, AgentState>) -> Result<Str
 }
 
 #[tauri::command]
+pub async fn write_file(
+    path: String,
+    content: String,
+    state: State<'_, AgentState>,
+) -> Result<(), String> {
+    let work_dir = state.work_dir.lock().map_err(|e| e.to_string())?.clone();
+    let resolved = validate_and_resolve_path(&work_dir, &path)?;
+    if resolved.exists() && !resolved.is_file() {
+        return Err("path is not a file".into());
+    }
+    if let Some(parent) = resolved.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("{e:#}"))?;
+    }
+    std::fs::write(&resolved, &content).map_err(|e| format!("{e:#}"))
+}
+
+#[tauri::command]
 pub async fn create_file(
     path: String,
     content: String,
@@ -73,19 +127,14 @@ pub async fn change_work_dir(
         let mut work_dir = state.work_dir.lock().map_err(|e| e.to_string())?;
         *work_dir = new_dir.clone();
     }
-    let _ = state.app_handle.emit(
-        "work-dir",
-        AgentEvent::WorkDir {
-            path: path.clone(),
-        },
-    );
+    let _ = state
+        .app_handle
+        .emit("work-dir", AgentEvent::WorkDir { path: path.clone() });
     let tree = file_watcher::scan_tree(&new_dir).map_err(|e| format!("{e:#}"))?;
-    let _ = state.app_handle.emit(
-        "file-tree",
-        AgentEvent::FileTree {
-            tree: tree.clone(),
-        },
-    );
+    let _ = state
+        .app_handle
+        .emit("file-tree", AgentEvent::FileTree { tree: tree.clone() });
+    start_workspace_watcher(&state, new_dir)?;
     Ok(tree)
 }
 
@@ -102,18 +151,15 @@ pub async fn open_folder(state: State<'_, AgentState>) -> Result<Option<String>,
             let mut work_dir = state.work_dir.lock().map_err(|e| e.to_string())?;
             *work_dir = new_dir.clone();
         }
-        let _ = state.app_handle.emit(
-            "work-dir",
-            AgentEvent::WorkDir {
-                path: path.clone(),
-            },
-        );
+        let _ = state
+            .app_handle
+            .emit("work-dir", AgentEvent::WorkDir { path: path.clone() });
         if let Ok(tree) = file_watcher::scan_tree(&new_dir) {
-            let _ = state.app_handle.emit(
-                "file-tree",
-                AgentEvent::FileTree { tree },
-            );
+            let _ = state
+                .app_handle
+                .emit("file-tree", AgentEvent::FileTree { tree });
         }
+        start_workspace_watcher(&state, new_dir)?;
     }
 
     Ok(folder)

@@ -24,6 +24,7 @@ async fn run_migrations(pool: &SqlitePool) {
     run_specific_migration(pool, include_str!("../migrations/004_research.sql")).await;
     run_005_migration(pool).await;
     run_006_migration(pool).await;
+    run_007_migration(pool).await;
 }
 
 pub async fn run_specific_migration(pool: &SqlitePool, sql: &str) {
@@ -100,4 +101,17 @@ async fn run_006_migration(pool: &SqlitePool) {
     ensure_column(pool, "research_items", "ai_relevance", "TEXT DEFAULT ''")
         .await
         .expect("006: ai_relevance");
+}
+
+/// 007: project member capability overrides and invite defaults.
+async fn run_007_migration(pool: &SqlitePool) {
+    ensure_column(pool, "project_members", "capabilities", "TEXT")
+        .await
+        .expect("007: project_members.capabilities");
+    ensure_column(pool, "invite_codes", "role", "TEXT DEFAULT 'editor'")
+        .await
+        .expect("007: invite_codes.role");
+    ensure_column(pool, "invite_codes", "capabilities", "TEXT")
+        .await
+        .expect("007: invite_codes.capabilities");
 }

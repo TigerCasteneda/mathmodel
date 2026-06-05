@@ -7,14 +7,16 @@ import { Plus, Sparkles, LogOut, FolderGit2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { useAuth } from "@/hooks/use-auth"
-import { apiFetch, Project } from "@/lib/api"
+import { apiFetch, joinProjectByCode, Project } from "@/lib/api"
 
 export default function ProjectsPage() {
   const { user, loading, logout } = useAuth()
   const router = useRouter()
   const [projects, setProjects] = useState<Project[]>([])
   const [newName, setNewName] = useState("")
+  const [inviteCode, setInviteCode] = useState("")
   const [creating, setCreating] = useState(false)
+  const [joining, setJoining] = useState(false)
   const [fetching, setFetching] = useState(true)
 
   useEffect(() => {
@@ -56,6 +58,22 @@ export default function ProjectsPage() {
     }
   }
 
+  const handleJoin = async () => {
+    const code = inviteCode.trim()
+    if (!code) return
+    setJoining(true)
+    try {
+      const result = await joinProjectByCode(code)
+      setInviteCode("")
+      await fetchProjects()
+      router.push(`/projects/${result.project_id}`)
+    } catch (err) {
+      console.error("Failed to join project", err)
+    } finally {
+      setJoining(false)
+    }
+  }
+
   const handleLogout = () => {
     logout()
     router.push("/login")
@@ -90,22 +108,41 @@ export default function ProjectsPage() {
           </Button>
         </div>
 
-        <div className="flex gap-3 mb-8">
-          <Input
-            placeholder="New project name..."
-            value={newName}
-            onChange={(e) => setNewName(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && handleCreate()}
-            className="bg-input border-border"
-          />
-          <Button
-            onClick={handleCreate}
-            disabled={creating || !newName.trim()}
-            className="bg-primary text-primary-foreground hover:bg-primary/90 shrink-0"
-          >
-            <Plus className="w-4 h-4 mr-1.5" />
-            Create
-          </Button>
+        <div className="mb-8 space-y-3">
+          <div className="flex gap-3">
+            <Input
+              placeholder="New project name..."
+              value={newName}
+              onChange={(e) => setNewName(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && handleCreate()}
+              className="bg-input border-border"
+            />
+            <Button
+              onClick={handleCreate}
+              disabled={creating || !newName.trim()}
+              className="bg-primary text-primary-foreground hover:bg-primary/90 shrink-0"
+            >
+              <Plus className="w-4 h-4 mr-1.5" />
+              Create
+            </Button>
+          </div>
+          <div className="flex gap-3">
+            <Input
+              placeholder="Invite code..."
+              value={inviteCode}
+              onChange={(e) => setInviteCode(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && handleJoin()}
+              className="bg-input border-border"
+            />
+            <Button
+              onClick={handleJoin}
+              disabled={joining || !inviteCode.trim()}
+              variant="outline"
+              className="shrink-0"
+            >
+              Join
+            </Button>
+          </div>
         </div>
 
         <div className="h-[60vh] overflow-y-auto">
@@ -126,7 +163,7 @@ export default function ProjectsPage() {
                     <div>
                       <h3 className="font-medium text-foreground">{p.name}</h3>
                       <p className="text-xs text-muted-foreground mt-0.5">
-                        {p.role === "owner" ? "Owner" : "Editor"} {" "}
+                        {p.role === "owner" ? "Owner" : p.role === "viewer" ? "Viewer" : "Editor"}{" "}
                         {new Date(p.updated_at * 1000).toLocaleDateString()}
                       </p>
                     </div>

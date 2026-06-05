@@ -4,16 +4,26 @@ use std::path::PathBuf;
 use tokio::sync::mpsc;
 
 pub struct FileWatcher {
-    rx: mpsc::UnboundedReceiver<(String, String)>,
+    rx: mpsc::UnboundedReceiver<FileWatchEvent>,
     _watcher: notify::RecommendedWatcher,
+}
+
+#[derive(Debug, Clone)]
+pub struct FileWatchEvent {
+    pub path: String,
+    pub content: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileTreeItem {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
     pub name: String,
     pub path: String,
     #[serde(rename = "type")]
     pub node_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub zone: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -34,14 +44,16 @@ impl FileWatcher {
                     return;
                 }
                 for path in event.paths {
-                    if let Ok(content) = std::fs::read_to_string(&path) {
-                        let rel = path
-                            .strip_prefix(&wd)
-                            .unwrap_or(&path)
-                            .to_string_lossy()
-                            .replace('\\', "/");
-                        let _ = tx.send((rel, content));
+                    let rel = path
+                        .strip_prefix(&wd)
+                        .unwrap_or(&path)
+                        .to_string_lossy()
+                        .replace('\\', "/");
+                    if rel.is_empty() || should_skip_path(&rel) {
+                        continue;
                     }
+                    let content = std::fs::read_to_string(&path).ok();
+                    let _ = tx.send(FileWatchEvent { path: rel, content });
                 }
             }
         })?;
@@ -53,7 +65,7 @@ impl FileWatcher {
         })
     }
 
-    pub async fn next_event(&mut self) -> Option<(String, String)> {
+    pub async fn next_event(&mut self) -> Option<FileWatchEvent> {
         self.rx.recv().await
     }
 }
@@ -103,18 +115,22 @@ fn scan_path(root: &PathBuf, path: &PathBuf, name: String) -> anyhow::Result<Fil
                 .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
         });
         return Ok(FileTreeItem {
+            id: None,
             name,
             path: rel_path,
             node_type: "folder".into(),
+            zone: None,
             language: None,
             children: Some(children),
         });
     }
 
     Ok(FileTreeItem {
+        id: None,
         name: name.clone(),
         path: rel_path,
         node_type: "file".into(),
+        zone: None,
         language: language_for_name(&name),
         children: None,
     })
@@ -125,6 +141,10 @@ fn should_skip(name: &str) -> bool {
         name,
         ".git" | ".next" | "node_modules" | "target" | ".DS_Store"
     )
+}
+
+fn should_skip_path(path: &str) -> bool {
+    path.split('/').any(should_skip)
 }
 
 fn language_for_name(name: &str) -> Option<String> {

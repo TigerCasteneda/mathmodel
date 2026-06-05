@@ -4,9 +4,12 @@ import { invoke } from "@tauri-apps/api/core"
 import { listen, type UnlistenFn } from "@tauri-apps/api/event"
 
 export interface FileTreeItem {
+  id?: string
   name: string
   path: string
   type: "file" | "folder"
+  zone?: string
+  updated_at?: number
   language?: string
   children?: FileTreeItem[]
 }
@@ -68,6 +71,7 @@ export interface AiConfigStatus {
 
 export interface ChatStreamEvent {
   conversation_id: string
+  seq?: number
   content: string
   done: boolean
 }
@@ -125,6 +129,11 @@ export async function readFile(path: string): Promise<string> {
   return invoke<string>("read_file", { path })
 }
 
+export async function writeFile(path: string, content: string): Promise<void> {
+  if (!isTauri()) return
+  return invoke("write_file", { path, content })
+}
+
 export async function createFile(path: string, content: string): Promise<void> {
   if (!isTauri()) return
   return invoke("create_file", { path, content })
@@ -153,14 +162,40 @@ export async function getAiConfigStatus(): Promise<AiConfigStatus> {
   return invoke<AiConfigStatus>("get_ai_config_status")
 }
 
+export async function setAiModel(model: string): Promise<AiConfigStatus | null> {
+  if (!isTauri()) return null
+  return invoke<AiConfigStatus>("set_ai_model", { model })
+}
+
 export async function openFolder(): Promise<string | null> {
   if (!isTauri()) return null
   return invoke<string | null>("open_folder")
 }
 
-export async function aiChat(message: string, conversationId = "default"): Promise<void> {
+export interface AiChatOptions {
+  workspaceMode?: "host" | "guest"
+  projectId?: string
+  authToken?: string | null
+  serverBase?: string | null
+  capabilities?: string[]
+}
+
+export async function aiChat(
+  message: string,
+  conversationId = "default",
+  options: AiChatOptions = {},
+): Promise<void> {
   if (!isTauri()) return
-  return invoke("ai_chat", { message, conversationId })
+  const serverBase = options.serverBase ?? `http://127.0.0.1:${await getServerPort()}`
+  return invoke("ai_chat", {
+    message,
+    conversationId,
+    workspaceMode: options.workspaceMode ?? "host",
+    projectId: options.projectId ?? null,
+    authToken: options.authToken ?? null,
+    serverBase,
+    capabilities: options.capabilities ?? null,
+  })
 }
 
 // ─── Events ─────────────────────────────────────────

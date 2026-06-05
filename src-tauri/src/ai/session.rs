@@ -2,7 +2,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
-use tauri::Manager;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionMessage {
@@ -84,8 +83,7 @@ impl ChatSessionStore {
         let session = if path.exists() {
             let content =
                 std::fs::read_to_string(&path).map_err(|e| format!("read session: {e}"))?;
-            serde_json::from_str::<Session>(&content)
-                .map_err(|e| format!("parse session: {e}"))?
+            serde_json::from_str::<Session>(&content).map_err(|e| format!("parse session: {e}"))?
         } else {
             Session {
                 id: conversation_id.to_string(),
@@ -104,8 +102,8 @@ impl ChatSessionStore {
     /// Persist a session to disk and update in-memory.
     fn persist(&self, session: &Session) -> Result<(), String> {
         let path = self.sessions_dir.join(format!("{}.json", session.id));
-        let content = serde_json::to_string_pretty(session)
-            .map_err(|e| format!("serialize session: {e}"))?;
+        let content =
+            serde_json::to_string_pretty(session).map_err(|e| format!("serialize session: {e}"))?;
         std::fs::write(&path, &content).map_err(|e| format!("write session: {e}"))?;
 
         let mut active = self.active.lock().map_err(|e| e.to_string())?;
@@ -169,7 +167,9 @@ impl ChatSessionStore {
 /// ── Tauri commands ──
 
 #[tauri::command]
-pub fn list_sessions(store: tauri::State<'_, ChatSessionStore>) -> Result<Vec<SessionInfo>, String> {
+pub fn list_sessions(
+    store: tauri::State<'_, ChatSessionStore>,
+) -> Result<Vec<SessionInfo>, String> {
     store.list()
 }
 

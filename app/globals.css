@@ -152,3 +152,124 @@
 ::-webkit-scrollbar-thumb:hover {
   background: #373737;
 }
+
+/* Claude Code-inspired chat motion */
+.cc-claude-mark {
+  box-shadow: 0 0 0 1px rgba(212, 165, 116, 0.08), 0 0 24px rgba(212, 165, 116, 0.10);
+}
+
+.cc-live-dot {
+  animation: cc-live-pulse 1.35s ease-in-out infinite;
+}
+
+.cc-stream-cursor {
+  width: 0.58rem;
+  height: 1rem;
+  border-radius: 2px;
+  background: #d4a574;
+  box-shadow: 0 0 18px rgba(212, 165, 116, 0.55);
+  animation: cc-cursor-blink 0.9s steps(2, jump-none) infinite;
+}
+
+.cc-thinking-strip {
+  position: relative;
+  overflow: hidden;
+}
+
+.cc-thinking-strip::before,
+.cc-tool-card-running::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent, rgba(212, 165, 116, 0.08), transparent);
+  animation: cc-sheen 1.8s ease-in-out infinite;
+  pointer-events: none;
+}
+
+.cc-tool-card {
+  position: relative;
+}
+
+.cc-tool-card-running {
+  animation: cc-tool-glow 1.6s ease-in-out infinite;
+}
+
+.cc-thinking-dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 999px;
+  background: #d4a574;
+  box-shadow: 0 0 16px rgba(212, 165, 116, 0.7);
+  animation: cc-live-pulse 1.2s ease-in-out infinite;
+}
+
+.cc-thinking-ellipsis {
+  display: inline-flex;
+  gap: 0.2rem;
+}
+
+.cc-thinking-ellipsis span {
+  width: 0.24rem;
+  height: 0.24rem;
+  border-radius: 999px;
+  background: #787878;
+  animation: cc-dot-rise 1.15s ease-in-out infinite;
+}
+
+.cc-thinking-ellipsis span:nth-child(2) {
+  animation-delay: 0.14s;
+}
+
+.cc-thinking-ellipsis span:nth-child(3) {
+  animation-delay: 0.28s;
+}
+
+@keyframes cc-live-pulse {
+  0%, 100% {
+    opacity: 0.55;
+    transform: scale(0.82);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.15);
+  }
+}
+
+@keyframes cc-cursor-blink {
+  0%, 45% {
+    opacity: 1;
+  }
+  46%, 100% {
+    opacity: 0.25;
+  }
+}
+
+@keyframes cc-sheen {
+  0% {
+    transform: translateX(-100%);
+  }
+  55%, 100% {
+    transform: translateX(100%);
+  }
+}
+
+@keyframes cc-tool-glow {
+  0%, 100% {
+    box-shadow: 0 0 0 1px rgba(100, 181, 246, 0.12), 0 0 0 rgba(100, 181, 246, 0);
+  }
+  50% {
+    box-shadow: 0 0 0 1px rgba(100, 181, 246, 0.18), 0 0 26px rgba(100, 181, 246, 0.12);
+  }
+}
+
+@keyframes cc-dot-rise {
+  0%, 100% {
+    opacity: 0.3;
+    transform: translateY(0);
+  }
+  50% {
+    opacity: 1;
+    transform: translateY(-2px);
+  }
+}

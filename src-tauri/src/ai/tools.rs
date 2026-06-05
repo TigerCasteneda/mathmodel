@@ -72,7 +72,11 @@ pub fn modeler_tool_definitions() -> Vec<ToolDefinition> {
 }
 
 /// Execute a tool call locally and return the result as a ChatMessage::tool.
-pub async fn execute_tool(name: &str, arguments: &Value, agent_state: &State<'_, AgentState>) -> String {
+pub async fn execute_tool(
+    name: &str,
+    arguments: &Value,
+    agent_state: &State<'_, AgentState>,
+) -> String {
     match name {
         "web_search" => execute_web_search(arguments).await,
         "fetch_url" => execute_fetch_url(arguments).await,
@@ -145,7 +149,9 @@ fn urlencoding(s: &str) -> String {
     let mut result = String::new();
     for byte in s.bytes() {
         match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => result.push(byte as char),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                result.push(byte as char)
+            }
             b' ' => result.push_str("%20"),
             _ => result.push_str(&format!("%{:02X}", byte)),
         }
@@ -166,7 +172,10 @@ async fn execute_fetch_url(arguments: &Value) -> String {
         Ok(resp) => match resp.text().await {
             Ok(markdown) => {
                 let truncated = if markdown.len() > 8000 {
-                    format!("{}...\n\n(Content truncated at 8000 characters)", &markdown[..8000])
+                    format!(
+                        "{}...\n\n(Content truncated at 8000 characters)",
+                        &markdown[..8000]
+                    )
                 } else {
                     markdown
                 };
@@ -254,10 +263,20 @@ fn title_to_slug(title: &str) -> String {
     let slug: String = title
         .to_lowercase()
         .chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     let slug = slug.trim_matches('_');
-    if slug.len() > 64 { slug[..64].to_string() } else { slug.to_string() }
+    if slug.len() > 64 {
+        slug[..64].to_string()
+    } else {
+        slug.to_string()
+    }
 }
 
 async fn execute_read_file(arguments: &Value, agent_state: &State<'_, AgentState>) -> String {

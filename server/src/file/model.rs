@@ -24,6 +24,7 @@ pub struct FileTree {
     #[serde(rename = "type")]
     pub node_type: String,
     pub zone: String,
+    pub updated_at: i64,
     pub children: Option<Vec<FileTree>>,
 }
 
