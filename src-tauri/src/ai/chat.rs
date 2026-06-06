@@ -8,6 +8,7 @@ use claude_code_rs::ChatMessage;
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::OnceLock;
 use tauri::{AppHandle, Emitter, State};
 
 #[derive(Debug, Clone, Serialize)]
@@ -51,9 +52,107 @@ pub struct ChatErrorEvent {
 /// leave room for the model response + tool call overhead.
 const MAX_CONTEXT_TOKENS: usize = 96_000;
 
-/// Rough token estimate: ~1.3 chars per token for English + code.
-fn estimate_tokens(text: &str) -> usize {
+fn rough_token_estimate(text: &str) -> usize {
     (text.len() as f64 / 1.3) as usize
+}
+
+#[cfg(feature = "accurate-tokenizer")]
+fn token_encoder() -> Option<&'static tiktoken_rs::CoreBPE> {
+    static TOKEN_ENCODER: OnceLock<Option<tiktoken_rs::CoreBPE>> = OnceLock::new();
+    TOKEN_ENCODER
+        .get_or_init(|| tiktoken_rs::cl100k_base().ok())
+        .as_ref()
+}
+
+fn estimate_tokens(text: &str) -> usize {
+    #[cfg(feature = "accurate-tokenizer")]
+    {
+        if let Some(encoder) = token_encoder() {
+            return encoder.encode_ordinary(text).len();
+        }
+    }
+
+    rough_token_estimate(text)
+}
+
+fn message_token_estimate(message: &ChatMessage) -> usize {
+    serde_json::to_string(message)
+        .map(|value| estimate_tokens(&value))
+        .unwrap_or_else(|_| {
+            let content_tokens = message
+                .content
+                .as_deref()
+                .map(estimate_tokens)
+                .unwrap_or_default();
+            let tool_tokens = message
+                .tool_calls
+                .as_ref()
+                .map(|tool_calls| {
+                    tool_calls
+                        .iter()
+                        .map(|tool_call| {
+                            estimate_tokens(&tool_call.id)
+                                + estimate_tokens(&tool_call.function.name)
+                                + estimate_tokens(&tool_call.function.arguments)
+                        })
+                        .sum::<usize>()
+                })
+                .unwrap_or_default();
+            let tool_call_id_tokens = message
+                .tool_call_id
+                .as_deref()
+                .map(estimate_tokens)
+                .unwrap_or_default();
+            content_tokens + tool_tokens + tool_call_id_tokens
+        })
+}
+
+#[derive(Debug, Clone)]
+struct ConversationRound {
+    messages: Vec<ChatMessage>,
+}
+
+impl ConversationRound {
+    fn token_estimate(&self) -> usize {
+        self.messages.iter().map(message_token_estimate).sum()
+    }
+
+    fn starts_with_role(&self, role: &str) -> bool {
+        self.messages
+            .first()
+            .map(|message| message.role == role)
+            .unwrap_or(false)
+    }
+}
+
+fn build_conversation_rounds(messages: &[ChatMessage]) -> Vec<ConversationRound> {
+    let mut rounds = Vec::new();
+    let mut current = Vec::new();
+
+    for message in messages {
+        let should_split = !current.is_empty()
+            && match message.role.as_str() {
+                "user" => true,
+                "assistant" => current
+                    .iter()
+                    .all(|existing: &ChatMessage| existing.role == "user"),
+                _ => false,
+            };
+
+        if should_split {
+            rounds.push(ConversationRound {
+                messages: std::mem::take(&mut current),
+            });
+        }
+
+        current.push(message.clone());
+    }
+
+    if !current.is_empty() {
+        rounds.push(ConversationRound { messages: current });
+    }
+
+    rounds
 }
 
 fn format_file_tree(item: &crate::agent::file_watcher::FileTreeItem, depth: usize) -> String {
@@ -95,20 +194,46 @@ fn trim_context(mut messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
         .map(|s| s.content.as_deref().map(estimate_tokens).unwrap_or(0))
         .unwrap_or(0);
     let mut budget = MAX_CONTEXT_TOKENS.saturating_sub(system_tokens);
+    let rounds = build_conversation_rounds(&rest);
 
-    // Keep recent messages; drop oldest non-system messages first
-    let mut kept = Vec::new();
-    for msg in rest.into_iter().rev() {
-        let tokens = msg.content.as_deref().map(estimate_tokens).unwrap_or(0)
-            + msg.tool_calls.as_ref().map(|tc| tc.len() * 20).unwrap_or(0);
-        if tokens <= budget {
-            budget = budget.saturating_sub(tokens);
-            kept.push(msg);
+    // Keep recent rounds and prefer complete user->assistant bundles.
+    let mut kept_rounds = Vec::new();
+    let mut index = rounds.len();
+    while index > 0 {
+        let current_index = index - 1;
+        let mut candidate_rounds = vec![rounds[current_index].clone()];
+        if candidate_rounds[0].starts_with_role("assistant")
+            && current_index > 0
+            && rounds[current_index - 1].starts_with_role("user")
+        {
+            candidate_rounds.insert(0, rounds[current_index - 1].clone());
+            index -= 1;
+        }
+
+        let candidate_tokens: usize = candidate_rounds
+            .iter()
+            .map(ConversationRound::token_estimate)
+            .sum();
+        if candidate_tokens <= budget {
+            budget = budget.saturating_sub(candidate_tokens);
+            kept_rounds.push(candidate_rounds);
+        } else if kept_rounds.is_empty()
+            && rounds[current_index].token_estimate() <= budget
+            && !rounds[current_index].starts_with_role("assistant")
+        {
+            budget = budget.saturating_sub(rounds[current_index].token_estimate());
+            kept_rounds.push(vec![rounds[current_index].clone()]);
         } else {
             break; // stop — older messages would exceed budget
         }
+        index -= 1;
     }
-    kept.reverse();
+    kept_rounds.reverse();
+    let kept = kept_rounds
+        .into_iter()
+        .flatten()
+        .flat_map(|round| round.messages)
+        .collect::<Vec<_>>();
 
     if let Some(sys) = system {
         let mut out = vec![sys];
@@ -564,6 +689,17 @@ struct ExtendedFunction {
 mod tests {
     use super::{parse_sse_line, StreamLine};
 
+    fn tool_call(id: &str, name: &str) -> claude_code_rs::api::ToolCall {
+        claude_code_rs::api::ToolCall {
+            id: id.to_string(),
+            r#type: "function".to_string(),
+            function: claude_code_rs::api::ToolCallFunction {
+                name: name.to_string(),
+                arguments: r#"{"query":"city traffic prediction"}"#.to_string(),
+            },
+        }
+    }
+
     #[test]
     fn parses_openai_compatible_stream_content() {
         let line = r#"data: {"id":"1","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"content":"hello"},"finish_reason":null}]}"#;
@@ -631,5 +767,69 @@ mod tests {
             Some(1)
         );
         assert_eq!(persisted[1].tool_call_id.as_deref(), Some("call_1"));
+    }
+
+    #[cfg(feature = "accurate-tokenizer")]
+    #[test]
+    fn uses_cl100k_tokenizer_when_feature_enabled() {
+        assert_eq!(super::estimate_tokens("hello world"), 2);
+    }
+
+    #[test]
+    fn token_estimator_counts_tool_call_payloads() {
+        let message = claude_code_rs::api::ChatMessage::assistant_with_tools(vec![tool_call(
+            "call_1",
+            "web_search",
+        )]);
+
+        assert!(super::message_token_estimate(&message) > 20);
+    }
+
+    #[test]
+    fn groups_messages_into_api_rounds() {
+        let messages = vec![
+            claude_code_rs::api::ChatMessage::user("Find relevant files"),
+            claude_code_rs::api::ChatMessage::assistant_with_tools(vec![tool_call(
+                "call_1",
+                "tool_search",
+            )]),
+            claude_code_rs::api::ChatMessage::tool("call_1", r#"{"success":true}"#),
+            claude_code_rs::api::ChatMessage::assistant("I found the files."),
+            claude_code_rs::api::ChatMessage::user("Read both"),
+        ];
+
+        let rounds = super::build_conversation_rounds(&messages);
+
+        assert_eq!(rounds.len(), 3);
+        assert_eq!(rounds[0].messages.len(), 1);
+        assert_eq!(rounds[1].messages.len(), 3);
+        assert_eq!(rounds[2].messages.len(), 1);
+    }
+
+    #[test]
+    fn trim_context_preserves_recent_round_boundaries() {
+        let mut messages = vec![claude_code_rs::api::ChatMessage::system("system")];
+        for index in 0..40 {
+            messages.push(claude_code_rs::api::ChatMessage::user(format!(
+                "user message {index} {}",
+                "x".repeat(2000)
+            )));
+            messages.push(claude_code_rs::api::ChatMessage::assistant(format!(
+                "assistant reply {index} {}",
+                "y".repeat(2000)
+            )));
+        }
+
+        let trimmed = super::trim_context(messages);
+
+        assert_eq!(
+            trimmed.first().map(|message| message.role.as_str()),
+            Some("system")
+        );
+        assert_eq!(trimmed.len() % 2, 1);
+        assert_eq!(
+            trimmed.get(1).map(|message| message.role.as_str()),
+            Some("user")
+        );
     }
 }
