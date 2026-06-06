@@ -336,6 +336,7 @@ pub async fn ai_chat(
                 );
             }
 
+            let mut persisted_tool_results = Vec::new();
             // Execute concurrency-safe tools in parallel while preserving result order.
             for result in execute_tool_calls(&runtime, &tool_calls).await {
                 let status = tool_result_status(&result.output);
@@ -347,10 +348,15 @@ pub async fn ai_chat(
                     &result.output,
                     status,
                 );
+                persisted_tool_results.push((result.id.clone(), result.output.clone()));
                 messages.push(ChatMessage::tool(&result.id, result.output));
             }
 
-            sessions.push_assistant(&conversation_id, assistant_text)?;
+            for persisted in
+                build_persisted_tool_turn_messages(&tool_calls, &persisted_tool_results)
+            {
+                sessions.push_chat_message(&conversation_id, persisted)?;
+            }
             tools = runtime.tool_definitions().await;
 
             // Continue loop — send tool results back to LLM (no hard limit)
@@ -379,6 +385,20 @@ fn tool_result_status(result: &str) -> &'static str {
         Ok(value) if value["success"].as_bool() == Some(false) => "error",
         _ => "success",
     }
+}
+
+fn build_persisted_tool_turn_messages(
+    tool_calls: &[claude_code_rs::api::ToolCall],
+    tool_results: &[(String, String)],
+) -> Vec<claude_code_rs::api::ChatMessage> {
+    let mut messages = Vec::with_capacity(tool_results.len() + 1);
+    messages.push(ChatMessage::assistant_with_tools(tool_calls.to_vec()));
+    messages.extend(
+        tool_results
+            .iter()
+            .map(|(tool_call_id, output)| ChatMessage::tool(tool_call_id.clone(), output.clone())),
+    );
+    messages
 }
 
 fn system_prompt(workspace_label: &str, permission_label: &str, file_tree: &str) -> String {
@@ -586,5 +606,30 @@ mod tests {
         assert!(prompt.contains("tool_search"));
         assert!(prompt.contains("Deferred tools"));
         assert!(prompt.contains("Research panel for Firecrawl web search and Context7 docs search"));
+    }
+
+    #[test]
+    fn tool_turn_persistence_shape_matches_runtime_history() {
+        let tool_calls = vec![claude_code_rs::api::ToolCall {
+            id: "call_1".to_string(),
+            r#type: "function".to_string(),
+            function: claude_code_rs::api::ToolCallFunction {
+                name: "web_search".to_string(),
+                arguments: r#"{"query":"sir"}"#.to_string(),
+            },
+        }];
+        let tool_results = vec![(
+            "call_1".to_string(),
+            r#"{"success":true,"results":[]}"#.to_string(),
+        )];
+
+        let persisted = super::build_persisted_tool_turn_messages(&tool_calls, &tool_results);
+
+        assert_eq!(persisted.len(), 2);
+        assert_eq!(
+            persisted[0].tool_calls.as_ref().map(|calls| calls.len()),
+            Some(1)
+        );
+        assert_eq!(persisted[1].tool_call_id.as_deref(), Some("call_1"));
     }
 }

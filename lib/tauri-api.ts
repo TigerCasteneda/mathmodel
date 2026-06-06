@@ -366,10 +366,23 @@ export interface Session {
   messages: SessionMessage[]
 }
 
+export interface SessionToolCallFunction {
+  name: string
+  arguments: string
+}
+
+export interface SessionToolCall {
+  id: string
+  type: string
+  function: SessionToolCallFunction
+}
+
 export interface SessionMessage {
   role: string
-  content: string
+  content?: string | null
   timestamp: number
+  tool_calls?: SessionToolCall[] | null
+  tool_call_id?: string | null
 }
 
 export async function listSessions(): Promise<SessionInfo[]> {

@@ -6,8 +6,13 @@ use std::sync::Mutex;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionMessage {
     pub role: String,
-    pub content: String,
+    #[serde(default)]
+    pub content: Option<String>,
     pub timestamp: i64,
+    #[serde(default)]
+    pub tool_calls: Option<Vec<claude_code_rs::api::ToolCall>>,
+    #[serde(default)]
+    pub tool_call_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -111,28 +116,45 @@ impl ChatSessionStore {
         Ok(())
     }
 
-    /// Push a user message and persist.
-    pub fn push_user(&self, conversation_id: &str, content: String) -> Result<(), String> {
+    pub fn push_chat_message(
+        &self,
+        conversation_id: &str,
+        message: claude_code_rs::api::ChatMessage,
+    ) -> Result<(), String> {
         let mut session = self.load(conversation_id)?;
+        if session.name == "New Chat" && message.role == "user" {
+            if let Some(content) = message.content.as_deref() {
+                let trimmed = content.trim();
+                if !trimmed.is_empty() {
+                    session.name = trimmed.chars().take(50).collect();
+                }
+            }
+        }
         session.messages.push(SessionMessage {
-            role: "user".to_string(),
-            content,
+            role: message.role,
+            content: message.content,
             timestamp: chrono::Utc::now().timestamp(),
+            tool_calls: message.tool_calls,
+            tool_call_id: message.tool_call_id,
         });
         session.updated_at = chrono::Utc::now().timestamp();
         self.persist(&session)
     }
 
+    /// Push a user message and persist.
+    pub fn push_user(&self, conversation_id: &str, content: String) -> Result<(), String> {
+        self.push_chat_message(
+            conversation_id,
+            claude_code_rs::api::ChatMessage::user(content),
+        )
+    }
+
     /// Push an assistant message and persist.
     pub fn push_assistant(&self, conversation_id: &str, content: String) -> Result<(), String> {
-        let mut session = self.load(conversation_id)?;
-        session.messages.push(SessionMessage {
-            role: "assistant".to_string(),
-            content,
-            timestamp: chrono::Utc::now().timestamp(),
-        });
-        session.updated_at = chrono::Utc::now().timestamp();
-        self.persist(&session)
+        self.push_chat_message(
+            conversation_id,
+            claude_code_rs::api::ChatMessage::assistant(content),
+        )
     }
 
     /// Return Vec<ChatMessage> suitable for the API call.
@@ -146,9 +168,9 @@ impl ChatSessionStore {
             .iter()
             .map(|m| claude_code_rs::api::ChatMessage {
                 role: m.role.clone(),
-                content: Some(m.content.clone()),
-                tool_calls: None,
-                tool_call_id: None,
+                content: m.content.clone(),
+                tool_calls: m.tool_calls.clone(),
+                tool_call_id: m.tool_call_id.clone(),
             })
             .collect())
     }
@@ -161,6 +183,11 @@ impl ChatSessionStore {
         let mut active = self.active.lock().map_err(|e| e.to_string())?;
         active.remove(conversation_id);
         Ok(())
+    }
+
+    #[cfg(test)]
+    fn sessions_dir_for_tests(&self) -> &PathBuf {
+        &self.sessions_dir
     }
 }
 
@@ -192,5 +219,90 @@ pub fn delete_session(
 impl Default for ChatSessionStore {
     fn default() -> Self {
         Self::new(PathBuf::from("data/chat-sessions"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ChatSessionStore;
+
+    fn test_store() -> ChatSessionStore {
+        let unique = format!(
+            "modeler-session-test-{}",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        );
+        ChatSessionStore::new(std::env::temp_dir().join(unique))
+    }
+
+    #[test]
+    fn history_preserves_tool_calls_and_tool_call_id() {
+        let store = test_store();
+        let conversation_id = "tool-history";
+
+        store
+            .push_chat_message(
+                conversation_id,
+                claude_code_rs::api::ChatMessage::assistant_with_tools(vec![
+                    claude_code_rs::api::ToolCall {
+                        id: "call_1".to_string(),
+                        r#type: "function".to_string(),
+                        function: claude_code_rs::api::ToolCallFunction {
+                            name: "web_search".to_string(),
+                            arguments: r#"{"query":"sir"}"#.to_string(),
+                        },
+                    },
+                ]),
+            )
+            .unwrap();
+        store
+            .push_chat_message(
+                conversation_id,
+                claude_code_rs::api::ChatMessage::tool("call_1", r#"{"success":true}"#),
+            )
+            .unwrap();
+
+        let history = store.history(conversation_id).unwrap();
+
+        assert_eq!(history.len(), 2);
+        assert_eq!(
+            history[0].tool_calls.as_ref().map(|calls| calls.len()),
+            Some(1)
+        );
+        assert_eq!(history[1].tool_call_id.as_deref(), Some("call_1"));
+    }
+
+    #[test]
+    fn first_user_message_sets_session_title() {
+        let store = test_store();
+        let conversation_id = "title";
+
+        store
+            .push_user(
+                conversation_id,
+                "Build a traffic prediction baseline with graph neural networks".to_string(),
+            )
+            .unwrap();
+
+        let session = store.load(conversation_id).unwrap();
+        assert_eq!(
+            session.name,
+            "Build a traffic prediction baseline with graph neu"
+        );
+    }
+
+    #[test]
+    fn legacy_string_content_session_still_loads() {
+        let store = test_store();
+        let session_path = store.sessions_dir_for_tests().join("legacy.json");
+        std::fs::write(
+            &session_path,
+            r#"{"id":"legacy","name":"New Chat","created_at":1,"updated_at":1,"messages":[{"role":"assistant","content":"hello","timestamp":1}]}"#,
+        )
+        .unwrap();
+
+        let history = store.history("legacy").unwrap();
+
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].content.as_deref(), Some("hello"));
     }
 }

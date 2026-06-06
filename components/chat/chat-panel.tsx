@@ -40,6 +40,7 @@ import {
   setAiModel,
   type AiPermissionMode,
   type ChatBackgroundTaskEvent,
+  type SessionMessage as PersistedSessionMessage,
   type ChatToolCallEvent,
 } from "@/lib/tauri-api"
 import { getToken, type ProjectCapability } from "@/lib/api"
@@ -56,6 +57,7 @@ type Message = {
 }
 
 type ToolCallEntry = {
+  id?: string
   name: string
   arguments: Record<string, unknown>
   output: string
@@ -91,6 +93,75 @@ const SLASH_COMMANDS: Record<string, string> = {
   "/explain": "Explain code/math",
   "/optimize": "Optimize code",
   "/refs": "List saved references",
+}
+
+function inferToolStatus(output: string): ToolCallEntry["status"] {
+  if (output.startsWith("Error")) return "error"
+  try {
+    const parsed = JSON.parse(output) as { success?: boolean }
+    if (parsed?.success === false) return "error"
+  } catch {}
+  return "success"
+}
+
+function parseToolArguments(argumentsText: string): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(argumentsText) as Record<string, unknown>
+    return parsed && typeof parsed === "object" ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
+function restoreMessages(sessionMessages: PersistedSessionMessage[]): Message[] {
+  const restored: Message[] = []
+  let activeAssistantIndex: number | null = null
+
+  for (const message of sessionMessages) {
+    if (message.role === "assistant" && (message.tool_calls?.length || 0) > 0) {
+      restored.push({
+        id: crypto.randomUUID(),
+        role: "assistant",
+        content: message.content || "",
+        toolCalls: (message.tool_calls || []).map((toolCall) => ({
+          id: toolCall.id,
+          name: toolCall.function.name,
+          arguments: parseToolArguments(toolCall.function.arguments),
+          output: "",
+          status: "running",
+        })),
+      })
+      activeAssistantIndex = restored.length - 1
+      continue
+    }
+
+    if (message.role === "tool") {
+      if (activeAssistantIndex !== null) {
+        const assistant = restored[activeAssistantIndex]
+        const toolCalls = assistant?.toolCalls || []
+        const index = toolCalls.findIndex((toolCall) => toolCall.id === message.tool_call_id)
+        if (index >= 0) {
+          const nextToolCalls = [...toolCalls]
+          nextToolCalls[index] = {
+            ...nextToolCalls[index],
+            output: message.content || "",
+            status: inferToolStatus(message.content || ""),
+          }
+          assistant.toolCalls = nextToolCalls
+        }
+      }
+      continue
+    }
+
+    restored.push({
+      id: crypto.randomUUID(),
+      role: message.role as Message["role"],
+      content: message.content || "",
+    })
+    activeAssistantIndex = null
+  }
+
+  return restored
 }
 
 function OrangeMark({ className }: { className?: string }) {
@@ -371,11 +442,7 @@ export function ChatPanel({
     setLoaded(false)
     setBackgroundTasks([])
     loadSession(conversationId).then((session) => {
-      const restored: Message[] = (session.messages || []).map((m) => ({
-        id: crypto.randomUUID(),
-        role: m.role as Message["role"],
-        content: m.content,
-      }))
+      const restored = restoreMessages(session.messages || [])
       setMessages(restored)
       setLoaded(true)
     }).catch(() => { setMessages([]); setLoaded(true) })
