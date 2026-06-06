@@ -1,9 +1,12 @@
 use crate::ai::runtime::PermissionMode;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashMap;
+use std::future::Future;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tauri::State;
+use tokio::sync::oneshot;
 
 const MAX_CONSECUTIVE_DENIALS: usize = 3;
 const MAX_TOTAL_DENIALS: usize = 10;
@@ -114,6 +117,18 @@ pub struct PermissionOutcome {
     pub next_tracker: DenialTracker,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PermissionPromptRequest {
+    pub request_id: String,
+    pub conversation_id: String,
+    pub tool_name: String,
+    pub arguments: Value,
+    pub reason: String,
+    pub mode: String,
+    pub content: Option<String>,
+    pub expires_at_ms: i64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PermissionAction {
     ReadOnly,
@@ -147,6 +162,7 @@ impl PermissionRequest {
 pub struct PermissionStore {
     path: PathBuf,
     state: Arc<Mutex<PermissionState>>,
+    pending: Arc<Mutex<HashMap<String, oneshot::Sender<bool>>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -169,6 +185,7 @@ impl PermissionStore {
                 config,
                 tracker: DenialTracker::default(),
             })),
+            pending: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -201,6 +218,41 @@ impl PermissionStore {
         let outcome = evaluate_permission(&state.config, state.tracker.clone(), mode, &request);
         state.tracker = outcome.next_tracker.clone();
         Ok(outcome)
+    }
+
+    pub fn wait_for_resolution(
+        &self,
+        request: PermissionPromptRequest,
+        timeout: std::time::Duration,
+    ) -> impl Future<Output = Result<bool, String>> + Send + 'static {
+        let (sender, receiver) = oneshot::channel();
+        let pending = self.pending.clone();
+        {
+            let mut pending_guard = pending.lock().expect("permission pending lock");
+            pending_guard.insert(request.request_id.clone(), sender);
+        }
+        async move {
+            let resolved = match tokio::time::timeout(timeout, receiver).await {
+                Ok(Ok(allow)) => allow,
+                Ok(Err(_)) => false,
+                Err(_) => false,
+            };
+            let mut pending_guard = pending.lock().map_err(|error| error.to_string())?;
+            pending_guard.remove(&request.request_id);
+            Ok(resolved)
+        }
+    }
+
+    pub fn resolve_request(&self, request_id: &str, allow: bool) -> Result<(), String> {
+        let sender = {
+            let mut pending = self.pending.lock().map_err(|error| error.to_string())?;
+            pending.remove(request_id)
+        }
+        .ok_or_else(|| format!("unknown permission request: {request_id}"))?;
+
+        sender
+            .send(allow)
+            .map_err(|_| format!("permission request already closed: {request_id}"))
     }
 }
 
@@ -297,6 +349,15 @@ pub fn set_permission_config(
     store: State<'_, PermissionStore>,
 ) -> Result<PermissionConfig, String> {
     store.set_config(config)
+}
+
+#[tauri::command]
+pub fn resolve_permission_request(
+    request_id: String,
+    allow: bool,
+    store: State<'_, PermissionStore>,
+) -> Result<(), String> {
+    store.resolve_request(&request_id, allow)
 }
 
 fn persist_permission_config(path: &PathBuf, config: &PermissionConfig) -> Result<(), String> {
@@ -538,6 +599,8 @@ fn wildcard_match(pattern: &str, candidate: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use crate::ai::runtime::PermissionMode;
 
     #[test]
@@ -599,5 +662,54 @@ mod tests {
             super::evaluate_permission(&config, tracker, PermissionMode::Default, &request);
 
         assert!(matches!(locked.decision, super::PermissionDecision::Ask));
+    }
+
+    #[tokio::test]
+    async fn pending_permission_request_can_be_resolved() {
+        let store = super::PermissionStore::new(std::env::temp_dir().join(format!(
+            "permission-test-{}",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        )));
+        let request = super::PermissionPromptRequest {
+            request_id: "req_1".to_string(),
+            conversation_id: "conv".to_string(),
+            tool_name: "execute_command".to_string(),
+            arguments: serde_json::json!({ "command": "git status" }),
+            reason: "Need approval".to_string(),
+            mode: "auto".to_string(),
+            content: Some("git status".to_string()),
+            expires_at_ms: 0,
+        };
+
+        let wait = store.wait_for_resolution(request.clone(), Duration::from_secs(1));
+        store.resolve_request("req_1", true).unwrap();
+        let approved = wait.await.unwrap();
+
+        assert!(approved);
+    }
+
+    #[tokio::test]
+    async fn pending_permission_request_times_out_to_deny() {
+        let store = super::PermissionStore::new(std::env::temp_dir().join(format!(
+            "permission-test-{}",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        )));
+        let request = super::PermissionPromptRequest {
+            request_id: "req_2".to_string(),
+            conversation_id: "conv".to_string(),
+            tool_name: "execute_command".to_string(),
+            arguments: serde_json::json!({ "command": "git reset --hard" }),
+            reason: "Need approval".to_string(),
+            mode: "default".to_string(),
+            content: Some("git reset --hard".to_string()),
+            expires_at_ms: 0,
+        };
+
+        let approved = store
+            .wait_for_resolution(request, Duration::from_millis(10))
+            .await
+            .unwrap();
+
+        assert!(!approved);
     }
 }

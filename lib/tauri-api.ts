@@ -333,6 +333,17 @@ export interface ChatBackgroundTaskEvent {
   result: string
 }
 
+export interface PermissionRequestEvent {
+  request_id: string
+  conversation_id: string
+  tool_name: string
+  arguments: Record<string, unknown>
+  reason: string
+  mode: AiPermissionMode
+  content?: string | null
+  expires_at_ms: number
+}
+
 export function onChatStream(callback: (event: ChatStreamEvent) => void): () => void {
   return listenEvent<ChatStreamEvent>("chat:stream", callback)
 }
@@ -347,6 +358,15 @@ export function onChatError(callback: (event: ChatErrorEvent) => void): () => vo
 
 export function onChatBackgroundTask(callback: (event: ChatBackgroundTaskEvent) => void): () => void {
   return listenEvent<ChatBackgroundTaskEvent>("chat:background_task", callback)
+}
+
+export function onPermissionRequest(callback: (event: PermissionRequestEvent) => void): () => void {
+  return listenEvent<PermissionRequestEvent>("chat:permission_request", callback)
+}
+
+export async function resolvePermissionRequest(requestId: string, allow: boolean): Promise<void> {
+  if (!isTauri()) return
+  return invoke("resolve_permission_request", { requestId, allow })
 }
 
 // ─── Sessions ────────────────────────────────────────

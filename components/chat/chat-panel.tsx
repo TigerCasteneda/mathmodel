@@ -28,6 +28,16 @@ import { Prism as SyntaxHighlighter } from "react-syntax-highlighter"
 import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
 import { cn } from "@/lib/utils"
 import {
   aiChat,
@@ -35,11 +45,14 @@ import {
   loadSession,
   onChatBackgroundTask,
   onChatError,
+  onPermissionRequest,
   onChatStream,
   onChatToolCall,
+  resolvePermissionRequest,
   setAiModel,
   type AiPermissionMode,
   type ChatBackgroundTaskEvent,
+  type PermissionRequestEvent,
   type SessionMessage as PersistedSessionMessage,
   type ChatToolCallEvent,
 } from "@/lib/tauri-api"
@@ -71,6 +84,8 @@ type BackgroundTaskEntry = {
   status: "running" | "completed" | "error"
   result: string
 }
+
+type PendingPermissionRequest = PermissionRequestEvent
 
 const MODELS = [
   { value: "deepseek-v4-pro", label: "V4 Pro (Deep Reasoning)" },
@@ -426,6 +441,8 @@ export function ChatPanel({
   const [selectedModel, setSelectedModel] = useState("deepseek-v4-pro")
   const [permissionMode, setPermissionMode] = useState<AiPermissionMode>("default")
   const [backgroundTasks, setBackgroundTasks] = useState<BackgroundTaskEntry[]>([])
+  const [pendingPermissionRequests, setPendingPermissionRequests] = useState<PendingPermissionRequest[]>([])
+  const [resolvingPermission, setResolvingPermission] = useState(false)
   const [showSlashMenu, setShowSlashMenu] = useState(false)
   const scrollRef = useRef<HTMLDivElement>(null)
   const seenStreamEventsRef = useRef<Set<string>>(new Set())
@@ -441,6 +458,7 @@ export function ChatPanel({
     seenStreamEventsRef.current.clear()
     setLoaded(false)
     setBackgroundTasks([])
+    setPendingPermissionRequests([])
     loadSession(conversationId).then((session) => {
       const restored = restoreMessages(session.messages || [])
       setMessages(restored)
@@ -528,8 +546,27 @@ export function ChatPanel({
       })
     })
 
-    return () => { offStream(); offTool(); offError(); offBackground() }
+    const offPermission = onPermissionRequest((event: PermissionRequestEvent) => {
+      if (event.conversation_id !== conversationId) return
+      setPendingPermissionRequests((prev) => [...prev, event])
+    })
+
+    return () => { offStream(); offTool(); offError(); offBackground(); offPermission() }
   }, [conversationId])
+
+  useEffect(() => {
+    if (pendingPermissionRequests.length === 0) return
+    const timers = pendingPermissionRequests.map((request) => {
+      const remaining = Math.max(request.expires_at_ms - Date.now(), 0)
+      return window.setTimeout(() => {
+        setPendingPermissionRequests((prev) => prev.filter((item) => item.request_id !== request.request_id))
+      }, remaining + 250)
+    })
+
+    return () => {
+      for (const timer of timers) window.clearTimeout(timer)
+    }
+  }, [pendingPermissionRequests])
 
   const canSend = useMemo(() => input.trim().length > 0 && !sending && loaded, [input, sending, loaded])
   const waitingForAssistant = sending && messages[messages.length - 1]?.role === "user"
@@ -576,8 +613,76 @@ export function ChatPanel({
     }
   }
 
+  const activePermissionRequest = pendingPermissionRequests[0] || null
+
+  const handlePermissionDecision = async (allow: boolean) => {
+    if (!activePermissionRequest || resolvingPermission) return
+    setResolvingPermission(true)
+    try {
+      await resolvePermissionRequest(activePermissionRequest.request_id, allow)
+    } catch {
+      setMessages((prev) => [
+        ...prev,
+        { id: crypto.randomUUID(), role: "system", content: "Failed to resolve permission request." },
+      ])
+    } finally {
+      setPendingPermissionRequests((prev) => prev.filter((item) => item.request_id !== activePermissionRequest.request_id))
+      setResolvingPermission(false)
+    }
+  }
+
   return (
     <section className="flex h-full min-h-0 flex-col bg-[#0d0d0d] text-[#e8e8e8]">
+      <AlertDialog open={!!activePermissionRequest}>
+        <AlertDialogContent className="max-w-xl border-[#373737] bg-[#151515] text-[#e8e8e8]">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Permission Request</AlertDialogTitle>
+            <AlertDialogDescription className="text-[#b4b4b4]">
+              {activePermissionRequest?.reason || "This tool execution needs approval."}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          {activePermissionRequest && (
+            <div className="grid gap-3 text-sm">
+              <div className="grid grid-cols-[96px_1fr] gap-2 rounded-md border border-[#373737] bg-[#101010] p-3">
+                <span className="text-[#787878]">Tool</span>
+                <span className="font-mono text-[#e8e8e8]">{activePermissionRequest.tool_name}</span>
+                <span className="text-[#787878]">Mode</span>
+                <span className="text-[#e8e8e8]">{PERMISSION_MODES.find((mode) => mode.value === activePermissionRequest.mode)?.label || activePermissionRequest.mode}</span>
+                <span className="text-[#787878]">Content</span>
+                <span className="break-all font-mono text-[#b4b4b4]">
+                  {activePermissionRequest.content || compactValue(activePermissionRequest.arguments)}
+                </span>
+              </div>
+              {pendingPermissionRequests.length > 1 && (
+                <div className="text-xs text-[#787878]">
+                  {pendingPermissionRequests.length - 1} more request{pendingPermissionRequests.length > 2 ? "s" : ""} queued
+                </div>
+              )}
+            </div>
+          )}
+          <AlertDialogFooter>
+            <AlertDialogCancel
+              className="border-[#373737] bg-transparent text-[#b4b4b4] hover:bg-[#232323] hover:text-[#e8e8e8]"
+              onClick={(event) => {
+                event.preventDefault()
+                void handlePermissionDecision(false)
+              }}
+            >
+              Deny
+            </AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-[#d4a574] text-[#111111] hover:bg-[#ebc396]"
+              onClick={(event) => {
+                event.preventDefault()
+                void handlePermissionDecision(true)
+              }}
+            >
+              {resolvingPermission ? "Resolving..." : "Allow"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
       {/* Header bar */}
       <div className="flex h-11 items-center gap-2 border-b border-[#373737] bg-[#121212]/95 px-3 shrink-0">
         <OrangeMark className="cc-claude-mark h-7 w-7" />

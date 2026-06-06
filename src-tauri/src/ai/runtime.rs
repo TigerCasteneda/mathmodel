@@ -205,6 +205,8 @@ pub struct ModelerAiRuntime {
     enabled_deferred_tools: Arc<RwLock<HashSet<String>>>,
     permission_mode: PermissionMode,
     permission_store: PermissionStore,
+    app_handle: AppHandle,
+    conversation_id: String,
 }
 
 impl ModelerAiRuntime {
@@ -228,8 +230,8 @@ impl ModelerAiRuntime {
             workspace.clone(),
             can_write,
             enabled_deferred_tools.clone(),
-            app_handle,
-            conversation_id,
+            app_handle.clone(),
+            conversation_id.clone(),
         )
         .await;
 
@@ -241,6 +243,8 @@ impl ModelerAiRuntime {
             enabled_deferred_tools,
             permission_mode,
             permission_store,
+            app_handle,
+            conversation_id,
         })
     }
 
@@ -308,7 +312,61 @@ impl ModelerAiRuntime {
                     );
                 }
             };
-        if !matches!(permission.decision, PermissionDecision::Allow) {
+        if matches!(permission.decision, PermissionDecision::Ask) {
+            let expires_at_ms = chrono::Utc::now().timestamp_millis() + 30_000;
+            let prompt = super::permissions::PermissionPromptRequest {
+                request_id: format!(
+                    "perm_{}_{}",
+                    self.conversation_id,
+                    chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+                ),
+                conversation_id: self.conversation_id.clone(),
+                tool_name: name.to_string(),
+                arguments: arguments.clone(),
+                reason: permission.reason.clone(),
+                mode: match self.permission_mode {
+                    PermissionMode::Default => "default".to_string(),
+                    PermissionMode::AcceptEdit => "accept_edit".to_string(),
+                    PermissionMode::Auto => "auto".to_string(),
+                    PermissionMode::Bypass => "bypass".to_string(),
+                },
+                content: arguments
+                    .get("command")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned),
+                expires_at_ms,
+            };
+            let _ = self
+                .app_handle
+                .emit("chat:permission_request", prompt.clone());
+            let approved = match self
+                .permission_store
+                .wait_for_resolution(prompt.clone(), Duration::from_secs(30))
+                .await
+            {
+                Ok(allow) => allow,
+                Err(error) => {
+                    return Some(
+                        json!({
+                            "success": false,
+                            "error": format!("permission resolution failed: {error}"),
+                            "permission_decision": "deny",
+                        })
+                        .to_string(),
+                    );
+                }
+            };
+            if !approved {
+                return Some(
+                    json!({
+                        "success": false,
+                        "error": format!("{} approval was denied or timed out.", name),
+                        "permission_decision": "deny",
+                    })
+                    .to_string(),
+                );
+            }
+        } else if !matches!(permission.decision, PermissionDecision::Allow) {
             let decision = match permission.decision {
                 PermissionDecision::Ask => "ask",
                 PermissionDecision::Deny => "deny",

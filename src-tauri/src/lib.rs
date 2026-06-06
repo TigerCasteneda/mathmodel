@@ -67,6 +67,7 @@ pub fn run() {
             ai::session::load_session,
             ai::session::delete_session,
             ai::permissions::get_permission_config,
+            ai::permissions::resolve_permission_request,
             ai::permissions::set_permission_config,
             get_server_port,
         ])
