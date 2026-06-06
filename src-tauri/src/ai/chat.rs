@@ -1,4 +1,5 @@
 use super::config::{AiConfig, AiConfigState, AiConfigStatus};
+use super::executor::{build_execution_requests, execute_tool_calls};
 use super::runtime::{ModelerAiRuntime, PermissionMode};
 use super::session::ChatSessionStore;
 use super::workspace::WorkspaceContext;
@@ -307,9 +308,11 @@ pub async fn ai_chat(
         // Handle tool calls
         if finish_reason.as_deref() == Some("tool_calls") && !tool_call_buf.is_empty() {
             // Build assistant message with tool_calls
-            let tool_calls: Vec<claude_code_rs::api::ToolCall> = tool_call_buf
-                .values()
-                .map(|tc| claude_code_rs::api::ToolCall {
+            let mut accumulated = tool_call_buf.into_iter().collect::<Vec<_>>();
+            accumulated.sort_by_key(|(index, _)| *index);
+            let tool_calls: Vec<claude_code_rs::api::ToolCall> = accumulated
+                .into_iter()
+                .map(|(_, tc)| claude_code_rs::api::ToolCall {
                     id: tc.id.clone(),
                     r#type: "function".to_string(),
                     function: claude_code_rs::api::ToolCallFunction {
@@ -321,32 +324,30 @@ pub async fn ai_chat(
 
             messages.push(ChatMessage::assistant_with_tools(tool_calls.clone()));
 
-            // Execute each tool and add results
-            for tc in &tool_calls {
-                let args: serde_json::Value =
-                    serde_json::from_str(&tc.function.arguments).unwrap_or(serde_json::json!({}));
+            let execution_requests = build_execution_requests(&tool_calls);
+            for request in &execution_requests {
                 emit_tool(
                     &app,
                     &conversation_id,
-                    &tc.function.name,
-                    &args,
+                    &request.name,
+                    &request.arguments,
                     "",
                     "running",
                 );
-                let result = runtime
-                    .execute_tool(&tc.function.name, args.clone())
-                    .await
-                    .unwrap_or_else(|| format!("Unknown tool: {}", tc.function.name));
-                let status = tool_result_status(&result);
+            }
+
+            // Execute concurrency-safe tools in parallel while preserving result order.
+            for result in execute_tool_calls(&runtime, &tool_calls).await {
+                let status = tool_result_status(&result.output);
                 emit_tool(
                     &app,
                     &conversation_id,
-                    &tc.function.name,
-                    &args,
-                    &result,
+                    &result.name,
+                    &result.arguments,
+                    &result.output,
                     status,
                 );
-                messages.push(ChatMessage::tool(&tc.id, result));
+                messages.push(ChatMessage::tool(&result.id, result.output));
             }
 
             sessions.push_assistant(&conversation_id, assistant_text)?;
