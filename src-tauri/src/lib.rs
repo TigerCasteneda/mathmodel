@@ -29,6 +29,7 @@ pub fn run() {
                 .app_data_dir()
                 .unwrap_or_else(|_| PathBuf::from("data"));
             app.manage(ai::session::ChatSessionStore::new(app_data.clone()));
+            app.manage(ai::permissions::PermissionStore::new(app_data.clone()));
 
             // ── Embedded server startup ──
             let handle = app.handle().clone();
@@ -65,6 +66,8 @@ pub fn run() {
             ai::session::list_sessions,
             ai::session::load_session,
             ai::session::delete_session,
+            ai::permissions::get_permission_config,
+            ai::permissions::set_permission_config,
             get_server_port,
         ])
         .run(tauri::generate_context!())

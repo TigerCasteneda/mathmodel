@@ -1,6 +1,7 @@
 use super::compaction::{self, ContextMessage};
 use super::config::{AiConfig, AiConfigState, AiConfigStatus};
 use super::executor::{build_execution_requests, execute_tool_calls};
+use super::permissions::PermissionStore;
 use super::runtime::{ModelerAiRuntime, PermissionMode};
 use super::session::ChatSessionStore;
 use super::workspace::WorkspaceContext;
@@ -334,6 +335,7 @@ pub async fn ai_chat(
     _agent_state: State<'_, AgentState>,
     config_state: State<'_, AiConfigState>,
     sessions: State<'_, ChatSessionStore>,
+    permissions: State<'_, PermissionStore>,
 ) -> Result<(), String> {
     let conversation_id = conversation_id.unwrap_or_else(|| "default".to_string());
     let config = config_state.get()?;
@@ -361,13 +363,16 @@ pub async fn ai_chat(
         server_base,
         capabilities,
     );
-    let permission_mode = PermissionMode::from_option(permission_mode);
+    let configured_permission_mode = permissions.configured_mode()?;
+    let permission_mode =
+        PermissionMode::from_option(permission_mode.or(configured_permission_mode));
     let runtime = ModelerAiRuntime::new(
         config,
         workspace,
         app.clone(),
         conversation_id.clone(),
         permission_mode,
+        permissions.inner().clone(),
     )
     .await
     .map_err(|e| {

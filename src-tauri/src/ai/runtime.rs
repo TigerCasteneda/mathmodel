@@ -10,6 +10,7 @@ use tauri::{AppHandle, Emitter};
 use tokio::sync::RwLock;
 
 use super::config::AiConfig;
+use super::permissions::{PermissionDecision, PermissionStore};
 use super::workspace::{
     build_workspace_provider, tool_optional_path_arg, tool_path_arg, WorkspaceContext,
     WorkspaceProvider,
@@ -34,7 +35,7 @@ impl PermissionMode {
         }
     }
 
-    fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Default => "Default",
             Self::AcceptEdit => "Accept Edit",
@@ -203,6 +204,7 @@ pub struct ModelerAiRuntime {
     workspace_label: &'static str,
     enabled_deferred_tools: Arc<RwLock<HashSet<String>>>,
     permission_mode: PermissionMode,
+    permission_store: PermissionStore,
 }
 
 impl ModelerAiRuntime {
@@ -212,6 +214,7 @@ impl ModelerAiRuntime {
         app_handle: AppHandle,
         conversation_id: String,
         permission_mode: PermissionMode,
+        permission_store: PermissionStore,
     ) -> anyhow::Result<Self> {
         let client = ApiClient::new(config.to_claude_settings(context.work_dir.clone()));
         let workspace_label = context.label();
@@ -224,7 +227,6 @@ impl ModelerAiRuntime {
             &registry,
             workspace.clone(),
             can_write,
-            permission_mode,
             enabled_deferred_tools.clone(),
             app_handle,
             conversation_id,
@@ -238,6 +240,7 @@ impl ModelerAiRuntime {
             workspace_label,
             enabled_deferred_tools,
             permission_mode,
+            permission_store,
         })
     }
 
@@ -289,6 +292,38 @@ impl ModelerAiRuntime {
             );
         }
 
+        let permission =
+            match self
+                .permission_store
+                .evaluate_tool_call(self.permission_mode, name, &arguments)
+            {
+                Ok(permission) => permission,
+                Err(error) => {
+                    return Some(
+                        json!({
+                            "success": false,
+                            "error": format!("permission evaluation failed: {error}")
+                        })
+                        .to_string(),
+                    );
+                }
+            };
+        if !matches!(permission.decision, PermissionDecision::Allow) {
+            let decision = match permission.decision {
+                PermissionDecision::Ask => "ask",
+                PermissionDecision::Deny => "deny",
+                PermissionDecision::Allow => "allow",
+            };
+            return Some(
+                json!({
+                    "success": false,
+                    "error": permission.reason,
+                    "permission_decision": decision,
+                })
+                .to_string(),
+            );
+        }
+
         Some(match self.registry.execute(name, arguments).await {
             Ok(value) => value.to_string(),
             Err(error) => json!({
@@ -304,7 +339,6 @@ async fn register_workspace_tools(
     registry: &Arc<ToolRegistry>,
     workspace: Arc<dyn WorkspaceProvider>,
     can_write: bool,
-    permission_mode: PermissionMode,
     enabled_deferred_tools: Arc<RwLock<HashSet<String>>>,
     app_handle: AppHandle,
     conversation_id: String,
@@ -313,8 +347,8 @@ async fn register_workspace_tools(
     register_file_read(registry, workspace.clone(), "file_read").await;
     register_file_read(registry, workspace.clone(), "read_file").await;
     if can_write {
-        register_file_write(registry, workspace.clone(), "file_write", permission_mode).await;
-        register_file_write(registry, workspace.clone(), "write_file", permission_mode).await;
+        register_file_write(registry, workspace.clone(), "file_write").await;
+        register_file_write(registry, workspace.clone(), "write_file").await;
 
         registry
             .register(
@@ -334,7 +368,6 @@ async fn register_workspace_tools(
                 ),
                 Arc::new(FileEditExecutor {
                     workspace: workspace.clone(),
-                    permission_mode,
                 }),
             )
             .await;
@@ -379,7 +412,6 @@ async fn register_workspace_tools(
             ),
             Arc::new(SaveReferenceExecutor {
                 workspace: workspace.clone(),
-                permission_mode,
             }),
         )
         .await;
@@ -454,7 +486,6 @@ async fn register_workspace_tools(
             ),
             Arc::new(ExecuteCommandExecutor {
                 workspace: workspace.clone(),
-                permission_mode,
             }),
         )
         .await;
@@ -530,7 +561,6 @@ async fn register_file_write(
     registry: &Arc<ToolRegistry>,
     workspace: Arc<dyn WorkspaceProvider>,
     name: &'static str,
-    permission_mode: PermissionMode,
 ) {
     registry
         .register(
@@ -547,10 +577,7 @@ async fn register_file_write(
                     "required": ["content"]
                 }),
             ),
-            Arc::new(FileWriteExecutor {
-                workspace,
-                permission_mode,
-            }),
+            Arc::new(FileWriteExecutor { workspace }),
         )
         .await;
 }
@@ -741,61 +768,6 @@ fn search_tool_catalog(
         .collect()
 }
 
-fn permission_denied(tool_name: &str, mode: PermissionMode) -> anyhow::Error {
-    anyhow::anyhow!(
-        "{tool_name} requires a broader permission mode. Current mode is {}.",
-        mode.label()
-    )
-}
-
-fn can_edit_files(mode: PermissionMode) -> bool {
-    matches!(
-        mode,
-        PermissionMode::AcceptEdit | PermissionMode::Auto | PermissionMode::Bypass
-    )
-}
-
-fn can_execute_command(mode: PermissionMode, command: &str) -> bool {
-    match mode {
-        PermissionMode::Bypass => true,
-        PermissionMode::Auto => is_low_risk_command(command),
-        _ => false,
-    }
-}
-
-fn is_low_risk_command(command: &str) -> bool {
-    let trimmed = command.trim().to_lowercase();
-    let blocked = [
-        "rm ",
-        "del ",
-        "rmdir",
-        "git reset",
-        "git clean",
-        "shutdown",
-        "format ",
-    ];
-    if blocked
-        .iter()
-        .any(|prefix| trimmed.starts_with(prefix) || trimmed.contains(&format!("&& {prefix}")))
-    {
-        return false;
-    }
-    [
-        "dir",
-        "ls",
-        "pwd",
-        "git status",
-        "git diff",
-        "npm test",
-        "npm run test",
-        "cargo test",
-        "cargo check",
-        "npx tsc",
-    ]
-    .iter()
-    .any(|prefix| trimmed.starts_with(prefix))
-}
-
 fn urlencoding(s: &str) -> String {
     let mut result = String::new();
     for byte in s.bytes() {
@@ -850,15 +822,11 @@ impl ToolExecutor for FileReadExecutor {
 
 struct FileWriteExecutor {
     workspace: Arc<dyn WorkspaceProvider>,
-    permission_mode: PermissionMode,
 }
 
 #[async_trait]
 impl ToolExecutor for FileWriteExecutor {
     async fn execute(&self, input: Value) -> anyhow::Result<Value> {
-        if !can_edit_files(self.permission_mode) {
-            return Err(permission_denied("file_write", self.permission_mode));
-        }
         let path = tool_path_arg(&input)?;
         let content = input["content"]
             .as_str()
@@ -874,15 +842,11 @@ impl ToolExecutor for FileWriteExecutor {
 
 struct FileEditExecutor {
     workspace: Arc<dyn WorkspaceProvider>,
-    permission_mode: PermissionMode,
 }
 
 #[async_trait]
 impl ToolExecutor for FileEditExecutor {
     async fn execute(&self, input: Value) -> anyhow::Result<Value> {
-        if !can_edit_files(self.permission_mode) {
-            return Err(permission_denied("file_edit", self.permission_mode));
-        }
         let path = tool_path_arg(&input)?;
         let old_content = input["old_content"]
             .as_str()
@@ -919,7 +883,6 @@ impl ToolExecutor for ListFilesExecutor {
 
 struct ExecuteCommandExecutor {
     workspace: Arc<dyn WorkspaceProvider>,
-    permission_mode: PermissionMode,
 }
 
 #[async_trait]
@@ -928,9 +891,6 @@ impl ToolExecutor for ExecuteCommandExecutor {
         let command = input["command"]
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("command is required"))?;
-        if !can_execute_command(self.permission_mode, command) {
-            return Err(permission_denied("execute_command", self.permission_mode));
-        }
         let cwd = input["cwd"]
             .as_str()
             .filter(|value| !value.trim().is_empty())
@@ -1049,15 +1009,11 @@ impl ToolExecutor for FetchUrlExecutor {
 
 struct SaveReferenceExecutor {
     workspace: Arc<dyn WorkspaceProvider>,
-    permission_mode: PermissionMode,
 }
 
 #[async_trait]
 impl ToolExecutor for SaveReferenceExecutor {
     async fn execute(&self, input: Value) -> anyhow::Result<Value> {
-        if !can_edit_files(self.permission_mode) {
-            return Err(permission_denied("save_reference", self.permission_mode));
-        }
         let title = input["title"]
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("title is required"))?;

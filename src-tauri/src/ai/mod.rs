@@ -2,6 +2,7 @@ pub mod chat;
 pub mod compaction;
 pub mod config;
 pub mod executor;
+pub mod permissions;
 pub mod research;
 pub mod runtime;
 pub mod session;
