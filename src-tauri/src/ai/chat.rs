@@ -1,3 +1,4 @@
+use super::compaction::{self, ContextMessage};
 use super::config::{AiConfig, AiConfigState, AiConfigStatus};
 use super::executor::{build_execution_requests, execute_tool_calls};
 use super::runtime::{ModelerAiRuntime, PermissionMode};
@@ -107,11 +108,13 @@ fn message_token_estimate(message: &ChatMessage) -> usize {
         })
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone)]
 struct ConversationRound {
     messages: Vec<ChatMessage>,
 }
 
+#[cfg(test)]
 impl ConversationRound {
     fn token_estimate(&self) -> usize {
         self.messages.iter().map(message_token_estimate).sum()
@@ -125,34 +128,27 @@ impl ConversationRound {
     }
 }
 
+#[cfg(test)]
 fn build_conversation_rounds(messages: &[ChatMessage]) -> Vec<ConversationRound> {
-    let mut rounds = Vec::new();
-    let mut current = Vec::new();
-
-    for message in messages {
-        let should_split = !current.is_empty()
-            && match message.role.as_str() {
-                "user" => true,
-                "assistant" => current
-                    .iter()
-                    .all(|existing: &ChatMessage| existing.role == "user"),
-                _ => false,
-            };
-
-        if should_split {
-            rounds.push(ConversationRound {
-                messages: std::mem::take(&mut current),
-            });
-        }
-
-        current.push(message.clone());
-    }
-
-    if !current.is_empty() {
-        rounds.push(ConversationRound { messages: current });
-    }
-
-    rounds
+    compaction::build_conversation_rounds(
+        &messages
+            .iter()
+            .cloned()
+            .map(|message| ContextMessage {
+                message,
+                timestamp: 0,
+            })
+            .collect::<Vec<_>>(),
+    )
+    .into_iter()
+    .map(|round| ConversationRound {
+        messages: round
+            .messages
+            .into_iter()
+            .map(|message| message.message)
+            .collect(),
+    })
+    .collect()
 }
 
 fn format_file_tree(item: &crate::agent::file_watcher::FileTreeItem, depth: usize) -> String {
@@ -181,6 +177,7 @@ fn format_file_tree(item: &crate::agent::file_watcher::FileTreeItem, depth: usiz
 
 /// Trim `messages` to fit within `MAX_CONTEXT_TOKENS`, preserving the
 /// system prompt (always first) and recent conversation history.
+#[cfg(test)]
 fn trim_context(mut messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
     let system = messages.first().filter(|m| m.role == "system").cloned();
     let rest: Vec<_> = if system.is_some() {
@@ -237,6 +234,44 @@ fn trim_context(mut messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
 
     if let Some(sys) = system {
         let mut out = vec![sys];
+        out.extend(kept);
+        out
+    } else {
+        kept
+    }
+}
+
+fn compact_timestamped_context(messages: &[ContextMessage]) -> Vec<ChatMessage> {
+    let system = messages
+        .first()
+        .filter(|message| message.message.role == "system")
+        .cloned();
+    let rest = if system.is_some() {
+        messages[1..].to_vec()
+    } else {
+        messages.to_vec()
+    };
+
+    let system_tokens = system
+        .as_ref()
+        .map(|message| {
+            message
+                .message
+                .content
+                .as_deref()
+                .map(estimate_tokens)
+                .unwrap_or(0)
+        })
+        .unwrap_or(0);
+    let kept = compaction::compact_context(
+        &rest,
+        chrono::Utc::now().timestamp(),
+        MAX_CONTEXT_TOKENS.saturating_sub(system_tokens),
+        &message_token_estimate,
+    );
+
+    if let Some(system_message) = system {
+        let mut out = vec![system_message.message];
         out.extend(kept);
         out
     } else {
@@ -347,16 +382,19 @@ pub async fn ai_chat(
         Err(_) => String::from("(file tree unavailable)"),
     };
 
-    let mut messages = vec![ChatMessage::system(system_prompt(
-        runtime.workspace_label(),
-        runtime.permission_label(),
-        &tree_text,
-    ))];
-    messages.extend(sessions.history(&conversation_id)?);
+    let mut context_messages = vec![ContextMessage {
+        message: ChatMessage::system(system_prompt(
+            runtime.workspace_label(),
+            runtime.permission_label(),
+            &tree_text,
+        )),
+        timestamp: chrono::Utc::now().timestamp(),
+    }];
+    context_messages.extend(sessions.history_with_timestamps(&conversation_id)?);
     let mut stream_seq = 0u64;
 
     loop {
-        let trimmed = trim_context(messages.clone());
+        let trimmed = compact_timestamped_context(&context_messages);
         let response = runtime
             .client()
             .chat_stream(trimmed, Some(tools.clone()))
@@ -447,7 +485,10 @@ pub async fn ai_chat(
                 })
                 .collect();
 
-            messages.push(ChatMessage::assistant_with_tools(tool_calls.clone()));
+            context_messages.push(ContextMessage {
+                message: ChatMessage::assistant_with_tools(tool_calls.clone()),
+                timestamp: chrono::Utc::now().timestamp(),
+            });
 
             let execution_requests = build_execution_requests(&tool_calls);
             for request in &execution_requests {
@@ -474,7 +515,10 @@ pub async fn ai_chat(
                     status,
                 );
                 persisted_tool_results.push((result.id.clone(), result.output.clone()));
-                messages.push(ChatMessage::tool(&result.id, result.output));
+                context_messages.push(ContextMessage {
+                    message: ChatMessage::tool(&result.id, result.output),
+                    timestamp: chrono::Utc::now().timestamp(),
+                });
             }
 
             for persisted in

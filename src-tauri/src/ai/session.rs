@@ -175,6 +175,26 @@ impl ChatSessionStore {
             .collect())
     }
 
+    pub fn history_with_timestamps(
+        &self,
+        conversation_id: &str,
+    ) -> Result<Vec<super::compaction::ContextMessage>, String> {
+        let session = self.load(conversation_id)?;
+        Ok(session
+            .messages
+            .iter()
+            .map(|message| super::compaction::ContextMessage {
+                message: claude_code_rs::api::ChatMessage {
+                    role: message.role.clone(),
+                    content: message.content.clone(),
+                    tool_calls: message.tool_calls.clone(),
+                    tool_call_id: message.tool_call_id.clone(),
+                },
+                timestamp: message.timestamp,
+            })
+            .collect())
+    }
+
     pub fn delete(&self, conversation_id: &str) -> Result<(), String> {
         let path = self.sessions_dir.join(format!("{conversation_id}.json"));
         if path.exists() {

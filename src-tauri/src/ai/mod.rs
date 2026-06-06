@@ -1,4 +1,5 @@
 pub mod chat;
+pub mod compaction;
 pub mod config;
 pub mod executor;
 pub mod research;
