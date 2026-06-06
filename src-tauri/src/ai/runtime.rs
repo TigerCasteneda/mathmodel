@@ -56,68 +56,122 @@ struct ToolCatalogEntry {
     description: &'static str,
     exposure: ToolExposure,
     keywords: &'static [&'static str],
+    search_hint: &'static str,
+    aliases: &'static [&'static str],
+    is_concurrency_safe: bool,
+    is_read_only: bool,
 }
 
 const TOOL_CATALOG: &[ToolCatalogEntry] = &[
+    ToolCatalogEntry {
+        name: "tool_search",
+        description: "Find and enable optional tools by keyword or direct selection.",
+        exposure: ToolExposure::Core,
+        keywords: &["tool", "search", "discover", "enable"],
+        search_hint: "Find deferred tools by name or capability.",
+        aliases: &[],
+        is_concurrency_safe: true,
+        is_read_only: true,
+    },
     ToolCatalogEntry {
         name: "file_read",
         description: "Read a file from the current workspace.",
         exposure: ToolExposure::Core,
         keywords: &["read", "file", "inspect", "view"],
+        search_hint: "Read workspace file contents.",
+        aliases: &["Read"],
+        is_concurrency_safe: true,
+        is_read_only: true,
     },
     ToolCatalogEntry {
         name: "read_file",
         description: "Alias for file_read.",
         exposure: ToolExposure::Core,
         keywords: &["read", "file", "alias"],
+        search_hint: "Read workspace file contents.",
+        aliases: &[],
+        is_concurrency_safe: true,
+        is_read_only: true,
     },
     ToolCatalogEntry {
         name: "file_write",
         description: "Create or overwrite a file inside the current workspace.",
         exposure: ToolExposure::Core,
         keywords: &["write", "file", "create", "overwrite"],
+        search_hint: "Create or overwrite a workspace file.",
+        aliases: &["Write"],
+        is_concurrency_safe: false,
+        is_read_only: false,
     },
     ToolCatalogEntry {
         name: "write_file",
         description: "Alias for file_write.",
         exposure: ToolExposure::Core,
         keywords: &["write", "file", "alias"],
+        search_hint: "Create or overwrite a workspace file.",
+        aliases: &[],
+        is_concurrency_safe: false,
+        is_read_only: false,
     },
     ToolCatalogEntry {
         name: "web_search",
         description: "Search the web through the configured SearXNG host.",
         exposure: ToolExposure::Core,
         keywords: &["web", "search", "paper", "internet"],
+        search_hint: "Search public web results.",
+        aliases: &[],
+        is_concurrency_safe: true,
+        is_read_only: true,
     },
     ToolCatalogEntry {
         name: "save_reference",
         description: "Save a useful reference into references/*.md in the workspace.",
         exposure: ToolExposure::Core,
         keywords: &["save", "reference", "paper", "research"],
+        search_hint: "Save a research reference file.",
+        aliases: &[],
+        is_concurrency_safe: false,
+        is_read_only: false,
     },
     ToolCatalogEntry {
         name: "file_edit",
         description: "Edit a file by replacing one exact string with another.",
         exposure: ToolExposure::Deferred,
         keywords: &["edit", "replace", "patch", "file"],
+        search_hint: "Edit a workspace file by exact string replacement.",
+        aliases: &["Edit"],
+        is_concurrency_safe: false,
+        is_read_only: false,
     },
     ToolCatalogEntry {
         name: "list_files",
         description: "List the current workspace file tree.",
         exposure: ToolExposure::Deferred,
         keywords: &["list", "tree", "files", "folder"],
+        search_hint: "List workspace files and folders.",
+        aliases: &[],
+        is_concurrency_safe: true,
+        is_read_only: true,
     },
     ToolCatalogEntry {
         name: "execute_command",
         description: "Execute a shell command in Host Local mode.",
         exposure: ToolExposure::Deferred,
         keywords: &["shell", "bash", "command", "run", "test"],
+        search_hint: "Run shell commands such as tests, build checks, and git status.",
+        aliases: &["Bash", "Shell"],
+        is_concurrency_safe: false,
+        is_read_only: false,
     },
     ToolCatalogEntry {
         name: "search_files",
         description: "Search for a text pattern in workspace files.",
         exposure: ToolExposure::Deferred,
         keywords: &["grep", "search", "pattern", "code"],
+        search_hint: "Search workspace files for text patterns.",
+        aliases: &["Grep"],
+        is_concurrency_safe: true,
+        is_read_only: true,
     },
     ToolCatalogEntry {
         name: "fetch_url",
@@ -125,12 +179,20 @@ const TOOL_CATALOG: &[ToolCatalogEntry] = &[
             "Fetch a URL as markdown through Jina Reader fallback. Use Research for Firecrawl search.",
         exposure: ToolExposure::Deferred,
         keywords: &["fetch", "url", "markdown", "webpage", "jina"],
+        search_hint: "Fetch a webpage URL as markdown.",
+        aliases: &["WebFetch"],
+        is_concurrency_safe: true,
+        is_read_only: true,
     },
     ToolCatalogEntry {
         name: "start_background_task",
         description: "Start a background copilot task and report progress in the chat UI.",
         exposure: ToolExposure::Deferred,
         keywords: &["background", "subagent", "review", "research", "parallel"],
+        search_hint: "Start a background research, review, modeling, or analysis task.",
+        aliases: &["Task"],
+        is_concurrency_safe: true,
+        is_read_only: false,
     },
 ];
 
@@ -505,8 +567,178 @@ fn is_deferred_tool(name: &str) -> bool {
         .any(|entry| entry.name == name && matches!(entry.exposure, ToolExposure::Deferred))
 }
 
-fn tool_by_name(name: &str) -> Option<&'static ToolCatalogEntry> {
-    TOOL_CATALOG.iter().find(|entry| entry.name == name)
+fn tool_by_name_or_alias(name: &str) -> Option<&'static ToolCatalogEntry> {
+    TOOL_CATALOG.iter().find(|entry| {
+        entry.name.eq_ignore_ascii_case(name)
+            || entry
+                .aliases
+                .iter()
+                .any(|alias| alias.eq_ignore_ascii_case(name))
+    })
+}
+
+pub fn is_tool_concurrency_safe(name: &str) -> bool {
+    tool_by_name_or_alias(name)
+        .map(|entry| entry.is_concurrency_safe)
+        .unwrap_or(false)
+}
+
+pub fn is_tool_read_only(name: &str) -> bool {
+    tool_by_name_or_alias(name)
+        .map(|entry| entry.is_read_only)
+        .unwrap_or(false)
+}
+
+fn split_search_tokens(value: &str) -> Vec<String> {
+    let mut normalized = String::new();
+    let mut previous_lowercase = false;
+    for ch in value.chars() {
+        if ch == '_' || ch == '-' || ch.is_whitespace() {
+            normalized.push(' ');
+            previous_lowercase = false;
+            continue;
+        }
+        if ch.is_uppercase() && previous_lowercase {
+            normalized.push(' ');
+        }
+        if ch.is_alphanumeric() {
+            normalized.push(ch.to_ascii_lowercase());
+            previous_lowercase = ch.is_lowercase() || ch.is_ascii_digit();
+        } else {
+            normalized.push(' ');
+            previous_lowercase = false;
+        }
+    }
+    normalized
+        .split_whitespace()
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+fn contains_term(value: &str, term: &str) -> bool {
+    value.to_ascii_lowercase().contains(term)
+}
+
+fn tool_matches_required_term(entry: &ToolCatalogEntry, term: &str) -> bool {
+    let name_parts = split_search_tokens(entry.name);
+    name_parts.iter().any(|part| part.contains(term))
+        || entry.aliases.iter().any(|alias| contains_term(alias, term))
+        || entry.keywords.iter().any(|keyword| keyword.contains(term))
+        || contains_term(entry.search_hint, term)
+        || contains_term(entry.description, term)
+}
+
+fn score_tool_for_terms(entry: &ToolCatalogEntry, terms: &[String]) -> i32 {
+    let name_parts = split_search_tokens(entry.name);
+    let mut score = 0;
+    for term in terms {
+        if name_parts.iter().any(|part| part == term) {
+            score += 10;
+        } else if name_parts.iter().any(|part| part.contains(term)) {
+            score += 5;
+        }
+        if entry.aliases.iter().any(|alias| contains_term(alias, term)) {
+            score += 5;
+        }
+        if contains_term(entry.search_hint, term) {
+            score += 4;
+        }
+        if entry.keywords.iter().any(|keyword| keyword.contains(term)) {
+            score += 2;
+        }
+        if contains_term(entry.description, term) {
+            score += 2;
+        }
+    }
+    score
+}
+
+fn direct_tool_selection(names: &[String]) -> Vec<&'static ToolCatalogEntry> {
+    let mut matches = Vec::new();
+    let mut seen = HashSet::new();
+    for name in names {
+        if let Some(entry) = tool_by_name_or_alias(name.trim()) {
+            if seen.insert(entry.name) {
+                matches.push(entry);
+            }
+        }
+    }
+    matches
+}
+
+fn search_tool_catalog(
+    query: &str,
+    selected: &[String],
+    limit: usize,
+) -> Vec<&'static ToolCatalogEntry> {
+    let query = query.trim();
+    let mut direct_selected = selected.to_vec();
+    if direct_selected.is_empty() && query.to_ascii_lowercase().starts_with("select:") {
+        direct_selected = query[7..]
+            .split(',')
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned)
+            .collect();
+    }
+    if !direct_selected.is_empty() {
+        return direct_tool_selection(&direct_selected);
+    }
+
+    if let Some(entry) = tool_by_name_or_alias(query) {
+        if matches!(entry.exposure, ToolExposure::Deferred) {
+            return vec![entry];
+        }
+    }
+
+    let terms = query
+        .to_ascii_lowercase()
+        .split_whitespace()
+        .filter(|term| !term.is_empty())
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    let mut required_terms = Vec::new();
+    let mut optional_terms = Vec::new();
+    for term in terms {
+        if let Some(required) = term.strip_prefix('+') {
+            if !required.is_empty() {
+                required_terms.push(required.to_string());
+            }
+        } else {
+            optional_terms.push(term);
+        }
+    }
+    let scoring_terms = if required_terms.is_empty() {
+        optional_terms
+    } else {
+        required_terms
+            .iter()
+            .chain(optional_terms.iter())
+            .cloned()
+            .collect()
+    };
+
+    let mut scored = TOOL_CATALOG
+        .iter()
+        .filter(|entry| matches!(entry.exposure, ToolExposure::Deferred))
+        .filter(|entry| {
+            required_terms
+                .iter()
+                .all(|term| tool_matches_required_term(entry, term))
+        })
+        .map(|entry| (score_tool_for_terms(entry, &scoring_terms), entry))
+        .filter(|(score, _)| *score > 0 || scoring_terms.is_empty())
+        .collect::<Vec<_>>();
+    scored.sort_by(|a, b| {
+        b.0.cmp(&a.0)
+            .then_with(|| a.1.name.len().cmp(&b.1.name.len()))
+            .then_with(|| a.1.name.cmp(b.1.name))
+    });
+    scored
+        .into_iter()
+        .take(limit)
+        .map(|(_, entry)| entry)
+        .collect()
 }
 
 fn permission_denied(tool_name: &str, mode: PermissionMode) -> anyhow::Error {
@@ -714,7 +946,7 @@ struct ToolSearchExecutor {
 #[async_trait]
 impl ToolExecutor for ToolSearchExecutor {
     async fn execute(&self, input: Value) -> anyhow::Result<Value> {
-        let query = input["query"].as_str().unwrap_or("").to_lowercase();
+        let query = input["query"].as_str().unwrap_or("");
         let selected = input["select"]
             .as_array()
             .map(|items| {
@@ -726,47 +958,13 @@ impl ToolExecutor for ToolSearchExecutor {
             .unwrap_or_default();
         let limit = input["limit"].as_u64().unwrap_or(5).clamp(1, 8) as usize;
 
-        let mut matches = Vec::new();
-        if !selected.is_empty() {
-            for name in selected {
-                if let Some(entry) = tool_by_name(&name) {
-                    if matches!(entry.exposure, ToolExposure::Deferred) {
-                        matches.push(entry);
-                    }
-                }
-            }
-        } else {
-            let terms = query
-                .split_whitespace()
-                .filter(|term| !term.is_empty())
-                .collect::<Vec<_>>();
-            let mut scored = TOOL_CATALOG
-                .iter()
-                .filter(|entry| matches!(entry.exposure, ToolExposure::Deferred))
-                .map(|entry| {
-                    let mut score = 0;
-                    for term in &terms {
-                        if entry.name.contains(term) {
-                            score += 8;
-                        }
-                        if entry.description.to_lowercase().contains(term) {
-                            score += 3;
-                        }
-                        if entry.keywords.iter().any(|keyword| keyword.contains(term)) {
-                            score += 5;
-                        }
-                    }
-                    (score, entry)
-                })
-                .filter(|(score, _)| *score > 0 || terms.is_empty())
-                .collect::<Vec<_>>();
-            scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.name.cmp(b.1.name)));
-            matches.extend(scored.into_iter().take(limit).map(|(_, entry)| entry));
-        }
+        let matches = search_tool_catalog(query, &selected, limit);
 
         let mut enabled = self.enabled_deferred_tools.write().await;
         for entry in &matches {
-            enabled.insert(entry.name.to_string());
+            if matches!(entry.exposure, ToolExposure::Deferred) {
+                enabled.insert(entry.name.to_string());
+            }
         }
 
         Ok(json!({
@@ -775,7 +973,11 @@ impl ToolExecutor for ToolSearchExecutor {
             "tools": matches.iter().map(|entry| json!({
                 "name": entry.name,
                 "description": entry.description,
-                "keywords": entry.keywords
+                "keywords": entry.keywords,
+                "search_hint": entry.search_hint,
+                "aliases": entry.aliases,
+                "is_concurrency_safe": is_tool_concurrency_safe(entry.name),
+                "is_read_only": is_tool_read_only(entry.name)
             })).collect::<Vec<_>>()
         }))
     }
@@ -978,5 +1180,76 @@ impl ToolExecutor for SearchFilesExecutor {
             "pattern": pattern,
             "results": results
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        is_tool_concurrency_safe, is_tool_read_only, search_tool_catalog, tool_by_name_or_alias,
+    };
+
+    #[test]
+    fn catalog_exposes_read_only_and_concurrency_metadata() {
+        let read = tool_by_name_or_alias("file_read").expect("file_read exists");
+        assert!(read.is_read_only);
+        assert!(read.is_concurrency_safe);
+
+        let write = tool_by_name_or_alias("file_write").expect("file_write exists");
+        assert!(!write.is_read_only);
+        assert!(!write.is_concurrency_safe);
+
+        let bash = tool_by_name_or_alias("Bash").expect("Bash alias resolves");
+        assert_eq!(bash.name, "execute_command");
+        assert!(!bash.is_read_only);
+        assert!(!bash.is_concurrency_safe);
+
+        let search = tool_by_name_or_alias("tool_search").expect("tool_search exists");
+        assert!(search.is_read_only);
+        assert!(search.is_concurrency_safe);
+    }
+
+    #[test]
+    fn tool_search_supports_select_prefix_and_aliases() {
+        let matches = search_tool_catalog("select:Bash,search_files", &[], 8);
+        let names = matches.iter().map(|entry| entry.name).collect::<Vec<_>>();
+        assert_eq!(names, vec!["execute_command", "search_files"]);
+    }
+
+    #[test]
+    fn tool_search_requires_plus_terms() {
+        let matches = search_tool_catalog("+shell pattern", &[], 8);
+        let names = matches.iter().map(|entry| entry.name).collect::<Vec<_>>();
+        assert!(names.contains(&"execute_command"));
+        assert!(!names.contains(&"search_files"));
+    }
+
+    #[test]
+    fn tool_search_scores_camel_case_alias_hint_and_description() {
+        let bash_matches = search_tool_catalog("bash", &[], 3);
+        assert_eq!(
+            bash_matches.first().map(|entry| entry.name),
+            Some("execute_command")
+        );
+
+        let docs_matches = search_tool_catalog("markdown webpage", &[], 3);
+        assert_eq!(
+            docs_matches.first().map(|entry| entry.name),
+            Some("fetch_url")
+        );
+
+        let background_matches = search_tool_catalog("background subagent", &[], 3);
+        assert_eq!(
+            background_matches.first().map(|entry| entry.name),
+            Some("start_background_task")
+        );
+    }
+
+    #[test]
+    fn tool_metadata_helpers_use_aliases_and_fail_closed() {
+        assert!(is_tool_read_only("Read"));
+        assert!(is_tool_concurrency_safe("tool_search"));
+        assert!(!is_tool_read_only("Write"));
+        assert!(!is_tool_concurrency_safe("definitely_missing_tool"));
     }
 }
