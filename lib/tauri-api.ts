@@ -59,6 +59,7 @@ export interface AiConfig {
   model: string
   firecrawl_api_key?: string | null
   context7_api_key?: string | null
+  tavily_api_key?: string | null
   searxng_url: string
 }
 
@@ -68,6 +69,7 @@ export interface AiConfigStatus {
   model: string
   firecrawl_configured: boolean
   context7_configured: boolean
+  tavily_configured: boolean
   searxng_url: string
 }
 
@@ -133,6 +135,11 @@ export async function readFile(path: string): Promise<string> {
   return invoke<string>("read_file", { path })
 }
 
+export async function readFileBase64(path: string): Promise<string> {
+  if (!isTauri()) throw new Error("Not running in Tauri")
+  return invoke<string>("read_file_base64", { path })
+}
+
 export async function writeFile(path: string, content: string): Promise<void> {
   if (!isTauri()) return
   return invoke("write_file", { path, content })
@@ -161,6 +168,7 @@ export async function getAiConfigStatus(): Promise<AiConfigStatus> {
       model: "deepseek-v4-pro",
       firecrawl_configured: false,
       context7_configured: false,
+      tavily_configured: false,
       searxng_url: "http://localhost:8080",
     }
   }
@@ -362,6 +370,55 @@ export function onChatBackgroundTask(callback: (event: ChatBackgroundTaskEvent) 
 
 export function onPermissionRequest(callback: (event: PermissionRequestEvent) => void): () => void {
   return listenEvent<PermissionRequestEvent>("chat:permission_request", callback)
+}
+
+// ─── Search ────────────────────────────────────────
+
+export interface SearchResultItem {
+  title: string
+  url: string
+  content: string
+  score: number
+}
+
+export interface SearchResultsEvent {
+  query: string
+  results: SearchResultItem[]
+}
+
+export interface SearchStreamEvent {
+  seq: number
+  content: string
+  done: boolean
+}
+
+export interface SearchQuestionsEvent {
+  questions: string[]
+}
+
+export interface SearchErrorEvent {
+  message: string
+}
+
+export function onSearchResults(callback: (event: SearchResultsEvent) => void): () => void {
+  return listenEvent<SearchResultsEvent>("search:results", callback)
+}
+
+export function onSearchStream(callback: (event: SearchStreamEvent) => void): () => void {
+  return listenEvent<SearchStreamEvent>("search:stream", callback)
+}
+
+export function onSearchQuestions(callback: (event: SearchQuestionsEvent) => void): () => void {
+  return listenEvent<SearchQuestionsEvent>("search:questions", callback)
+}
+
+export function onSearchError(callback: (event: SearchErrorEvent) => void): () => void {
+  return listenEvent<SearchErrorEvent>("search:error", callback)
+}
+
+export async function aiSearch(query: string): Promise<void> {
+  if (!isTauri()) return
+  return invoke("ai_search", { query })
 }
 
 export async function resolvePermissionRequest(requestId: string, allow: boolean): Promise<void> {

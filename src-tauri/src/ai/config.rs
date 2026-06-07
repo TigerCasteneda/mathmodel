@@ -10,6 +10,7 @@ pub struct AiConfig {
     pub model: String,
     pub firecrawl_api_key: Option<String>,
     pub context7_api_key: Option<String>,
+    pub tavily_api_key: Option<String>,
     pub searxng_url: String,
 }
 
@@ -21,6 +22,7 @@ impl Default for AiConfig {
             model: "deepseek-v4-pro".to_string(),
             firecrawl_api_key: None,
             context7_api_key: None,
+            tavily_api_key: None,
             searxng_url: "http://localhost:8080".to_string(),
         }
     }
@@ -60,6 +62,7 @@ pub struct AiConfigStatus {
     pub model: String,
     pub firecrawl_configured: bool,
     pub context7_configured: bool,
+    pub tavily_configured: bool,
     pub searxng_url: String,
 }
 
@@ -78,6 +81,10 @@ impl From<AiConfig> for AiConfigStatus {
                 .is_some_and(|value| !value.trim().is_empty()),
             context7_configured: config
                 .context7_api_key
+                .as_ref()
+                .is_some_and(|value| !value.trim().is_empty()),
+            tavily_configured: config
+                .tavily_api_key
                 .as_ref()
                 .is_some_and(|value| !value.trim().is_empty()),
             searxng_url: config.searxng_url,

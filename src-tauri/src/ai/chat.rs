@@ -297,6 +297,7 @@ pub fn set_ai_config(config: AiConfig, state: State<'_, AiConfigState>) -> Resul
         },
         firecrawl_api_key: config.firecrawl_api_key.or(current.firecrawl_api_key),
         context7_api_key: config.context7_api_key.or(current.context7_api_key),
+        tavily_api_key: config.tavily_api_key.or(current.tavily_api_key),
         searxng_url: if config.searxng_url.trim().is_empty() {
             current.searxng_url
         } else {

@@ -6,6 +6,8 @@ import {
   CheckCircle2,
   ChevronDown,
   ChevronRight,
+  Copy,
+  ExternalLink,
   FileText,
   FolderTree,
   Globe2,
@@ -299,6 +301,169 @@ function primaryToolArg(args: Record<string, unknown>) {
   return compactValue(args.path ?? args.file_path ?? args.command ?? args.pattern ?? args.query ?? args.title ?? args.url ?? args.prompt ?? "")
 }
 
+function parseToolOutput(output: string): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(output) as Record<string, unknown>
+    return parsed
+  } catch {
+    return { _raw: output }
+  }
+}
+
+function CopyButton({ value }: { value: string }) {
+  const [copied, setCopied] = useState(false)
+  const handleCopy = () => {
+    void (async () => {
+      await navigator.clipboard.writeText(value)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1800)
+    })()
+  }
+  return (
+    <button
+      type="button"
+      className="inline-flex items-center gap-1 rounded px-1 py-0.5 text-[10px] text-[#787878] hover:bg-[#2a2a2a] hover:text-[#e8e8e8] transition-colors"
+      onClick={(e) => { e.stopPropagation(); handleCopy() }}
+    >
+      <Copy className="h-3 w-3" />
+      {copied ? "Copied" : ""}
+    </button>
+  )
+}
+
+function FetchedPageCard({ output }: { output: string }) {
+  const data = parseToolOutput(output)
+  const url = (data.url as string) || ""
+  const content = (data.content as string) || (data._raw as string) || ""
+  const provider = (data.provider as string) || undefined
+  const [showContent, setShowContent] = useState(false)
+
+  return (
+    <div className="grid gap-2 text-sm">
+      {/* URL row */}
+      <div className="flex items-center gap-2 rounded-md border border-[#2a2a2a] bg-[#111111] px-3 py-2">
+        <Globe2 className="h-4 w-4 shrink-0 text-[#d4a574]" />
+        <a
+          href={url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="min-w-0 flex-1 truncate font-mono text-xs text-[#d4a574] underline underline-offset-2"
+        >
+          {url}
+        </a>
+        <div className="flex items-center gap-1 shrink-0">
+          <CopyButton value={url} />
+          <a
+            href={url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1 rounded px-1 py-0.5 text-[10px] text-[#787878] hover:bg-[#2a2a2a] hover:text-[#e8e8e8] transition-colors"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <ExternalLink className="h-3 w-3" />
+          </a>
+        </div>
+      </div>
+
+      {/* Provider + content toggle */}
+      {content && (
+        <>
+          <button
+            type="button"
+            className="flex items-center gap-1.5 text-[11px] text-[#787878] hover:text-[#e8e8e8]"
+            onClick={() => setShowContent((v) => !v)}
+          >
+            {showContent ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+            {provider ? `Content via ${provider}` : "Fetched content"}
+            <span className="text-[10px] text-[#555]">({(content.length / 1024).toFixed(1)} KB)</span>
+          </button>
+          {showContent && (
+            <div className="max-h-60 overflow-y-auto rounded-md border border-[#2a2a2a] bg-[#0d0d0d] p-3">
+              <MarkdownContent content={content.slice(0, 6000)} />
+              {content.length > 6000 && (
+                <p className="mt-2 text-[11px] text-[#787878]">
+                  Preview truncated at {((6000 / content.length) * 100).toFixed(0)}%. Open URL for full content.
+                </p>
+              )}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  )
+}
+
+function WebSearchResults({ output }: { output: string }) {
+  const data = parseToolOutput(output)
+  const query = (data.query as string) || ""
+  const results = (data.results as Array<Record<string, unknown>>) || []
+
+  if (!results.length) {
+    return (
+      <div className="py-2 text-center text-[11px] text-[#787878]">
+        {query ? `No results found for "${query}".` : "No results found."}
+      </div>
+    )
+  }
+
+  return (
+    <div className="grid gap-2">
+      {query && (
+        <div className="text-[11px] text-[#787878]">
+          Results for <span className="font-mono text-[#b4b4b4]">{query}</span>
+          <span className="ml-1 text-[10px]">({results.length} found)</span>
+        </div>
+      )}
+      {results.map((result, index) => {
+        const title = (result.title as string) || ""
+        const url = (result.url as string) || ""
+        const snippet = (result.snippet as string) || ""
+        return (
+          <div key={index} className="rounded-md border border-[#2a2a2a] bg-[#0d0d0d] px-3 py-2.5">
+            {/* Title + actions */}
+            <div className="flex items-start gap-2">
+              <a
+                href={url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="min-w-0 flex-1 text-xs font-medium text-[#d4a574] underline underline-offset-2"
+              >
+                {title || url}
+              </a>
+              <div className="flex items-center gap-1 shrink-0">
+                {url && <CopyButton value={url} />}
+                {url && (
+                  <a
+                    href={url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1 rounded px-1 py-0.5 text-[10px] text-[#787878] hover:bg-[#2a2a2a] hover:text-[#e8e8e8] transition-colors"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <ExternalLink className="h-3 w-3" />
+                  </a>
+                )}
+              </div>
+            </div>
+            {/* URL display + copy */}
+            {url && (
+              <div className="mt-1 flex items-center gap-2">
+                <span className="min-w-0 flex-1 truncate font-mono text-[10px] text-[#555]">{url}</span>
+              </div>
+            )}
+            {/* Snippet */}
+            {snippet && (
+              <p className="mt-2 text-[11px] leading-relaxed text-[#b4b4b4] line-clamp-4">
+                {snippet}
+              </p>
+            )}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
 function ToolCallCard({ tc }: { tc: ToolCallEntry }) {
   const [expanded, setExpanded] = useState(tc.status === "running")
   const meta = TOOL_META[tc.name] || { label: tc.name, tone: "neutral", icon: Wrench }
@@ -346,23 +511,31 @@ function ToolCallCard({ tc }: { tc: ToolCallEntry }) {
 
       {expanded && (
         <div className="border-t border-[#373737] bg-[#0d0d0d]/45 px-3 py-2">
-          <div className="mb-2 grid gap-1.5">
-            {Object.entries(tc.arguments).slice(0, 6).map(([key, value]) => (
-              <div key={key} className="grid grid-cols-[88px_1fr] gap-2 text-[11px]">
-                <span className="text-[#787878]">{key}</span>
-                <span className="truncate font-mono text-[#b4b4b4]">{compactValue(value)}</span>
-              </div>
-            ))}
-          </div>
-          {tc.output ? (
-            <pre className="max-h-52 overflow-y-auto rounded-md border border-[#2a2a2a] bg-[#111111] p-2 font-mono text-[11px] leading-5 text-[#b4b4b4]">
-              {tc.output}
-            </pre>
+          {tc.name === "fetch_url" ? (
+            <FetchedPageCard output={tc.output} />
+          ) : tc.name === "web_search" ? (
+            <WebSearchResults output={tc.output} />
           ) : (
-            <div className="flex items-center gap-2 rounded-md border border-[#2a2a2a] bg-[#111111] p-2 text-[11px] text-[#787878]">
-              <span className="cc-thinking-dot" />
-              Waiting for tool result
-            </div>
+            <>
+              <div className="mb-2 grid gap-1.5">
+                {Object.entries(tc.arguments).slice(0, 6).map(([key, value]) => (
+                  <div key={key} className="grid grid-cols-[88px_1fr] gap-2 text-[11px]">
+                    <span className="text-[#787878]">{key}</span>
+                    <span className="truncate font-mono text-[#b4b4b4]">{compactValue(value)}</span>
+                  </div>
+                ))}
+              </div>
+              {tc.output ? (
+                <pre className="max-h-52 overflow-y-auto rounded-md border border-[#2a2a2a] bg-[#111111] p-2 font-mono text-[11px] leading-5 text-[#b4b4b4]">
+                  {tc.output}
+                </pre>
+              ) : (
+                <div className="flex items-center gap-2 rounded-md border border-[#2a2a2a] bg-[#111111] p-2 text-[11px] text-[#787878]">
+                  <span className="cc-thinking-dot" />
+                  Waiting for tool result
+                </div>
+              )}
+            </>
           )}
         </div>
       )}
@@ -476,21 +649,20 @@ export function ChatPanel({
   useEffect(() => {
     const offStream = onChatStream((event) => {
       if (event.conversation_id !== conversationId) return
-      if (typeof event.seq === "number") {
-        const key = `${event.conversation_id}:${event.seq}`
-        if (seenStreamEventsRef.current.has(key)) return
-        seenStreamEventsRef.current.add(key)
-      }
       setMessages((prev) => {
-        const next = [...prev]
-        const last = next[next.length - 1]
-        if (!last || last.role !== "assistant" || !last.streaming) {
-          next.push({ id: crypto.randomUUID(), role: "assistant", content: event.content, streaming: !event.done })
-          return next
+        if (typeof event.seq === "number") {
+          const key = `${event.conversation_id}:${event.seq}`
+          if (seenStreamEventsRef.current.has(key)) return prev
+          seenStreamEventsRef.current.add(key)
         }
-        last.content += event.content
-        last.streaming = !event.done
-        return next
+        const last = prev[prev.length - 1]
+        if (!last || last.role !== "assistant" || !last.streaming) {
+          return [...prev, { id: crypto.randomUUID(), role: "assistant", content: event.content, streaming: !event.done }]
+        }
+        return [
+          ...prev.slice(0, -1),
+          { ...last, content: last.content + event.content, streaming: !event.done },
+        ]
       })
     })
 
@@ -503,23 +675,18 @@ export function ChatPanel({
         status: event.status as ToolCallEntry["status"],
       }
       setMessages((prev) => {
-        const next = [...prev]
-        const last = next[next.length - 1]
-        if (!last || last.role !== "assistant") {
-          next.push({ id: crypto.randomUUID(), role: "assistant", content: "", toolCalls: [entry] })
-          return next
+        const last = prev[prev.length - 1]
+        if (!last || last.role !== "assistant" || !last.streaming) {
+          return [...prev, { id: crypto.randomUUID(), role: "assistant", content: "", toolCalls: [entry], streaming: true }]
         }
         // Merge tool calls on the last assistant message
         const existing = last.toolCalls || []
-        const updated = existing.findIndex((tc) => tc.name === entry.name && tc.status === "running")
-        if (updated >= 0) {
-          const merged = [...existing]
-          merged[updated] = entry
-          last.toolCalls = merged
-        } else {
-          last.toolCalls = [...existing, entry]
-        }
-        return next
+        const updatedIndex = existing.findIndex((tc) => tc.name === entry.name && tc.status === "running")
+        const nextToolCalls =
+          updatedIndex >= 0
+            ? existing.map((tc, i) => (i === updatedIndex ? entry : tc))
+            : [...existing, entry]
+        return [...prev.slice(0, -1), { ...last, toolCalls: nextToolCalls }]
       })
     })
 

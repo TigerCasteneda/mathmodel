@@ -53,6 +53,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             agent::commands::list_files,
             agent::commands::read_file,
+            agent::commands::read_file_base64,
             agent::commands::write_file,
             agent::commands::create_file,
             agent::commands::change_work_dir,
@@ -69,6 +70,7 @@ pub fn run() {
             ai::permissions::get_permission_config,
             ai::permissions::resolve_permission_request,
             ai::permissions::set_permission_config,
+            ai::search::ai_search,
             get_server_port,
         ])
         .run(tauri::generate_context!())

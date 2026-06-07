@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { ChatPanel } from "@/components/chat/chat-panel"
 import { CodeEditor } from "@/components/editor/code-editor"
+import PdfViewer from "@/components/editor/pdf-viewer"
 import { cn } from "@/lib/utils"
 import {
   deleteSession,
@@ -123,6 +124,7 @@ function fileLanguage(file: FileTreeItem) {
   if (ext === "json") return "json"
   if (ext === "md") return "markdown"
   if (ext === "tex") return "latex"
+  if (ext === "pdf") return "pdf"
   return "plaintext"
 }
 
@@ -776,6 +778,7 @@ function SettingsPanel({
   const [apiKey, setApiKey] = useState("")
   const [firecrawlKey, setFirecrawlKey] = useState("")
   const [context7Key, setContext7Key] = useState("")
+  const [tavilyKey, setTavilyKey] = useState("")
   const [searxngUrl, setSearxngUrl] = useState("http://localhost:8080")
   const [model, setModel] = useState("deepseek-v4-pro")
 
@@ -794,12 +797,13 @@ function SettingsPanel({
       model,
       firecrawl_api_key: firecrawlKey || null,
       context7_api_key: context7Key || null,
+      tavily_api_key: tavilyKey || null,
       searxng_url: searxngUrl || "http://localhost:8080",
     })
     setStatus(await getAiConfigStatus())
     setApiKey("")
     setFirecrawlKey("")
-    setContext7Key("")
+    setTavilyKey("")
   }
 
   return (
@@ -852,7 +856,7 @@ function SettingsPanel({
         <div className="space-y-3 border-t border-[#373737] pt-4">
           <div>
             <h3 className="text-sm font-medium text-[#e8e8e8]">Research Providers</h3>
-            <p className="mt-1 text-xs text-[#787878]">Firecrawl powers web search. Context7 powers docs search.</p>
+            <p className="mt-1 text-xs text-[#787878]">Firecrawl powers web search. Context7 powers docs search. Tavily powers the /search AI search page.</p>
           </div>
           <div className="space-y-2">
             <label className="text-xs font-medium text-[#b4b4b4]">Firecrawl API Key</label>
@@ -874,6 +878,16 @@ function SettingsPanel({
               type="password"
             />
           </div>
+          <div className="space-y-2">
+            <label className="text-xs font-medium text-[#b4b4b4]">Tavily API Key</label>
+            <Input
+              value={tavilyKey}
+              onChange={(event) => setTavilyKey(event.target.value)}
+              placeholder={status?.tavily_configured ? "Configured" : "tvly-xxxxxxxxxxxxxxxx"}
+              className="border-[#373737] bg-[#232323] text-sm"
+              type="password"
+            />
+          </div>
           <div className="space-y-2 border-t border-[#373737] pt-3">
             <label className="text-xs font-medium text-[#b4b4b4]">SearXNG URL · Chat fallback</label>
             <Input
@@ -882,7 +896,7 @@ function SettingsPanel({
               className="border-[#373737] bg-[#232323] text-sm"
             />
             <p className="text-xs leading-5 text-[#787878]">
-              Research Search uses Firecrawl and Context7. SearXNG is only used by chat web_search fallback tools.
+              Research Search uses Firecrawl and Context7. Tavily powers the /search AI search page. SearXNG is only used by chat.
             </p>
           </div>
         </div>
@@ -1403,14 +1417,18 @@ export function ModelerWorkbench({ projectId }: { projectId: string }) {
     const remoteContent = workspaceMode === "guest" && file.id
       ? await getProjectFileContent(projectId, file.id)
       : null
-    const content = workspaceMode === "guest"
-      ? remoteContent?.content ?? null
-      : await tauriAgent.openFile(file.path)
+    const lang = fileLanguage(file)
+    // PDF files: skip text-read; PdfViewer loads binary on its own
+    const content = lang === "pdf"
+      ? ""
+      : workspaceMode === "guest"
+        ? remoteContent?.content ?? null
+        : await tauriAgent.openFile(file.path)
     const next: Tab = {
       id: file.path,
       title: file.name,
       kind: "file",
-      language: fileLanguage(file),
+      language: lang,
       content: content ?? sampleContent,
       dirty: false,
       remoteFileId: workspaceMode === "guest" ? file.id : hostManifestEntry?.fileId,
@@ -1806,7 +1824,7 @@ export function ModelerWorkbench({ projectId }: { projectId: string }) {
                   : "text-[#b4b4b4] hover:bg-[#232323]",
               )}
             >
-              {tab.kind === "chat" ? <MessageSquare className="h-4 w-4" /> : tab.kind === "research" ? <BookOpen className="h-4 w-4" /> : <FileCode className="h-4 w-4" />}
+              {tab.kind === "chat" ? <MessageSquare className="h-4 w-4" /> : tab.kind === "research" ? <BookOpen className="h-4 w-4" /> : (tab as Tab).language === "pdf" ? <FileText className="h-4 w-4 text-[#f44336]" /> : <FileCode className="h-4 w-4" />}
               <span className="truncate">{tab.title}{tab.dirty ? " *" : ""}</span>
               <span
                 role="button"
@@ -1895,17 +1913,21 @@ export function ModelerWorkbench({ projectId }: { projectId: string }) {
                 </div>
               )}
               <div className="min-h-0 flex-1">
-                <CodeEditor
-                  language={active.language || "plaintext"}
-                  value={active.content || ""}
-                  readOnly={active.readOnly || (workspaceMode === "guest" && !canWriteFiles)}
-                  onChange={(value) => updateActiveFileContent(value, Boolean(active.remoteFileId))}
-                  collaborative={active.remoteFileId ? {
-                    fileId: active.remoteFileId,
-                    user: { id: currentUserId ?? undefined, name: user?.display_name || "User" },
-                    readOnly: active.readOnly || (workspaceMode === "guest" && !canWriteFiles),
-                  } : undefined}
-                />
+                {active.language === "pdf" ? (
+                  <PdfViewer filePath={active.id} />
+                ) : (
+                  <CodeEditor
+                    language={active.language || "plaintext"}
+                    value={active.content || ""}
+                    readOnly={active.readOnly || (workspaceMode === "guest" && !canWriteFiles)}
+                    onChange={(value) => updateActiveFileContent(value, Boolean(active.remoteFileId))}
+                    collaborative={active.remoteFileId ? {
+                      fileId: active.remoteFileId,
+                      user: { id: currentUserId ?? undefined, name: user?.display_name || "User" },
+                      readOnly: active.readOnly || (workspaceMode === "guest" && !canWriteFiles),
+                    } : undefined}
+                  />
+                )}
               </div>
             </div>
           ) : null}

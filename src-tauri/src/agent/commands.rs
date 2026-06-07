@@ -1,6 +1,7 @@
 use crate::agent::events::AgentEvent;
 use crate::agent::file_watcher::{self, FileTreeItem};
 use crate::agent::state::AgentState;
+use base64::Engine;
 use std::path::{Component, PathBuf};
 use tauri::{Emitter, State};
 
@@ -78,6 +79,17 @@ pub async fn list_files(state: State<'_, AgentState>) -> Result<FileTreeItem, St
 pub async fn read_file(path: String, state: State<'_, AgentState>) -> Result<String, String> {
     let work_dir = state.work_dir.lock().map_err(|e| e.to_string())?.clone();
     file_watcher::read_workspace_file(&work_dir, &path).map_err(|e| format!("{e:#}"))
+}
+
+#[tauri::command]
+pub async fn read_file_base64(
+    path: String,
+    state: State<'_, AgentState>,
+) -> Result<String, String> {
+    let work_dir = state.work_dir.lock().map_err(|e| e.to_string())?.clone();
+    let resolved = validate_and_resolve_path(&work_dir, &path)?;
+    let bytes = std::fs::read(&resolved).map_err(|e| format!("Failed to read file: {e}"))?;
+    Ok(base64::engine::general_purpose::STANDARD.encode(&bytes))
 }
 
 #[tauri::command]

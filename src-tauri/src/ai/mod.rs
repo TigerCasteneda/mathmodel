@@ -5,5 +5,6 @@ pub mod executor;
 pub mod permissions;
 pub mod research;
 pub mod runtime;
+pub mod search;
 pub mod session;
 pub mod workspace;
