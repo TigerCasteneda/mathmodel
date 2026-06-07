@@ -1,27 +1,56 @@
 "use client"
 
-import { useState, useEffect, useRef } from "react"
+import { useState, useEffect } from "react"
+import dynamic from "next/dynamic"
 import { Loader2, AlertCircle, FileText, Maximize2 } from "lucide-react"
+import type { PDFDocumentProxy } from "pdfjs-dist"
 import { readFileBase64 } from "@/lib/tauri-api"
+
+const PdfDocumentRenderer = dynamic(
+  () => import("@/components/editor/pdf-document-renderer"),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="flex h-full items-center justify-center gap-3 text-[#787878]">
+        <Loader2 className="h-5 w-5 animate-spin text-[#d4a574]" />
+        <span className="text-sm">Preparing PDF renderer...</span>
+      </div>
+    ),
+  },
+)
 
 interface PdfViewerProps {
   filePath: string
 }
 
+function base64ToBytes(value: string): Uint8Array {
+  const binary = window.atob(value)
+  const bytes = new Uint8Array(binary.length)
+  for (let i = 0; i < binary.length; i += 1) {
+    bytes[i] = binary.charCodeAt(i)
+  }
+  return bytes
+}
+
 export default function PdfViewer({ filePath }: PdfViewerProps) {
+  const [pdfBytes, setPdfBytes] = useState<Uint8Array | null>(null)
   const [pdfDataUrl, setPdfDataUrl] = useState<string | null>(null)
+  const [numPages, setNumPages] = useState(0)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const iframeRef = useRef<HTMLIFrameElement>(null)
 
   useEffect(() => {
     let cancelled = false
     async function load() {
       setLoading(true)
       setError(null)
+      setPdfBytes(null)
+      setPdfDataUrl(null)
+      setNumPages(0)
       try {
         const b64 = await readFileBase64(filePath)
         if (cancelled) return
+        setPdfBytes(base64ToBytes(b64))
         setPdfDataUrl(`data:application/pdf;base64,${b64}`)
         setLoading(false)
       } catch (e) {
@@ -35,10 +64,28 @@ export default function PdfViewer({ filePath }: PdfViewerProps) {
   }, [filePath])
 
   const openExternal = () => {
-    if (pdfDataUrl && iframeRef.current) {
-      // Try opening in system viewer via the data URL
+    if (pdfDataUrl) {
       window.open(pdfDataUrl, "_blank")
     }
+  }
+
+  const retry = () => {
+    setError(null)
+    setLoading(true)
+    setPdfBytes(null)
+    setPdfDataUrl(null)
+    setNumPages(0)
+    readFileBase64(filePath)
+      .then((b64) => {
+        setPdfBytes(base64ToBytes(b64))
+        setPdfDataUrl(`data:application/pdf;base64,${b64}`)
+      })
+      .catch((e) => setError(String(e)))
+      .finally(() => setLoading(false))
+  }
+
+  const handleLoadSuccess = ({ numPages }: PDFDocumentProxy) => {
+    setNumPages(numPages)
   }
 
   return (
@@ -62,7 +109,7 @@ export default function PdfViewer({ filePath }: PdfViewerProps) {
       </div>
 
       {/* Content */}
-      <div className="flex-1 bg-[#323232]">
+      <div className="min-h-0 flex-1 overflow-auto bg-[#323232]">
         {loading && (
           <div className="flex h-full items-center justify-center gap-3 text-[#787878]">
             <Loader2 className="h-5 w-5 animate-spin text-[#d4a574]" />
@@ -79,14 +126,7 @@ export default function PdfViewer({ filePath }: PdfViewerProps) {
               </p>
               <button
                 type="button"
-                onClick={() => {
-                  setError(null)
-                  setLoading(true)
-                  readFileBase64(filePath)
-                    .then((b64) => setPdfDataUrl(`data:application/pdf;base64,${b64}`))
-                    .catch((e) => setError(String(e)))
-                    .finally(() => setLoading(false))
-                }}
+                onClick={retry}
                 className="rounded-md border border-[#5f2424] px-3 py-1 text-xs text-[#ffb4a8] hover:bg-[#3d2424] transition-colors"
               >
                 Retry
@@ -95,12 +135,12 @@ export default function PdfViewer({ filePath }: PdfViewerProps) {
           </div>
         )}
 
-        {pdfDataUrl && !loading && !error && (
-          <iframe
-            ref={iframeRef}
-            src={pdfDataUrl}
-            className="h-full w-full border-0"
-            title={filePath}
+        {pdfBytes && !loading && !error && (
+          <PdfDocumentRenderer
+            fileData={pdfBytes}
+            numPages={numPages}
+            onLoadSuccess={handleLoadSuccess}
+            onLoadError={(e) => setError(e.message)}
           />
         )}
       </div>

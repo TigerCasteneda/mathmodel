@@ -41,31 +41,49 @@ fn start_workspace_watcher(state: &AgentState, work_dir: PathBuf) -> Result<(), 
 
 pub fn validate_and_resolve_path(
     work_dir: &std::path::Path,
-    relative_path: &str,
+    requested_path: &str,
 ) -> Result<PathBuf, String> {
-    let rel = std::path::Path::new(relative_path);
-    if rel.is_absolute() {
-        return Err("absolute path rejected".into());
-    }
-    for component in rel.components() {
-        match component {
-            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
-                return Err("path traversal rejected".into());
-            }
-            _ => {}
+    relative_or_workspace_path(work_dir, requested_path)
+}
+
+fn relative_or_workspace_path(
+    work_dir: &std::path::Path,
+    requested_path: &str,
+) -> Result<PathBuf, String> {
+    let mut path_value = requested_path
+        .strip_prefix("file://")
+        .unwrap_or(requested_path);
+    #[cfg(windows)]
+    {
+        if path_value.starts_with('/') && path_value.as_bytes().get(2) == Some(&b':') {
+            path_value = &path_value[1..];
         }
     }
-    let resolved = work_dir.join(rel);
+
+    let requested = std::path::Path::new(path_value);
     let canon_work = work_dir
         .canonicalize()
         .unwrap_or_else(|_| work_dir.to_path_buf());
-    if let Ok(canon) = resolved.canonicalize() {
-        if !canon.starts_with(&canon_work) {
-            return Err("path escapes workspace".into());
+
+    let resolved = if requested.is_absolute() {
+        requested.to_path_buf()
+    } else {
+        for component in requested.components() {
+            match component {
+                Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                    return Err("path traversal rejected".into());
+                }
+                _ => {}
+            }
         }
-    } else if !resolved.starts_with(&canon_work) {
+        canon_work.join(requested)
+    };
+
+    let path_for_check = resolved.canonicalize().unwrap_or_else(|_| resolved.clone());
+    if !path_for_check.starts_with(&canon_work) {
         return Err("path escapes workspace".into());
     }
+
     Ok(resolved)
 }
 

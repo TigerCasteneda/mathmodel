@@ -2,12 +2,13 @@
 
 import { useEffect, useMemo, useRef, useState } from "react"
 import { useRouter } from "next/navigation"
-import { AlertCircle, BookOpen, CheckCircle2, Copy, Database, FileCode, FileText, Folder, FolderOpen, Globe2, Library, Loader2, LogOut, MessageSquare, MonitorUp, MonitorX, RefreshCw, RotateCcw, Save, Search, Settings, SidebarIcon, Trash2 } from "lucide-react"
+import { AlertCircle, BookOpen, CheckCircle2, Copy, Database, FileCode, FileImage, FileText, Folder, FolderOpen, Globe2, Library, Loader2, LogOut, MessageSquare, MonitorUp, MonitorX, RefreshCw, RotateCcw, Save, Search, Settings, SidebarIcon, Trash2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { ChatPanel } from "@/components/chat/chat-panel"
 import { CodeEditor } from "@/components/editor/code-editor"
+import ImageViewer from "@/components/editor/image-viewer"
 import PdfViewer from "@/components/editor/pdf-viewer"
 import { cn } from "@/lib/utils"
 import {
@@ -116,15 +117,16 @@ const activities = [
 ]
 
 function fileLanguage(file: FileTreeItem) {
+  const ext = file.name.split(".").pop()?.toLowerCase()
+  if (ext === "pdf") return "pdf"
+  if (ext === "png" || ext === "jpg" || ext === "jpeg") return "image"
   if (file.language) return file.language
-  const ext = file.name.split(".").pop()
   if (ext === "py") return "python"
   if (ext === "ts" || ext === "tsx") return "typescript"
   if (ext === "js" || ext === "jsx") return "javascript"
   if (ext === "json") return "json"
   if (ext === "md") return "markdown"
   if (ext === "tex") return "latex"
-  if (ext === "pdf") return "pdf"
   return "plaintext"
 }
 
@@ -1418,8 +1420,8 @@ export function ModelerWorkbench({ projectId }: { projectId: string }) {
       ? await getProjectFileContent(projectId, file.id)
       : null
     const lang = fileLanguage(file)
-    // PDF files: skip text-read; PdfViewer loads binary on its own
-    const content = lang === "pdf"
+    // Binary previews load bytes on their own.
+    const content = lang === "pdf" || lang === "image"
       ? ""
       : workspaceMode === "guest"
         ? remoteContent?.content ?? null
@@ -1824,7 +1826,7 @@ export function ModelerWorkbench({ projectId }: { projectId: string }) {
                   : "text-[#b4b4b4] hover:bg-[#232323]",
               )}
             >
-              {tab.kind === "chat" ? <MessageSquare className="h-4 w-4" /> : tab.kind === "research" ? <BookOpen className="h-4 w-4" /> : (tab as Tab).language === "pdf" ? <FileText className="h-4 w-4 text-[#f44336]" /> : <FileCode className="h-4 w-4" />}
+              {tab.kind === "chat" ? <MessageSquare className="h-4 w-4" /> : tab.kind === "research" ? <BookOpen className="h-4 w-4" /> : (tab as Tab).language === "pdf" ? <FileText className="h-4 w-4 text-[#f44336]" /> : (tab as Tab).language === "image" ? <FileImage className="h-4 w-4 text-[#64b5f6]" /> : <FileCode className="h-4 w-4" />}
               <span className="truncate">{tab.title}{tab.dirty ? " *" : ""}</span>
               <span
                 role="button"
@@ -1915,6 +1917,8 @@ export function ModelerWorkbench({ projectId }: { projectId: string }) {
               <div className="min-h-0 flex-1">
                 {active.language === "pdf" ? (
                   <PdfViewer filePath={active.id} />
+                ) : active.language === "image" ? (
+                  <ImageViewer filePath={active.id} />
                 ) : (
                   <CodeEditor
                     language={active.language || "plaintext"}

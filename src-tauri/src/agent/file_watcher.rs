@@ -160,6 +160,8 @@ fn language_for_name(name: &str) -> Option<String> {
         "toml" => "toml",
         "yaml" | "yml" => "yaml",
         "txt" => "plaintext",
+        "pdf" => "pdf",
+        "png" | "jpg" | "jpeg" => "image",
         _ => "plaintext",
     };
     Some(lang.into())
