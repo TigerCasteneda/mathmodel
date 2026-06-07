@@ -338,6 +338,75 @@ export async function deleteProjectFile(
 
 // ── Research / Search ──
 
+export interface ArenaCard {
+  file_id: string
+  title: string
+  card_type: "formula" | "finding" | "assumption" | "decision" | "note" | string
+  tags: string[]
+  aliases: string[]
+  status: string
+  links: string[]
+  backlinks: string[]
+  unresolved_links: string[]
+  content: string
+  updated_at: number
+}
+
+export interface ArenaIndex {
+  cards: ArenaCard[]
+  unresolved_links: string[]
+}
+
+export interface CreateArenaCardInput {
+  card_type: "formula" | "finding" | "assumption" | "decision" | "note" | string
+  title: string
+  tags?: string[]
+  body?: string
+}
+
+export interface UpdateArenaCardInput {
+  content: string
+  expected_updated_at?: number
+}
+
+export interface AppendArenaLogResponse {
+  file_id: string
+  content: string
+  updated_at: number
+}
+
+export async function listArenaCards(projectId: string): Promise<ArenaCard[]> {
+  return apiFetch<ArenaCard[]>(`/projects/${projectId}/arena/cards`)
+}
+
+export async function createArenaCard(projectId: string, input: CreateArenaCardInput): Promise<ArenaCard> {
+  return apiFetch<ArenaCard>(`/projects/${projectId}/arena/cards`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  })
+}
+
+export async function updateArenaCard(projectId: string, cardId: string, input: UpdateArenaCardInput): Promise<ArenaCard> {
+  return apiFetch<ArenaCard>(`/projects/${projectId}/arena/cards/${cardId}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  })
+}
+
+export async function appendArenaLog(projectId: string, message: string): Promise<AppendArenaLogResponse> {
+  return apiFetch<AppendArenaLogResponse>(`/projects/${projectId}/arena/log`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ message }),
+  })
+}
+
+export async function getArenaIndex(projectId: string): Promise<ArenaIndex> {
+  return apiFetch<ArenaIndex>(`/projects/${projectId}/arena/index`)
+}
+
 export interface SearchResultItem {
   title: string
   url: string

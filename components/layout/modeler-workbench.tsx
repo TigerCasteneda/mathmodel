@@ -2,10 +2,11 @@
 
 import { useEffect, useMemo, useRef, useState } from "react"
 import { useRouter } from "next/navigation"
-import { AlertCircle, BookOpen, CheckCircle2, Copy, Database, FileCode, FileImage, FileText, Folder, FolderOpen, Globe2, Library, Link, Loader2, LogOut, MessageSquare, MonitorUp, MonitorX, RefreshCw, RotateCcw, Save, Search, Settings, SidebarIcon, Trash2 } from "lucide-react"
+import { AlertCircle, BookOpen, CheckCircle2, Copy, Database, FileCode, FileImage, FileText, Folder, FolderOpen, Globe2, Library, Link, Loader2, LogOut, MessageSquare, Network, MonitorUp, MonitorX, RefreshCw, RotateCcw, Save, Search, Settings, SidebarIcon, Trash2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { ScrollArea } from "@/components/ui/scroll-area"
+import { ArenaPanel } from "@/components/arena/arena-panel"
 import { ChatPanel } from "@/components/chat/chat-panel"
 import { CodeEditor } from "@/components/editor/code-editor"
 import ImageViewer from "@/components/editor/image-viewer"
@@ -54,7 +55,7 @@ import {
 } from "@/lib/api"
 import { useAuth } from "@/hooks/use-auth"
 
-type Activity = "explorer" | "research" | "chat" | "settings"
+type Activity = "explorer" | "arena" | "research" | "chat" | "settings"
 type Tab = {
   id: string
   title: string
@@ -112,6 +113,7 @@ function remoteTreeToFileTree(items: ProjectFileTreeItem[]): FileTreeItem {
 
 const activities = [
   { id: "explorer" as const, icon: FileText, label: "Explorer" },
+  { id: "arena" as const, icon: Network, label: "Arena" },
   { id: "research" as const, icon: BookOpen, label: "Research" },
   { id: "chat" as const, icon: MessageSquare, label: "Chat" },
   { id: "settings" as const, icon: Settings, label: "Settings" },
@@ -1664,6 +1666,7 @@ export function ModelerWorkbench({ projectId }: { projectId: string }) {
       if (workspaceMode === "guest") return "Project Files"
       return tauriAgent.workDir?.split(/[/\\]/).pop() || "Explorer"
     }
+    if (activeActivity === "arena") return "Arena"
     if (activeActivity === "research") return "Research"
     if (activeActivity === "chat") return "Chats"
     return "Settings"
@@ -1825,6 +1828,12 @@ export function ModelerWorkbench({ projectId }: { projectId: string }) {
               Library
             </button>
           )}
+          {activeActivity === "arena" && (
+            <button className="flex h-8 w-full items-center gap-2 px-3 text-left text-xs text-[#e8e8e8]">
+              <Network className="h-4 w-4 text-[#d4a574]" />
+              Knowledge Base
+            </button>
+          )}
           {activeActivity === "chat" && (
             <>
               <button
@@ -1930,6 +1939,8 @@ export function ModelerWorkbench({ projectId }: { projectId: string }) {
               screenShare={screenShare}
               onProjectRefresh={refreshProject}
             />
+          ) : activeActivity === "arena" ? (
+            <ArenaPanel projectId={projectId} capabilities={capabilities} />
           ) : active?.kind === "chat" ? (
             <ChatPanel
               conversationId={active.id}

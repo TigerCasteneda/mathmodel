@@ -1,5 +1,6 @@
 import type { Metadata } from 'next'
 import { Analytics } from '@vercel/analytics/next'
+import { TauriWindowIcon } from '@/components/tauri-window-icon'
 import './globals.css'
 
 export const metadata: Metadata = {
@@ -9,19 +10,11 @@ export const metadata: Metadata = {
   icons: {
     icon: [
       {
-        url: '/icon-light-32x32.png',
-        media: '(prefers-color-scheme: light)',
-      },
-      {
-        url: '/icon-dark-32x32.png',
-        media: '(prefers-color-scheme: dark)',
-      },
-      {
-        url: '/icon.svg',
+        url: '/ease-curve-control-points.svg',
         type: 'image/svg+xml',
       },
     ],
-    apple: '/apple-icon.png',
+    apple: '/ease-curve-control-points.svg',
   },
 }
 
@@ -33,6 +26,7 @@ export default function RootLayout({
   return (
     <html lang="en" className="dark bg-background">
       <body className="font-sans antialiased bg-background">
+        <TauriWindowIcon />
         {children}
         {process.env.NODE_ENV === 'production' && <Analytics />}
       </body>

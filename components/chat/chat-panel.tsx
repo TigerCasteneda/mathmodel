@@ -14,7 +14,6 @@ import {
   Link2,
   Loader2,
   PencilLine,
-  Play,
   Save,
   Search,
   Send,
@@ -197,12 +196,12 @@ function OrangeMark({ className }: { className?: string }) {
   return (
     <span
       className={cn(
-        "inline-flex items-center justify-center rounded-full border border-[#f59e0b]/70 bg-[#1f1308] text-[#f59e0b] shadow-[0_0_18px_rgba(245,158,11,0.18)]",
+        "cc-claude-breathe inline-flex items-center justify-center rounded-full border border-[#d97757]/55 bg-[#1f1308] shadow-[0_0_18px_rgba(217,119,87,0.22)]",
         className,
       )}
       aria-hidden="true"
     >
-      <Play className="ml-0.5 h-[58%] w-[58%] fill-current stroke-[2.5]" />
+      <img src="/claude-color.svg" alt="" className="h-[62%] w-[62%]" />
     </span>
   )
 }

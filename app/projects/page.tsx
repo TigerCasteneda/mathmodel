@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react"
 import { useRouter } from "next/navigation"
 import Link from "next/link"
-import { Plus, Sparkles, LogOut, FolderGit2 } from "lucide-react"
+import { Plus, LogOut, FolderGit2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { useAuth } from "@/hooks/use-auth"
@@ -93,7 +93,7 @@ export default function ProjectsPage() {
         <div className="flex items-center justify-between mb-8">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl bg-primary/20 flex items-center justify-center">
-              <Sparkles className="w-5 h-5 text-primary" />
+              <img src="/file-box.svg" alt="" className="h-5 w-5" />
             </div>
             <div>
               <h1 className="text-xl font-semibold text-foreground">Your Projects</h1>

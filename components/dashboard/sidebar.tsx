@@ -6,8 +6,7 @@ import {
   ChevronRight,
   FileText,
   History,
-  Plus,
-  Sparkles
+  Plus
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
@@ -49,14 +48,14 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
         {!collapsed && (
           <div className="flex items-center gap-2">
             <div className="w-8 h-8 rounded-lg bg-primary/20 flex items-center justify-center">
-              <Sparkles className="w-5 h-5 text-primary" />
+              <img src="/file-box.svg" alt="" className="h-5 w-5" />
             </div>
             <span className="font-semibold text-lg text-foreground">Modeler AI</span>
           </div>
         )}
         {collapsed && (
           <div className="w-8 h-8 rounded-lg bg-primary/20 flex items-center justify-center mx-auto">
-            <Sparkles className="w-5 h-5 text-primary" />
+            <img src="/file-box.svg" alt="" className="h-5 w-5" />
           </div>
         )}
         <Button 

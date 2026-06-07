@@ -3,7 +3,6 @@
 import { useState } from "react"
 import { useRouter } from "next/navigation"
 import Link from "next/link"
-import { Sparkles } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { useAuth } from "@/hooks/use-auth"
@@ -35,7 +34,7 @@ export default function LoginPage() {
       <div className="w-full max-w-sm">
         <div className="text-center mb-8">
           <div className="w-12 h-12 rounded-xl bg-primary/20 flex items-center justify-center mx-auto mb-4">
-            <Sparkles className="w-6 h-6 text-primary" />
+            <img src="/file-box.svg" alt="" className="h-6 w-6" />
           </div>
           <h1 className="text-xl font-semibold text-foreground">Sign in to Modeler AI</h1>
           <p className="text-sm text-muted-foreground mt-1">

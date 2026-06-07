@@ -1,3 +1,4 @@
+pub mod arena;
 pub mod auth;
 pub mod compute;
 pub mod config;
@@ -29,6 +30,7 @@ pub struct AppState {
 pub fn build_router(state: AppState) -> Router {
     Router::new()
         .nest("/auth", auth::handlers::routes())
+        .merge(arena::handlers::routes())
         .nest("/projects", project::handlers::routes())
         .merge(file::handlers::routes())
         .merge(screen::handlers::routes())
