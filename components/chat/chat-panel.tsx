@@ -18,6 +18,7 @@ import {
   Save,
   Search,
   Send,
+  SquareStop,
   Terminal,
   UserRound,
   Wrench,
@@ -47,13 +48,17 @@ import {
   loadSession,
   onChatBackgroundTask,
   onChatError,
+  onChatThinking,
+  onChatTokenUsage,
   onPermissionRequest,
   onChatStream,
   onChatToolCall,
   resolvePermissionRequest,
   setAiModel,
+  stopGeneration,
   type AiPermissionMode,
   type ChatBackgroundTaskEvent,
+  type ChatTokenUsageEvent,
   type PermissionRequestEvent,
   type SessionMessage as PersistedSessionMessage,
   type ChatToolCallEvent,
@@ -616,6 +621,8 @@ export function ChatPanel({
   const [backgroundTasks, setBackgroundTasks] = useState<BackgroundTaskEntry[]>([])
   const [pendingPermissionRequests, setPendingPermissionRequests] = useState<PendingPermissionRequest[]>([])
   const [resolvingPermission, setResolvingPermission] = useState(false)
+  const [lastTokenUsage, setLastTokenUsage] = useState<ChatTokenUsageEvent | null>(null)
+  const [stopRequested, setStopRequested] = useState(false)
   const [showSlashMenu, setShowSlashMenu] = useState(false)
   const scrollRef = useRef<HTMLDivElement>(null)
   const seenStreamEventsRef = useRef<Set<string>>(new Set())
@@ -632,6 +639,8 @@ export function ChatPanel({
     setLoaded(false)
     setBackgroundTasks([])
     setPendingPermissionRequests([])
+    setLastTokenUsage(null)
+    setStopRequested(false)
     loadSession(conversationId).then((session) => {
       const restored = restoreMessages(session.messages || [])
       setMessages(restored)
@@ -649,6 +658,7 @@ export function ChatPanel({
   useEffect(() => {
     const offStream = onChatStream((event) => {
       if (event.conversation_id !== conversationId) return
+      if (event.done) setStopRequested(false)
       setMessages((prev) => {
         if (typeof event.seq === "number") {
           const key = `${event.conversation_id}:${event.seq}`
@@ -664,6 +674,41 @@ export function ChatPanel({
           { ...last, content: last.content + event.content, streaming: !event.done },
         ]
       })
+    })
+
+    const offThinking = onChatThinking((event) => {
+      if (event.conversation_id !== conversationId) return
+      setMessages((prev) => {
+        const last = prev[prev.length - 1]
+        const appendThinking = (message: Message): Message => ({
+          ...message,
+          streaming: message.role === "assistant" ? true : message.streaming,
+          thinking: {
+            text: `${message.thinking?.text || ""}${event.content}`,
+            expanded: message.thinking?.expanded ?? false,
+          },
+        })
+
+        if (!last || last.role !== "assistant") {
+          return [
+            ...prev,
+            {
+              id: crypto.randomUUID(),
+              role: "assistant",
+              content: "",
+              streaming: true,
+              thinking: { text: event.content, expanded: false },
+            },
+          ]
+        }
+
+        return [...prev.slice(0, -1), appendThinking(last)]
+      })
+    })
+
+    const offUsage = onChatTokenUsage((event: ChatTokenUsageEvent) => {
+      if (event.conversation_id !== conversationId) return
+      setLastTokenUsage(event)
     })
 
     const offTool = onChatToolCall((event: ChatToolCallEvent) => {
@@ -718,7 +763,7 @@ export function ChatPanel({
       setPendingPermissionRequests((prev) => [...prev, event])
     })
 
-    return () => { offStream(); offTool(); offError(); offBackground(); offPermission() }
+    return () => { offStream(); offThinking(); offUsage(); offTool(); offError(); offBackground(); offPermission() }
   }, [conversationId])
 
   useEffect(() => {
@@ -744,6 +789,8 @@ export function ChatPanel({
     if (!message || sending || !loaded) return
     setInput("")
     setSending(true)
+    setStopRequested(false)
+    setLastTokenUsage(null)
     setMessages((prev) => [...prev, { id: crypto.randomUUID(), role: "user", content: message }])
     try {
       await aiChat(message, conversationId, {
@@ -757,6 +804,17 @@ export function ChatPanel({
       setMessages((prev) => [...prev, { id: crypto.randomUUID(), role: "system", content: "Chat request failed." }])
     } finally {
       setSending(false)
+    }
+  }
+
+  const handleStopGeneration = async () => {
+    if (!sending || stopRequested) return
+    setStopRequested(true)
+    try {
+      await stopGeneration(conversationId)
+    } catch {
+      setStopRequested(false)
+      setMessages((prev) => [...prev, { id: crypto.randomUUID(), role: "system", content: "Failed to stop generation." }])
     }
   }
 
@@ -991,6 +1049,11 @@ export function ChatPanel({
               ))}
             </div>
             <span className="text-xs text-[#787878]">/ for commands</span>
+            {lastTokenUsage && (
+              <span className="ml-auto text-xs tabular-nums text-[#787878]">
+                Tokens {lastTokenUsage.prompt_tokens} / {lastTokenUsage.completion_tokens}
+              </span>
+            )}
           </div>
           {showSlashMenu && (
             <div className="mb-2 grid grid-cols-2 gap-1 rounded-lg border border-[#373737] bg-[#1a1a1a] p-2">
@@ -1018,10 +1081,23 @@ export function ChatPanel({
               placeholder="Message Modeler AI...  / for commands"
               className="min-h-10 flex-1 resize-none border-0 bg-transparent text-sm shadow-none placeholder:text-[#787878] focus-visible:ring-0"
             />
-            <Button type="submit" size="icon" disabled={!canSend}
-              className="h-9 w-9 rounded-full bg-[#d4a574] text-[#111111] hover:bg-[#ebc396]">
-              <Send className="h-4 w-4" />
-            </Button>
+            {sending ? (
+              <Button
+                type="button"
+                size="icon"
+                disabled={stopRequested}
+                onClick={handleStopGeneration}
+                title={stopRequested ? "Stopping" : "Stop generation"}
+                className="h-9 w-9 rounded-full bg-[#f87171] text-[#111111] hover:bg-[#fca5a5]"
+              >
+                <SquareStop className="h-4 w-4" />
+              </Button>
+            ) : (
+              <Button type="submit" size="icon" disabled={!canSend}
+                className="h-9 w-9 rounded-full bg-[#d4a574] text-[#111111] hover:bg-[#ebc396]">
+                <Send className="h-4 w-4" />
+              </Button>
+            )}
           </div>
         </div>
       </form>

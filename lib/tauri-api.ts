@@ -80,6 +80,17 @@ export interface ChatStreamEvent {
   done: boolean
 }
 
+export interface ChatThinkingEvent {
+  conversation_id: string
+  content: string
+}
+
+export interface ChatTokenUsageEvent {
+  conversation_id: string
+  prompt_tokens: number
+  completion_tokens: number
+}
+
 export interface ChatErrorEvent {
   conversation_id: string
   message: string
@@ -211,6 +222,11 @@ export async function aiChat(
     serverBase,
     capabilities: options.capabilities ?? null,
   })
+}
+
+export async function stopGeneration(conversationId = "default"): Promise<void> {
+  if (!isTauri()) return
+  return invoke("stop_generation", { conversationId })
 }
 
 // ─── Events ─────────────────────────────────────────
@@ -354,6 +370,14 @@ export interface PermissionRequestEvent {
 
 export function onChatStream(callback: (event: ChatStreamEvent) => void): () => void {
   return listenEvent<ChatStreamEvent>("chat:stream", callback)
+}
+
+export function onChatThinking(callback: (event: ChatThinkingEvent) => void): () => void {
+  return listenEvent<ChatThinkingEvent>("chat:thinking", callback)
+}
+
+export function onChatTokenUsage(callback: (event: ChatTokenUsageEvent) => void): () => void {
+  return listenEvent<ChatTokenUsageEvent>("chat:token_usage", callback)
 }
 
 export function onChatToolCall(callback: (event: ChatToolCallEvent) => void): () => void {

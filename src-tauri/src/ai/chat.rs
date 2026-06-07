@@ -9,8 +9,8 @@ use crate::agent::state::AgentState;
 use claude_code_rs::ChatMessage;
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::sync::OnceLock;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Mutex, OnceLock};
 use tauri::{AppHandle, Emitter, State};
 
 #[derive(Debug, Clone, Serialize)]
@@ -47,6 +47,37 @@ pub struct ChatTokenUsage {
 pub struct ChatErrorEvent {
     pub conversation_id: String,
     pub message: String,
+}
+
+#[derive(Default)]
+pub struct StopFlags {
+    inner: Mutex<HashSet<String>>,
+}
+
+impl StopFlags {
+    fn request_stop(&self, conversation_id: &str) -> Result<(), String> {
+        self.inner
+            .lock()
+            .map_err(|e| e.to_string())?
+            .insert(conversation_id.to_string());
+        Ok(())
+    }
+
+    fn should_stop(&self, conversation_id: &str) -> Result<bool, String> {
+        Ok(self
+            .inner
+            .lock()
+            .map_err(|e| e.to_string())?
+            .contains(conversation_id))
+    }
+
+    fn clear(&self, conversation_id: &str) -> Result<(), String> {
+        self.inner
+            .lock()
+            .map_err(|e| e.to_string())?
+            .remove(conversation_id);
+        Ok(())
+    }
 }
 
 /// Approximate max tokens to send per request. Model-dependent;
@@ -323,6 +354,15 @@ pub fn set_ai_model(
 }
 
 #[tauri::command]
+pub fn stop_generation(
+    conversation_id: Option<String>,
+    stop_flags: State<'_, StopFlags>,
+) -> Result<(), String> {
+    let conversation_id = conversation_id.unwrap_or_else(|| "default".to_string());
+    stop_flags.request_stop(&conversation_id)
+}
+
+#[tauri::command]
 pub async fn ai_chat(
     message: String,
     conversation_id: Option<String>,
@@ -337,8 +377,10 @@ pub async fn ai_chat(
     config_state: State<'_, AiConfigState>,
     sessions: State<'_, ChatSessionStore>,
     permissions: State<'_, PermissionStore>,
+    stop_flags: State<'_, StopFlags>,
 ) -> Result<(), String> {
     let conversation_id = conversation_id.unwrap_or_else(|| "default".to_string());
+    stop_flags.clear(&conversation_id)?;
     let config = config_state.get()?;
     if config
         .api_key
@@ -400,6 +442,13 @@ pub async fn ai_chat(
     let mut stream_seq = 0u64;
 
     loop {
+        if stop_flags.should_stop(&conversation_id)? {
+            stop_flags.clear(&conversation_id)?;
+            stream_seq += 1;
+            emit_stream(&app, &conversation_id, stream_seq, String::new(), true);
+            return Ok(());
+        }
+
         let trimmed = compact_timestamped_context(&context_messages);
         let response = runtime
             .client()
@@ -425,8 +474,14 @@ pub async fn ai_chat(
         // Accumulated tool calls: index → {id, name, arguments}
         let mut tool_call_buf: HashMap<i64, ToolCallAccum> = HashMap::new();
         let mut finish_reason: Option<String> = None;
+        let mut stopped = false;
 
         while let Some(chunk) = stream.next().await {
+            if stop_flags.should_stop(&conversation_id)? {
+                stopped = true;
+                break;
+            }
+
             let bytes = chunk.map_err(|e| {
                 let msg = format!("Stream error: {e}");
                 emit_chat_error(&app, &conversation_id, &msg);
@@ -435,6 +490,11 @@ pub async fn ai_chat(
             buffer.push_str(&String::from_utf8_lossy(&bytes));
 
             while let Some(idx) = buffer.find('\n') {
+                if stop_flags.should_stop(&conversation_id)? {
+                    stopped = true;
+                    break;
+                }
+
                 let line = buffer[..idx].trim_end_matches('\r').to_string();
                 buffer = buffer[idx + 1..].to_string();
 
@@ -443,6 +503,12 @@ pub async fn ai_chat(
                         assistant_text.push_str(&content);
                         stream_seq += 1;
                         emit_stream(&app, &conversation_id, stream_seq, content, false);
+                    }
+                    StreamLine::Thinking(content) => {
+                        emit_thinking(&app, &conversation_id, content);
+                    }
+                    StreamLine::Usage(usage) => {
+                        emit_token_usage(&app, &conversation_id, usage);
                     }
                     StreamLine::ToolCall(tc) => {
                         let entry =
@@ -472,6 +538,18 @@ pub async fn ai_chat(
                     StreamLine::Ignore => {}
                 }
             }
+
+            if stopped {
+                break;
+            }
+        }
+
+        if stopped {
+            stop_flags.clear(&conversation_id)?;
+            sessions.push_assistant(&conversation_id, assistant_text)?;
+            stream_seq += 1;
+            emit_stream(&app, &conversation_id, stream_seq, String::new(), true);
+            return Ok(());
         }
 
         // Handle tool calls
@@ -532,6 +610,12 @@ pub async fn ai_chat(
             {
                 sessions.push_chat_message(&conversation_id, persisted)?;
             }
+            if stop_flags.should_stop(&conversation_id)? {
+                stop_flags.clear(&conversation_id)?;
+                stream_seq += 1;
+                emit_stream(&app, &conversation_id, stream_seq, String::new(), true);
+                return Ok(());
+            }
             tools = runtime.tool_definitions().await;
 
             // Continue loop — send tool results back to LLM (no hard limit)
@@ -539,6 +623,7 @@ pub async fn ai_chat(
         }
 
         // Normal completion (no tool calls, or finish_reason is "stop")
+        stop_flags.clear(&conversation_id)?;
         sessions.push_assistant(&conversation_id, assistant_text)?;
         stream_seq += 1;
         emit_stream(&app, &conversation_id, stream_seq, String::new(), true);
@@ -627,6 +712,27 @@ fn emit_tool(
     );
 }
 
+fn emit_thinking(app: &AppHandle, conversation_id: &str, content: String) {
+    let _ = app.emit(
+        "chat:thinking",
+        ChatThinkingEvent {
+            conversation_id: conversation_id.to_string(),
+            content,
+        },
+    );
+}
+
+fn emit_token_usage(app: &AppHandle, conversation_id: &str, usage: StreamTokenUsage) {
+    let _ = app.emit(
+        "chat:token_usage",
+        ChatTokenUsage {
+            conversation_id: conversation_id.to_string(),
+            prompt_tokens: usage.prompt_tokens,
+            completion_tokens: usage.completion_tokens,
+        },
+    );
+}
+
 fn emit_chat_error(app: &AppHandle, conversation_id: &str, message: &str) {
     let _ = app.emit(
         "chat:error",
@@ -647,6 +753,8 @@ struct ToolCallAccum {
 #[derive(Debug, PartialEq)]
 enum StreamLine {
     Content(String),
+    Thinking(String),
+    Usage(StreamTokenUsage),
     ToolCall(ToolCallChunk),
     Finish(String),
     Done,
@@ -659,6 +767,12 @@ struct ToolCallChunk {
     id: Option<String>,
     name: Option<String>,
     arguments: Option<String>,
+}
+
+#[derive(Debug, Deserialize, PartialEq)]
+struct StreamTokenUsage {
+    prompt_tokens: usize,
+    completion_tokens: usize,
 }
 
 fn parse_sse_line(line: &str) -> StreamLine {
@@ -677,6 +791,14 @@ fn parse_sse_line(line: &str) -> StreamLine {
         // Check finish_reason
         if let Some(ref reason) = choice.finish_reason {
             return StreamLine::Finish(reason.clone());
+        }
+
+        // Check thinking / reasoning deltas
+        if let Some(ref content) = choice.delta.reasoning_content {
+            return StreamLine::Thinking(content.clone());
+        }
+        if let Some(ref content) = choice.delta.reasoning {
+            return StreamLine::Thinking(content.clone());
         }
 
         // Check text content
@@ -698,13 +820,20 @@ fn parse_sse_line(line: &str) -> StreamLine {
         }
     }
 
+    if let Some(usage) = chunk.usage {
+        return StreamLine::Usage(usage);
+    }
+
     StreamLine::Ignore
 }
 
 /// Extended stream chunk with tool_call support (not in upstream claude_code_rs).
 #[derive(Debug, Deserialize)]
 struct ExtendedStreamChunk {
+    #[serde(default)]
     choices: Vec<ExtendedChoice>,
+    #[serde(default)]
+    usage: Option<StreamTokenUsage>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -717,6 +846,10 @@ struct ExtendedChoice {
 #[derive(Debug, Deserialize)]
 struct ExtendedDelta {
     content: Option<String>,
+    #[serde(default)]
+    reasoning_content: Option<String>,
+    #[serde(default)]
+    reasoning: Option<String>,
     #[serde(default)]
     tool_calls: Option<Vec<ExtendedToolCall>>,
 }
@@ -776,6 +909,42 @@ mod tests {
             }
             other => panic!("expected ToolCall, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn parses_reasoning_content_delta() {
+        let line = r#"data: {"id":"1","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"reasoning_content":"checking assumptions"},"finish_reason":null}]}"#;
+        assert_eq!(
+            parse_sse_line(line),
+            StreamLine::Thinking("checking assumptions".to_string())
+        );
+    }
+
+    #[test]
+    fn parses_final_token_usage() {
+        let line = r#"data: {"id":"1","object":"chat.completion.chunk","created":1,"model":"m","choices":[],"usage":{"prompt_tokens":123,"completion_tokens":45,"total_tokens":168}}"#;
+        assert_eq!(
+            parse_sse_line(line),
+            StreamLine::Usage(super::StreamTokenUsage {
+                prompt_tokens: 123,
+                completion_tokens: 45,
+            })
+        );
+    }
+
+    #[test]
+    fn stop_flags_are_keyed_by_conversation() {
+        let flags = super::StopFlags::default();
+        assert!(!flags.should_stop("a").unwrap());
+
+        flags.request_stop("a").unwrap();
+
+        assert!(flags.should_stop("a").unwrap());
+        assert!(!flags.should_stop("b").unwrap());
+
+        flags.clear("a").unwrap();
+
+        assert!(!flags.should_stop("a").unwrap());
     }
 
     #[test]

@@ -30,6 +30,7 @@ pub fn run() {
                 .unwrap_or_else(|_| PathBuf::from("data"));
             app.manage(ai::session::ChatSessionStore::new(app_data.clone()));
             app.manage(ai::permissions::PermissionStore::new(app_data.clone()));
+            app.manage(ai::chat::StopFlags::default());
 
             // ── Embedded server startup ──
             let handle = app.handle().clone();
@@ -62,6 +63,7 @@ pub fn run() {
             ai::chat::get_ai_config_status,
             ai::chat::set_ai_model,
             ai::chat::ai_chat,
+            ai::chat::stop_generation,
             ai::research::research_search_native,
             ai::research::research_extract_and_save,
             ai::session::list_sessions,
