@@ -30,6 +30,7 @@ pub struct ChatThinkingEvent {
 #[derive(Debug, Clone, Serialize)]
 pub struct ChatToolCallEvent {
     pub conversation_id: String,
+    pub id: Option<String>,
     pub name: String,
     pub arguments: serde_json::Value,
     pub output: String,
@@ -579,6 +580,7 @@ pub async fn ai_chat(
                 emit_tool(
                     &app,
                     &conversation_id,
+                    Some(&request.id),
                     &request.name,
                     &request.arguments,
                     "",
@@ -593,6 +595,7 @@ pub async fn ai_chat(
                 emit_tool(
                     &app,
                     &conversation_id,
+                    Some(&result.id),
                     &result.name,
                     &result.arguments,
                     &result.output,
@@ -695,6 +698,7 @@ fn emit_stream(app: &AppHandle, conversation_id: &str, seq: u64, content: String
 fn emit_tool(
     app: &AppHandle,
     conversation_id: &str,
+    id: Option<&str>,
     name: &str,
     arguments: &serde_json::Value,
     output: &str,
@@ -704,6 +708,7 @@ fn emit_tool(
         "chat:tool_call",
         ChatToolCallEvent {
             conversation_id: conversation_id.to_string(),
+            id: id.map(str::to_string),
             name: name.to_string(),
             arguments: arguments.clone(),
             output: output.to_string(),
@@ -986,6 +991,20 @@ mod tests {
             Some(1)
         );
         assert_eq!(persisted[1].tool_call_id.as_deref(), Some("call_1"));
+    }
+
+    #[test]
+    fn tool_call_event_can_carry_stable_id() {
+        let event = super::ChatToolCallEvent {
+            conversation_id: "default".to_string(),
+            id: Some("call_1".to_string()),
+            name: "web_search".to_string(),
+            arguments: serde_json::json!({ "query": "sir" }),
+            output: String::new(),
+            status: "running".to_string(),
+        };
+
+        assert_eq!(event.id.as_deref(), Some("call_1"));
     }
 
     #[cfg(feature = "accurate-tokenizer")]

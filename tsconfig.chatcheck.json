@@ -1,0 +1,22 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "incremental": false
+  },
+  "include": [
+    "components/chat/chat-panel.tsx",
+    "lib/**/*.ts",
+    "components/ui/**/*.tsx",
+    "hooks/**/*.ts",
+    "hooks/**/*.tsx",
+    "next-env.d.ts"
+  ],
+  "exclude": [
+    ".next",
+    "node_modules",
+    "morphic",
+    "claude-code",
+    "peri",
+    "claude-code-rust"
+  ]
+}

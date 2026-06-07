@@ -43,6 +43,20 @@ import {
 } from "@/components/ui/alert-dialog"
 import { cn } from "@/lib/utils"
 import {
+  appendAssistantError,
+  appendErrorTimeline,
+  appendThinkingTimeline,
+  applyStreamEvent,
+  assistantTimelineFromContent,
+  hasRenderableTimeline,
+  updateActiveAssistant,
+  upsertToolTimeline,
+  upsertUsageTimeline,
+  type AssistantTimelineItem,
+  type Message,
+  type ToolCallEntry,
+} from "@/components/chat/chat-timeline"
+import {
   aiChat,
   getAiConfigStatus,
   loadSession,
@@ -58,7 +72,6 @@ import {
   stopGeneration,
   type AiPermissionMode,
   type ChatBackgroundTaskEvent,
-  type ChatTokenUsageEvent,
   type PermissionRequestEvent,
   type SessionMessage as PersistedSessionMessage,
   type ChatToolCallEvent,
@@ -66,23 +79,6 @@ import {
 import { getToken, type ProjectCapability } from "@/lib/api"
 
 // ── types ──
-
-type Message = {
-  id: string
-  role: "user" | "assistant" | "system"
-  content: string
-  streaming?: boolean
-  thinking?: { text: string; expanded: boolean }
-  toolCalls?: ToolCallEntry[]
-}
-
-type ToolCallEntry = {
-  id?: string
-  name: string
-  arguments: Record<string, unknown>
-  output: string
-  status: "running" | "success" | "error"
-}
 
 type BackgroundTaskEntry = {
   taskId: string
@@ -141,17 +137,25 @@ function restoreMessages(sessionMessages: PersistedSessionMessage[]): Message[] 
 
   for (const message of sessionMessages) {
     if (message.role === "assistant" && (message.tool_calls?.length || 0) > 0) {
+      const timeline = assistantTimelineFromContent(message.content || "")
+      timeline.push(
+        ...(message.tool_calls || []).map((toolCall) => ({
+          id: toolCall.id,
+          type: "tool" as const,
+          toolCall: {
+            id: toolCall.id,
+            name: toolCall.function.name,
+            arguments: parseToolArguments(toolCall.function.arguments),
+            output: "",
+            status: "running" as const,
+          },
+        })),
+      )
       restored.push({
         id: crypto.randomUUID(),
         role: "assistant",
         content: message.content || "",
-        toolCalls: (message.tool_calls || []).map((toolCall) => ({
-          id: toolCall.id,
-          name: toolCall.function.name,
-          arguments: parseToolArguments(toolCall.function.arguments),
-          output: "",
-          status: "running",
-        })),
+        timeline,
       })
       activeAssistantIndex = restored.length - 1
       continue
@@ -160,25 +164,28 @@ function restoreMessages(sessionMessages: PersistedSessionMessage[]): Message[] 
     if (message.role === "tool") {
       if (activeAssistantIndex !== null) {
         const assistant = restored[activeAssistantIndex]
-        const toolCalls = assistant?.toolCalls || []
-        const index = toolCalls.findIndex((toolCall) => toolCall.id === message.tool_call_id)
-        if (index >= 0) {
-          const nextToolCalls = [...toolCalls]
-          nextToolCalls[index] = {
-            ...nextToolCalls[index],
-            output: message.content || "",
-            status: inferToolStatus(message.content || ""),
-          }
-          assistant.toolCalls = nextToolCalls
-        }
+        assistant.timeline = (assistant.timeline || []).map((item) =>
+          item.type === "tool" && item.toolCall.id === message.tool_call_id
+            ? {
+                ...item,
+                toolCall: {
+                  ...item.toolCall,
+                  output: message.content || "",
+                  status: inferToolStatus(message.content || ""),
+                },
+              }
+            : item,
+        )
       }
       continue
     }
 
+    const role = message.role as Message["role"]
     restored.push({
       id: crypto.randomUUID(),
-      role: message.role as Message["role"],
+      role,
       content: message.content || "",
+      timeline: role === "assistant" ? assistantTimelineFromContent(message.content || "") : undefined,
     })
     activeAssistantIndex = null
   }
@@ -283,15 +290,6 @@ const TOOL_META: Record<string, { label: string; tone: string; icon: typeof Wren
   fetch_url: { label: "Fetch URL", tone: "info", icon: Link2 },
   start_background_task: { label: "Background", tone: "warning", icon: Loader2 },
   save_reference: { label: "Save Reference", tone: "success", icon: Save },
-}
-
-function toolToneClasses(tone: string, status: ToolCallEntry["status"]) {
-  if (status === "error") return "border-l-[#f44336] bg-[#1a1111] shadow-[0_0_0_1px_rgba(244,67,54,0.18)]"
-  if (status === "running") return "border-l-[#64b5f6] bg-[#121820] shadow-[0_0_28px_rgba(100,181,246,0.10)]"
-  if (tone === "success") return "border-l-[#4caf50] bg-[#111811] shadow-[0_0_0_1px_rgba(76,175,80,0.12)]"
-  if (tone === "warning") return "border-l-[#ff9800] bg-[#1b150d] shadow-[0_0_0_1px_rgba(255,152,0,0.12)]"
-  if (tone === "info") return "border-l-[#64b5f6] bg-[#10161d] shadow-[0_0_0_1px_rgba(100,181,246,0.12)]"
-  return "border-l-[#8d6e63] bg-[#171412] shadow-[0_0_0_1px_rgba(212,165,116,0.10)]"
 }
 
 function compactValue(value: unknown): string {
@@ -469,53 +467,59 @@ function WebSearchResults({ output }: { output: string }) {
   )
 }
 
+function ToolStatusDot({ status }: { status: ToolCallEntry["status"] }) {
+  return (
+    <span
+      className={cn(
+        "h-2 w-2 shrink-0 rounded-full",
+        status === "running" && "cc-live-dot bg-[#64b5f6]",
+        status === "success" && "bg-[#4caf50]",
+        status === "error" && "bg-[#f44336]",
+      )}
+    />
+  )
+}
+
 function ToolCallCard({ tc }: { tc: ToolCallEntry }) {
-  const [expanded, setExpanded] = useState(tc.status === "running")
+  const [expanded, setExpanded] = useState(tc.status === "error")
   const meta = TOOL_META[tc.name] || { label: tc.name, tone: "neutral", icon: Wrench }
   const Icon = meta.icon
   const summary = primaryToolArg(tc.arguments)
   const statusLabel = tc.status === "running" ? "Running" : tc.status === "success" ? "Done" : "Error"
 
+  useEffect(() => {
+    if (tc.status === "error") setExpanded(true)
+  }, [tc.status])
+
   return (
     <div
       className={cn(
-        "cc-tool-card my-2 overflow-hidden rounded-lg border border-[#373737] border-l-2",
-        toolToneClasses(meta.tone, tc.status),
-        tc.status === "running" && "cc-tool-card-running",
+        "cc-tool-card my-1 overflow-hidden rounded-md border border-transparent bg-[#111111]/45",
+        "hover:border-[#2a2a2a] hover:bg-[#151515]",
       )}
     >
       <button
         type="button"
-        className="flex w-full items-center gap-2 px-3 py-2 text-left"
+        className="flex w-full items-center gap-2 px-2 py-1.5 text-left"
         onClick={() => setExpanded((value) => !value)}
       >
-        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-[#373737] bg-[#232323] text-[#d4a574]">
-          <Icon className="h-3.5 w-3.5" />
-        </span>
+        <ToolStatusDot status={tc.status} />
+        <Icon className="h-3.5 w-3.5 shrink-0 text-[#787878]" />
         <span className="min-w-0 flex-1">
-          <span className="flex items-center gap-2">
-            <span className="text-xs font-semibold text-[#e8e8e8]">{meta.label}</span>
-            <span className="rounded-full border border-[#373737] bg-[#0d0d0d] px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-[#787878]">
-              {tc.name}
-            </span>
+          <span className="flex min-w-0 items-baseline gap-2">
+            <span className="shrink-0 text-xs font-medium text-[#e8e8e8]">{meta.label}</span>
+            <span className="min-w-0 truncate font-mono text-[11px] text-[#787878]">{tc.name}</span>
           </span>
           {summary && <span className="mt-0.5 block truncate font-mono text-[11px] text-[#b4b4b4]">{summary}</span>}
         </span>
-        <span className="flex items-center gap-1.5 text-[11px] text-[#b4b4b4]">
-          {tc.status === "running" ? (
-            <Loader2 className="h-3.5 w-3.5 animate-spin text-[#64b5f6]" />
-          ) : tc.status === "success" ? (
-            <CheckCircle2 className="h-3.5 w-3.5 text-[#4caf50]" />
-          ) : (
-            <AlertCircle className="h-3.5 w-3.5 text-[#f44336]" />
-          )}
+        <span className="text-[11px] text-[#787878]">
           {statusLabel}
         </span>
         {expanded ? <ChevronDown className="h-3.5 w-3.5 text-[#787878]" /> : <ChevronRight className="h-3.5 w-3.5 text-[#787878]" />}
       </button>
 
       {expanded && (
-        <div className="border-t border-[#373737] bg-[#0d0d0d]/45 px-3 py-2">
+        <div className="border-t border-[#242424] bg-[#0d0d0d]/55 px-3 py-2">
           {tc.name === "fetch_url" ? (
             <FetchedPageCard output={tc.output} />
           ) : tc.name === "web_search" ? (
@@ -601,6 +605,175 @@ function ThinkingStrip() {
 
 // ── main panel ──
 
+function TimelineThinkingItem({
+  item,
+  active,
+  onToggle,
+}: {
+  item: Extract<AssistantTimelineItem, { type: "thinking" }>
+  active?: boolean
+  onToggle: () => void
+}) {
+  return (
+    <div className="py-1">
+      <button
+        type="button"
+        onClick={onToggle}
+        className="flex items-center gap-1.5 text-xs text-[#787878] hover:text-[#b4b4b4]"
+      >
+        {item.expanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+        <span>{active ? "Thinking..." : "Thinking"}</span>
+        {active && <span className="cc-thinking-dot ml-1" />}
+      </button>
+      {item.expanded && (
+        <div className="mt-1 whitespace-pre-wrap border-l border-[#373737] pl-3 text-xs italic leading-5 text-[#787878]">
+          {item.text}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function TimelineTextItem({
+  item,
+  active,
+}: {
+  item: Extract<AssistantTimelineItem, { type: "text" }>
+  active?: boolean
+}) {
+  return (
+    <div className="cc-transcript-text py-1 text-sm leading-6 text-[#e8e8e8]">
+      <MarkdownContent content={item.content} />
+      {active && <span className="cc-stream-cursor mt-1 inline-block" />}
+    </div>
+  )
+}
+
+function TimelineUsageItem({ item }: { item: Extract<AssistantTimelineItem, { type: "usage" }> }) {
+  return (
+    <div className="mt-1 flex items-center gap-2 text-[11px] tabular-nums text-[#787878]">
+      <span className="h-px w-5 bg-[#373737]" />
+      <span>
+        Tokens {item.usage.prompt_tokens} prompt / {item.usage.completion_tokens} completion
+      </span>
+    </div>
+  )
+}
+
+function TimelineStatusItem({ item }: { item: Extract<AssistantTimelineItem, { type: "stopped" | "error" }> }) {
+  if (item.type === "stopped") {
+    return (
+      <div className="mt-1 flex items-center gap-2 text-xs text-[#787878]">
+        <span className="h-1.5 w-1.5 rounded-full bg-[#787878]" />
+        Generation stopped
+      </div>
+    )
+  }
+
+  return (
+    <div className="mt-1 flex items-start gap-2 rounded-md border border-[#f44336]/30 bg-[#2d1b1b]/45 px-2 py-1.5 text-xs text-[#ffb4b4]">
+      <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+      <span>{item.message}</span>
+    </div>
+  )
+}
+
+function TimelineItemView({
+  item,
+  message,
+  isLast,
+  onToggleThinking,
+}: {
+  item: AssistantTimelineItem
+  message: Message
+  isLast: boolean
+  onToggleThinking: (itemId: string) => void
+}) {
+  if (item.type === "thinking") {
+    return (
+      <TimelineThinkingItem
+        item={item}
+        active={message.streaming && isLast}
+        onToggle={() => onToggleThinking(item.id)}
+      />
+    )
+  }
+  if (item.type === "text") return <TimelineTextItem item={item} active={message.streaming && isLast} />
+  if (item.type === "tool") return <ToolCallCard tc={item.toolCall} />
+  if (item.type === "usage") return <TimelineUsageItem item={item} />
+  return <TimelineStatusItem item={item} />
+}
+
+function TranscriptTurn({
+  message,
+  onToggleThinking,
+}: {
+  message: Message
+  onToggleThinking: (messageId: string, itemId: string) => void
+}) {
+  if (message.role === "user") {
+    return (
+      <div className="flex justify-end gap-3">
+        <div className="max-w-[78%] rounded-lg bg-[#d4a574] px-3 py-2 text-sm leading-5 text-[#111111]">
+          <div className="whitespace-pre-wrap">{message.content}</div>
+        </div>
+        <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[#2d2d2d] text-[#e8e8e8]">
+          <UserRound className="h-3.5 w-3.5" />
+        </div>
+      </div>
+    )
+  }
+
+  if (message.role === "system") {
+    return (
+      <div className="flex gap-3">
+        <div className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-[#f44336]/40 bg-[#2d1b1b] text-[#ffb4b4]">
+          <AlertCircle className="h-3.5 w-3.5" />
+        </div>
+        <div className="max-w-[82%] rounded-md border border-[#f44336]/40 bg-[#2d1b1b] px-3 py-2 text-sm text-[#ffb4b4]">
+          {message.content}
+        </div>
+      </div>
+    )
+  }
+
+  const timeline = message.timeline || assistantTimelineFromContent(message.content)
+
+  return (
+    <div className="flex gap-3">
+      <OrangeMark className="mt-0.5 h-7 w-7 shrink-0" />
+      <div
+        className={cn(
+          "min-w-0 flex-1 border-l border-[#2a2a2a] pl-3",
+          message.streaming && "border-[#d4a574]/55",
+        )}
+      >
+        <div className="mb-1 flex items-center gap-2 text-[11px] uppercase tracking-[0.16em] text-[#787878]">
+          <span>Modeler</span>
+          {message.streaming && <span className="cc-live-dot h-1.5 w-1.5 rounded-full bg-[#64b5f6]" />}
+        </div>
+        {hasRenderableTimeline(message) ? (
+          <div className="grid gap-1">
+            {timeline.map((item, index) => (
+              <TimelineItemView
+                key={item.id}
+                item={item}
+                message={message}
+                isLast={index === timeline.length - 1}
+                onToggleThinking={(itemId) => onToggleThinking(message.id, itemId)}
+              />
+            ))}
+          </div>
+        ) : message.streaming ? (
+          <ThinkingStrip />
+        ) : (
+          <div className="py-1 text-xs text-[#787878]">No response received.</div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 export function ChatPanel({
   conversationId = "default",
   projectId,
@@ -621,11 +794,30 @@ export function ChatPanel({
   const [backgroundTasks, setBackgroundTasks] = useState<BackgroundTaskEntry[]>([])
   const [pendingPermissionRequests, setPendingPermissionRequests] = useState<PendingPermissionRequest[]>([])
   const [resolvingPermission, setResolvingPermission] = useState(false)
-  const [lastTokenUsage, setLastTokenUsage] = useState<ChatTokenUsageEvent | null>(null)
   const [stopRequested, setStopRequested] = useState(false)
   const [showSlashMenu, setShowSlashMenu] = useState(false)
   const scrollRef = useRef<HTMLDivElement>(null)
   const seenStreamEventsRef = useRef<Set<string>>(new Set())
+  const stopRequestedRef = useRef(false)
+
+  const setStopRequestedState = useCallback((value: boolean) => {
+    stopRequestedRef.current = value
+    setStopRequested(value)
+  }, [])
+
+  const toggleThinkingItem = useCallback((messageId: string, itemId: string) => {
+    setMessages((prev) => prev.map((message) => {
+      if (message.id !== messageId || !message.timeline) return message
+      return {
+        ...message,
+        timeline: message.timeline.map((item) =>
+          item.type === "thinking" && item.id === itemId
+            ? { ...item, expanded: !item.expanded }
+            : item,
+        ),
+      }
+    }))
+  }, [])
 
   useEffect(() => {
     getAiConfigStatus()
@@ -639,8 +831,7 @@ export function ChatPanel({
     setLoaded(false)
     setBackgroundTasks([])
     setPendingPermissionRequests([])
-    setLastTokenUsage(null)
-    setStopRequested(false)
+    setStopRequestedState(false)
     loadSession(conversationId).then((session) => {
       const restored = restoreMessages(session.messages || [])
       setMessages(restored)
@@ -658,86 +849,58 @@ export function ChatPanel({
   useEffect(() => {
     const offStream = onChatStream((event) => {
       if (event.conversation_id !== conversationId) return
-      if (event.done) setStopRequested(false)
+      const wasStopRequested = event.done && stopRequestedRef.current
+      if (event.done) setStopRequestedState(false)
       setMessages((prev) => {
         if (typeof event.seq === "number") {
           const key = `${event.conversation_id}:${event.seq}`
           if (seenStreamEventsRef.current.has(key)) return prev
           seenStreamEventsRef.current.add(key)
         }
-        const last = prev[prev.length - 1]
-        if (!last || last.role !== "assistant" || !last.streaming) {
-          return [...prev, { id: crypto.randomUUID(), role: "assistant", content: event.content, streaming: !event.done }]
-        }
-        return [
-          ...prev.slice(0, -1),
-          { ...last, content: last.content + event.content, streaming: !event.done },
-        ]
+        return applyStreamEvent(prev, event, wasStopRequested)
       })
     })
 
     const offThinking = onChatThinking((event) => {
       if (event.conversation_id !== conversationId) return
       setMessages((prev) => {
-        const last = prev[prev.length - 1]
-        const appendThinking = (message: Message): Message => ({
+        return updateActiveAssistant(prev, (message) => ({
           ...message,
-          streaming: message.role === "assistant" ? true : message.streaming,
-          thinking: {
-            text: `${message.thinking?.text || ""}${event.content}`,
-            expanded: message.thinking?.expanded ?? false,
-          },
-        })
-
-        if (!last || last.role !== "assistant") {
-          return [
-            ...prev,
-            {
-              id: crypto.randomUUID(),
-              role: "assistant",
-              content: "",
-              streaming: true,
-              thinking: { text: event.content, expanded: false },
-            },
-          ]
-        }
-
-        return [...prev.slice(0, -1), appendThinking(last)]
+          streaming: true,
+          timeline: appendThinkingTimeline(message.timeline || [], event.content),
+        }))
       })
     })
 
-    const offUsage = onChatTokenUsage((event: ChatTokenUsageEvent) => {
+    const offUsage = onChatTokenUsage((event) => {
       if (event.conversation_id !== conversationId) return
-      setLastTokenUsage(event)
+      setMessages((prev) => updateActiveAssistant(prev, (message) => ({
+        ...message,
+        timeline: upsertUsageTimeline(message.timeline || [], event),
+      })))
     })
 
     const offTool = onChatToolCall((event: ChatToolCallEvent) => {
       if (event.conversation_id !== conversationId) return
       const entry: ToolCallEntry = {
+        id: event.id,
         name: event.name,
         arguments: event.arguments as Record<string, unknown>,
         output: event.output,
         status: event.status as ToolCallEntry["status"],
       }
       setMessages((prev) => {
-        const last = prev[prev.length - 1]
-        if (!last || last.role !== "assistant" || !last.streaming) {
-          return [...prev, { id: crypto.randomUUID(), role: "assistant", content: "", toolCalls: [entry], streaming: true }]
-        }
-        // Merge tool calls on the last assistant message
-        const existing = last.toolCalls || []
-        const updatedIndex = existing.findIndex((tc) => tc.name === entry.name && tc.status === "running")
-        const nextToolCalls =
-          updatedIndex >= 0
-            ? existing.map((tc, i) => (i === updatedIndex ? entry : tc))
-            : [...existing, entry]
-        return [...prev.slice(0, -1), { ...last, toolCalls: nextToolCalls }]
+        return updateActiveAssistant(prev, (message) => ({
+          ...message,
+          streaming: true,
+          timeline: upsertToolTimeline(message.timeline || [], entry),
+        }))
       })
     })
 
     const offError = onChatError((event) => {
       if (event.conversation_id !== conversationId) return
-      setMessages((prev) => [...prev, { id: crypto.randomUUID(), role: "system", content: event.message }])
+      setMessages((prev) => appendAssistantError(prev, event.message))
     })
 
     const offBackground = onChatBackgroundTask((event: ChatBackgroundTaskEvent) => {
@@ -764,7 +927,7 @@ export function ChatPanel({
     })
 
     return () => { offStream(); offThinking(); offUsage(); offTool(); offError(); offBackground(); offPermission() }
-  }, [conversationId])
+  }, [conversationId, setStopRequestedState])
 
   useEffect(() => {
     if (pendingPermissionRequests.length === 0) return
@@ -789,9 +952,12 @@ export function ChatPanel({
     if (!message || sending || !loaded) return
     setInput("")
     setSending(true)
-    setStopRequested(false)
-    setLastTokenUsage(null)
-    setMessages((prev) => [...prev, { id: crypto.randomUUID(), role: "user", content: message }])
+    setStopRequestedState(false)
+    setMessages((prev) => [
+      ...prev,
+      { id: crypto.randomUUID(), role: "user", content: message },
+      { id: crypto.randomUUID(), role: "assistant", content: "", streaming: true, timeline: [] },
+    ])
     try {
       await aiChat(message, conversationId, {
         workspaceMode,
@@ -801,7 +967,7 @@ export function ChatPanel({
         capabilities,
       })
     } catch {
-      setMessages((prev) => [...prev, { id: crypto.randomUUID(), role: "system", content: "Chat request failed." }])
+      setMessages((prev) => appendAssistantError(prev, "Chat request failed."))
     } finally {
       setSending(false)
     }
@@ -809,12 +975,15 @@ export function ChatPanel({
 
   const handleStopGeneration = async () => {
     if (!sending || stopRequested) return
-    setStopRequested(true)
+    setStopRequestedState(true)
     try {
       await stopGeneration(conversationId)
     } catch {
-      setStopRequested(false)
-      setMessages((prev) => [...prev, { id: crypto.randomUUID(), role: "system", content: "Failed to stop generation." }])
+      setStopRequestedState(false)
+      setMessages((prev) => updateActiveAssistant(prev, (message) => ({
+        ...message,
+        timeline: appendErrorTimeline(message.timeline || [], "Failed to stop generation."),
+      })))
     }
   }
 
@@ -940,64 +1109,11 @@ export function ChatPanel({
         ) : (
           <div className="mx-auto flex max-w-3xl flex-col gap-3 px-4 py-4">
             {messages.map((message) => (
-              <div key={message.id} className={cn("flex gap-3", message.role === "user" && "justify-end")}>
-                {message.role !== "user" && (
-                  <OrangeMark className="mt-1 h-8 w-8 shrink-0" />
-                )}
-                <div className={cn(
-                  "max-w-[80%] rounded-2xl px-4 py-3 text-sm transition-shadow",
-                  message.role === "user" ? "bg-[#d4a574] text-[#111111]" :
-                  message.role === "system" ? "border border-[#f44336]/40 bg-[#2d1b1b] text-[#ffb4b4]" :
-                  "border border-[#373737] bg-[#1a1a1a] shadow-[0_0_0_1px_rgba(212,165,116,0.04)]",
-                  message.role === "assistant" && message.streaming && "shadow-[0_0_32px_rgba(212,165,116,0.08)]",
-                )}>
-                  {/* Thinking block */}
-                  {message.thinking && (
-                    <div className="mb-2">
-                      <button
-                        onClick={() => {
-                          setMessages((prev) => prev.map((m) =>
-                            m.id === message.id
-                              ? { ...m, thinking: { ...m.thinking!, expanded: !m.thinking!.expanded } }
-                              : m
-                          ))
-                        }}
-                        className="flex items-center gap-1 text-xs text-[#787878] hover:text-[#b4b4b4]"
-                      >
-                        {message.thinking.expanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-                        Thinking
-                      </button>
-                      {message.thinking.expanded && (
-                        <div className="mt-1 rounded-md border border-[#464646] bg-[#1e1e1e] p-2 text-xs italic text-[#787878]">
-                          {message.thinking.text}
-                        </div>
-                      )}
-                    </div>
-                  )}
-
-                  {/* Content */}
-                  {message.role === "user" ? (
-                    <div className="whitespace-pre-wrap">{message.content}</div>
-                  ) : message.role === "assistant" ? (
-                    <>
-                      <MarkdownContent content={message.content} />
-                      {message.streaming && <span className="cc-stream-cursor mt-1 inline-block" />}
-                    </>
-                  ) : (
-                    <div>{message.content}</div>
-                  )}
-
-                  {/* Tool call cards */}
-                  {message.toolCalls?.map((tc, i) => (
-                    <ToolCallCard key={i} tc={tc} />
-                  ))}
-                </div>
-                {message.role === "user" && (
-                  <div className="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#2d2d2d] text-[#e8e8e8]">
-                    <UserRound className="h-4 w-4" />
-                  </div>
-                )}
-              </div>
+              <TranscriptTurn
+                key={message.id}
+                message={message}
+                onToggleThinking={toggleThinkingItem}
+              />
             ))}
             {backgroundTasks.length > 0 && (
               <div className="ml-11 max-w-[80%]">
@@ -1049,11 +1165,6 @@ export function ChatPanel({
               ))}
             </div>
             <span className="text-xs text-[#787878]">/ for commands</span>
-            {lastTokenUsage && (
-              <span className="ml-auto text-xs tabular-nums text-[#787878]">
-                Tokens {lastTokenUsage.prompt_tokens} / {lastTokenUsage.completion_tokens}
-              </span>
-            )}
           </div>
           {showSlashMenu && (
             <div className="mb-2 grid grid-cols-2 gap-1 rounded-lg border border-[#373737] bg-[#1a1a1a] p-2">

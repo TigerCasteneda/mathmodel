@@ -342,6 +342,7 @@ export function onWorkDirChanged(callback: (path: string) => void): () => void {
 
 export interface ChatToolCallEvent {
   conversation_id: string
+  id?: string
   name: string
   arguments: Record<string, unknown>
   output: string
