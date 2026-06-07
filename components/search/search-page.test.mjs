@@ -20,3 +20,11 @@ test("research search ignores stale responses from older requests", () => {
   assert.match(workbenchSource, /const requestId = crypto\.randomUUID\(\)/)
   assert.match(workbenchSource, /if \(researchSearchIdRef\.current !== requestId\) return/)
 })
+
+test("research panel exposes URL analysis with stale-response protection", () => {
+  assert.match(apiSource, /researchAnalyzeUrl\(url: string\)/)
+  assert.match(workbenchSource, /researchAnalyzeUrl/)
+  assert.match(workbenchSource, /Analyze URL/)
+  assert.match(workbenchSource, /urlAnalyzeIdRef/)
+  assert.match(workbenchSource, /if \(urlAnalyzeIdRef\.current !== requestId\) return/)
+})

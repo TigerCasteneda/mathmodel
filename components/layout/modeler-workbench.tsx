@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react"
 import { useRouter } from "next/navigation"
-import { AlertCircle, BookOpen, CheckCircle2, Copy, Database, FileCode, FileImage, FileText, Folder, FolderOpen, Globe2, Library, Loader2, LogOut, MessageSquare, MonitorUp, MonitorX, RefreshCw, RotateCcw, Save, Search, Settings, SidebarIcon, Trash2 } from "lucide-react"
+import { AlertCircle, BookOpen, CheckCircle2, Copy, Database, FileCode, FileImage, FileText, Folder, FolderOpen, Globe2, Library, Link, Loader2, LogOut, MessageSquare, MonitorUp, MonitorX, RefreshCw, RotateCcw, Save, Search, Settings, SidebarIcon, Trash2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { ScrollArea } from "@/components/ui/scroll-area"
@@ -15,6 +15,7 @@ import {
   deleteSession,
   getAiConfigStatus,
   listSessions,
+  researchAnalyzeUrl,
   researchExtractAndSave,
   researchSearchNative,
   setAiConfig,
@@ -298,14 +299,17 @@ function ResearchSearchPanel({
 }) {
   const [items, setItems] = useState<ResearchItem[]>([])
   const [query, setQuery] = useState("")
+  const [urlInput, setUrlInput] = useState("")
   const [kind, setKind] = useState<ResearchSearchKind>("auto")
   const [results, setResults] = useState<NativeResearchSearchItem[]>([])
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [loading, setLoading] = useState(false)
+  const [urlAnalyzing, setUrlAnalyzing] = useState(false)
   const [loadingStage, setLoadingStage] = useState<"planning" | "searching" | "ranking">("planning")
   const [saving, setSaving] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
   const researchSearchIdRef = useRef<string | null>(null)
+  const urlAnalyzeIdRef = useRef<string | null>(null)
 
   useEffect(() => {
     listResearchItems(projectId).then(setItems).catch(() => setItems([]))
@@ -363,6 +367,29 @@ function ResearchSearchPanel({
     })
   }
 
+  const analyzeUrl = async () => {
+    const url = urlInput.trim()
+    if (!url) return
+    const requestId = crypto.randomUUID()
+    urlAnalyzeIdRef.current = requestId
+    setUrlAnalyzing(true)
+    setMessage(null)
+    try {
+      const item = await researchAnalyzeUrl(url)
+      if (urlAnalyzeIdRef.current !== requestId) return
+      setResults((prev) => [item, ...prev])
+      setSelected((prev) => new Set([0, ...Array.from(prev).map((index) => index + 1)]))
+      setUrlInput("")
+      setMessage("URL analyzed. Review the extracted source, then Save & Extract to add it to the Research library.")
+    } catch (error) {
+      if (urlAnalyzeIdRef.current !== requestId) return
+      setMessage(errorText(error, "URL analysis failed."))
+    } finally {
+      if (urlAnalyzeIdRef.current !== requestId) return
+      setUrlAnalyzing(false)
+    }
+  }
+
   const saveSelected = async () => {
     if (selectedResults.length === 0 || !canSave) return
     setSaving(true)
@@ -374,7 +401,8 @@ function ResearchSearchPanel({
         kind,
         auth_token: getToken(),
       })
-      setMessage(`Saved ${response.saved} item(s) and created ${response.files_created} research file(s).`)
+      const warningText = response.warnings?.length ? ` ${response.warnings.join(" ")}` : ""
+      setMessage(`Saved ${response.saved} item(s) and created ${response.files_created} research file(s).${warningText}`)
       setSelected(new Set())
       onKeepOpen()
       try {
@@ -426,6 +454,22 @@ function ResearchSearchPanel({
             </div>
             <Button onClick={runSearch} disabled={loading || !query.trim()} className="bg-[#d4a574] text-[#111111] hover:bg-[#ebc396]">
               {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
+            </Button>
+          </div>
+          <div className="flex gap-2">
+            <div className="relative flex-1">
+              <Link className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#787878]" />
+              <Input
+                value={urlInput}
+                onChange={(event) => setUrlInput(event.target.value)}
+                onKeyDown={(event) => { if (event.key === "Enter") analyzeUrl() }}
+                placeholder="Paste a paper, arXiv, DOI, GitHub, Gitee, dataset, or PDF URL"
+                className="border-[#373737] bg-[#232323] pl-9 text-sm"
+              />
+            </div>
+            <Button onClick={analyzeUrl} disabled={urlAnalyzing || !urlInput.trim()} variant="outline" className="border-[#373737] bg-[#1a1a1a] text-[#b4b4b4] hover:bg-[#232323] hover:text-[#e8e8e8]">
+              {urlAnalyzing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Link className="mr-2 h-4 w-4" />}
+              Analyze URL
             </Button>
           </div>
           {message && (

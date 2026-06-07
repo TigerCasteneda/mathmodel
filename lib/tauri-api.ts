@@ -270,6 +270,7 @@ export interface NativeResearchSaveResponse {
   saved: number
   items: unknown[]
   files_created: number
+  warnings?: string[] | null
 }
 
 export async function researchSearchNative(
@@ -285,10 +286,26 @@ export async function researchSearchNative(
   })
 }
 
+export async function researchAnalyzeUrl(url: string): Promise<NativeResearchSearchItem> {
+  if (!isTauri()) {
+    return {
+      title: url,
+      url,
+      content: "",
+      provider: "user_url",
+      source: "user_url",
+      category: "literature",
+      relevance_score: 0,
+      raw_json: {},
+    }
+  }
+  return invoke<NativeResearchSearchItem>("research_analyze_url", { url })
+}
+
 export async function researchExtractAndSave(
   request: NativeResearchSaveRequest,
 ): Promise<NativeResearchSaveResponse> {
-  if (!isTauri()) return { saved: 0, items: [], files_created: 0 }
+  if (!isTauri()) return { saved: 0, items: [], files_created: 0, warnings: [] }
   const serverBase = request.server_base ?? `http://127.0.0.1:${await getServerPort()}`
   return invoke<NativeResearchSaveResponse>("research_extract_and_save", {
     request: {

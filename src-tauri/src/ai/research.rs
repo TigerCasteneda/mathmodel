@@ -92,6 +92,12 @@ struct SearchTask {
     expected_category: String,
 }
 
+#[derive(Debug, Clone)]
+struct AcademicSourceProfile {
+    include_domains: Vec<&'static str>,
+    exclude_domains: Vec<&'static str>,
+}
+
 #[derive(Debug)]
 struct ProviderSearchResult {
     items: Vec<ResearchSearchItem>,
@@ -199,6 +205,136 @@ pub async fn research_search_native(
     })
 }
 
+#[tauri::command]
+pub async fn research_analyze_url(
+    url: String,
+    config_state: State<'_, AiConfigState>,
+) -> Result<ResearchSearchItem, String> {
+    let trimmed = url.trim();
+    if trimmed.is_empty() {
+        return Err("URL is empty.".to_string());
+    }
+
+    let config = config_state.get()?;
+    let mut item = analyze_url_hint(trimmed).map_err(|error| error.to_string())?;
+    match fetch_url_preview(trimmed).await {
+        Ok(preview) => {
+            if let Some(title) = preview.title.filter(|title| !title.trim().is_empty()) {
+                item.title = title;
+            }
+            if !preview.content.trim().is_empty() {
+                item.content = preview.content;
+            }
+            if let Some(content_type) = preview.content_type {
+                item.raw_json["content_type"] = json!(content_type);
+            }
+        }
+        Err(error) => {
+            item.raw_json["fetch_warning"] = json!(error.to_string());
+        }
+    }
+
+    if config
+        .api_key
+        .as_ref()
+        .is_some_and(|value| !value.trim().is_empty())
+    {
+        if let Ok(enriched) = enrich_analyzed_url_with_ai(&config, trimmed, &item).await {
+            apply_url_ai_enrichment(&mut item, &enriched);
+        }
+    }
+
+    Ok(item)
+}
+
+#[derive(Debug)]
+struct UrlPreview {
+    title: Option<String>,
+    content: String,
+    content_type: Option<String>,
+}
+
+async fn fetch_url_preview(url: &str) -> anyhow::Result<UrlPreview> {
+    let response = reqwest::Client::builder()
+        .timeout(PROVIDER_HTTP_TIMEOUT)
+        .build()?
+        .get(url)
+        .send()
+        .await?;
+    let status = response.status();
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .map(ToOwned::to_owned);
+    if !status.is_success() {
+        anyhow::bail!("URL fetch failed ({status})");
+    }
+    let bytes = response.bytes().await?;
+    let is_pdf = content_type
+        .as_deref()
+        .is_some_and(|value| value.to_ascii_lowercase().contains("pdf"))
+        || url.to_ascii_lowercase().ends_with(".pdf");
+    if is_pdf {
+        return Ok(UrlPreview {
+            title: None,
+            content: format!("PDF document available at {url}."),
+            content_type,
+        });
+    }
+    let max_len = bytes.len().min(60_000);
+    let text = String::from_utf8_lossy(&bytes[..max_len]).to_string();
+    let title = html_title(&text);
+    Ok(UrlPreview {
+        title,
+        content: html_to_text_snippet(&text),
+        content_type,
+    })
+}
+
+async fn enrich_analyzed_url_with_ai(
+    config: &AiConfig,
+    url: &str,
+    item: &ResearchSearchItem,
+) -> anyhow::Result<Value> {
+    let prompt = format!(
+        "Extract research metadata from this user-provided source. Return only JSON with optional keys: title, authors, publish_year, keywords, category, summary.\n\
+         category must be one of literature, dataset, code, formula, competition.\n\n\
+         URL: {url}\nTitle: {}\nContent:\n{}",
+        item.title,
+        truncate(&item.content, 5000)
+    );
+    let content = call_ai_text(
+        config,
+        "You extract concise metadata for mathematical modeling research sources.",
+        &prompt,
+    )
+    .await?;
+    Ok(parse_json_object(&content))
+}
+
+fn apply_url_ai_enrichment(item: &mut ResearchSearchItem, value: &Value) {
+    if let Some(title) = string_field(value, "title") {
+        item.title = title;
+    }
+    if let Some(authors) = string_field(value, "authors") {
+        item.authors = Some(authors);
+    }
+    if let Some(year) = value.get("publish_year").and_then(|value| value.as_i64()) {
+        item.publish_year = Some(year as i32);
+    }
+    if let Some(keywords) = string_field(value, "keywords") {
+        item.keywords = Some(keywords);
+    }
+    if let Some(category) = string_field(value, "category") {
+        item.category = category;
+    }
+    if let Some(summary) = string_field(value, "summary") {
+        item.content = summary;
+    }
+    item.raw_json["ai_url_metadata"] = value.clone();
+}
+
 fn append_warning(current: Option<String>, next: Option<String>) -> Option<String> {
     match (current, next) {
         (Some(current), Some(next)) => Some(format!("{current} {next}")),
@@ -206,6 +342,87 @@ fn append_warning(current: Option<String>, next: Option<String>) -> Option<Strin
         (None, Some(next)) => Some(next),
         (None, None) => None,
     }
+}
+
+fn academic_source_profile(kind: &ResearchSearchKind) -> AcademicSourceProfile {
+    let exclude_domains = vec![
+        "youtube.com",
+        "youtu.be",
+        "wikipedia.org",
+        "baike.baidu.com",
+        "bilibili.com",
+        "zhihu.com",
+        "csdn.net",
+        "medium.com",
+    ];
+    let include_domains = match kind {
+        ResearchSearchKind::Code => vec!["github.com", "gitee.com", "gitlab.com"],
+        ResearchSearchKind::Dataset => vec![
+            "kaggle.com",
+            "zenodo.org",
+            "figshare.com",
+            "data.gov",
+            "worldbank.org",
+            "nasa.gov",
+            "noaa.gov",
+            ".edu",
+            ".gov",
+        ],
+        ResearchSearchKind::Docs => vec!["context7.com"],
+        _ => vec![
+            "arxiv.org",
+            "doi.org",
+            "semanticscholar.org",
+            "openalex.org",
+            "crossref.org",
+            "pubmed.ncbi.nlm.nih.gov",
+            "ieeexplore.ieee.org",
+            "dl.acm.org",
+            "springer.com",
+            "sciencedirect.com",
+            "nature.com",
+            "wiley.com",
+            ".edu",
+            ".gov",
+        ],
+    };
+
+    AcademicSourceProfile {
+        include_domains,
+        exclude_domains,
+    }
+}
+
+fn host_from_url(url: &str) -> Option<String> {
+    reqwest::Url::parse(url)
+        .ok()
+        .and_then(|url| url.host_str().map(|host| host.to_ascii_lowercase()))
+}
+
+fn domain_matches(host: &str, pattern: &str) -> bool {
+    let pattern = pattern.to_ascii_lowercase();
+    if pattern.starts_with('.') {
+        return host.ends_with(&pattern);
+    }
+    host == pattern || host.ends_with(&format!(".{pattern}"))
+}
+
+fn is_allowed_academic_source(url: &str, kind: &ResearchSearchKind) -> bool {
+    let Some(host) = host_from_url(url) else {
+        return false;
+    };
+    let profile = academic_source_profile(kind);
+    if profile
+        .exclude_domains
+        .iter()
+        .any(|domain| domain_matches(&host, domain))
+    {
+        return false;
+    }
+    profile
+        .include_domains
+        .iter()
+        .any(|domain| domain_matches(&host, domain))
 }
 
 fn manual_search_tasks(kind: &ResearchSearchKind, query: &str) -> Vec<SearchTask> {
@@ -227,7 +444,9 @@ async fn plan_search_tasks(config: &AiConfig, query: &str) -> anyhow::Result<Vec
         "Plan a research search for this modeling query. Return only JSON with a tasks array. \
          Each task must have kind, query, reason, expected_category. \
          kind must be one of web, paper, dataset, code, docs. \
-         Use at most 4 tasks and do not invent providers.\n\nQuery: {query}"
+         Use at most 4 tasks and do not invent providers. \
+         Strictly prefer academic, official, dataset, and code repository sources. \
+         Do not plan encyclopedia, video, forum, blog, or SEO content as fallback.\n\nQuery: {query}"
     );
     let content = call_ai_text(
         config,
@@ -585,31 +804,14 @@ async fn search_firecrawl(
         .as_deref()
         .filter(|value| !value.trim().is_empty())
         .ok_or_else(|| anyhow::anyhow!("Firecrawl API key is not configured."))?;
-    let primary_body = firecrawl_search_request(
-        api_key,
-        json!({
-            "query": query,
-            "limit": limit,
-            "scrapeOptions": {
-                "formats": [{ "type": "markdown" }],
-                "onlyMainContent": true
-            }
-        }),
-    )
-    .await;
+    let primary_body =
+        firecrawl_search_request(api_key, firecrawl_search_body(query, kind, limit, false)).await;
     let (body, warning) = match primary_body {
         Ok(body) => (body, None),
         Err(primary_error) => {
             let fallback_body = firecrawl_search_request(
                 api_key,
-                json!({
-                    "query": query,
-                    "limit": limit,
-                    "scrapeOptions": {
-                        "formats": ["markdown"],
-                        "onlyMainContent": true
-                    }
-                }),
+                firecrawl_search_body(query, kind, limit, true),
             )
             .await
             .map_err(|fallback_error| {
@@ -630,10 +832,35 @@ async fn search_firecrawl(
     Ok(ProviderSearchResult {
         items: values
             .into_iter()
-            .take(limit as usize)
             .map(|value| firecrawl_item(value, kind))
+            .filter(|item| is_allowed_academic_source(&item.url, kind))
+            .take(limit as usize)
             .collect(),
         warning,
+    })
+}
+
+fn firecrawl_search_body(
+    query: &str,
+    kind: &ResearchSearchKind,
+    limit: u64,
+    legacy_formats: bool,
+) -> Value {
+    let profile = academic_source_profile(kind);
+    let formats = if legacy_formats {
+        json!(["markdown"])
+    } else {
+        json!([{ "type": "markdown" }])
+    };
+    json!({
+        "query": query,
+        "limit": limit,
+        "includeDomains": profile.include_domains,
+        "excludeDomains": profile.exclude_domains,
+        "scrapeOptions": {
+            "formats": formats,
+            "onlyMainContent": true
+        }
     })
 }
 
@@ -887,6 +1114,139 @@ fn context7_body_to_markdown(body: &str) -> String {
     } else {
         chunks.join("\n\n")
     }
+}
+
+fn analyze_url_hint(url: &str) -> anyhow::Result<ResearchSearchItem> {
+    let parsed = reqwest::Url::parse(url)?;
+    let host = parsed.host_str().unwrap_or("").to_ascii_lowercase();
+    let path = parsed.path().trim_matches('/');
+    let mut category = "literature";
+    let mut provider = "user_url";
+    let mut title = title_from_url_path(path).unwrap_or_else(|| host.clone());
+    let mut raw_json = json!({
+        "source_profile": "user_url",
+        "analyzed_url": url,
+    });
+
+    if host.ends_with("github.com") {
+        category = "code";
+        provider = "github";
+        title = repo_title_from_path(path).unwrap_or(title);
+    } else if host.ends_with("gitee.com") {
+        category = "code";
+        provider = "gitee";
+        title = repo_title_from_path(path).unwrap_or(title);
+    } else if host.ends_with("gitlab.com") {
+        category = "code";
+        provider = "gitlab";
+        title = repo_title_from_path(path).unwrap_or(title);
+    } else if host.ends_with("kaggle.com")
+        || host.ends_with("zenodo.org")
+        || host.ends_with("figshare.com")
+        || host.ends_with("data.gov")
+    {
+        category = "dataset";
+        provider = "dataset_url";
+    } else if host.ends_with("arxiv.org") {
+        provider = "arxiv";
+        if let Some(pdf_url) = arxiv_pdf_url(&parsed) {
+            raw_json["pdf_url"] = json!(pdf_url);
+        }
+    } else if host.ends_with("doi.org") {
+        provider = "doi";
+    }
+
+    if parsed.path().to_ascii_lowercase().ends_with(".pdf") {
+        provider = if provider == "user_url" {
+            "pdf_url"
+        } else {
+            provider
+        };
+        raw_json["pdf_url"] = json!(url);
+        raw_json["attachment_filename"] = json!(format!("{title}.pdf"));
+    }
+
+    Ok(ResearchSearchItem {
+        title,
+        url: url.to_string(),
+        content: format!("User-provided research source: {url}"),
+        provider: provider.to_string(),
+        source: "user_url".to_string(),
+        category: category.to_string(),
+        authors: None,
+        publish_year: None,
+        keywords: None,
+        relevance_score: 1.0,
+        raw_json,
+        planned_kind: None,
+        planned_query: None,
+        reason: Some("User-provided URL analysis".to_string()),
+        rank: None,
+    })
+}
+
+fn arxiv_pdf_url(url: &reqwest::Url) -> Option<String> {
+    let mut segments = url.path_segments()?;
+    match segments.next()? {
+        "abs" => segments
+            .next()
+            .map(|id| format!("https://arxiv.org/pdf/{id}.pdf")),
+        "pdf" => Some(url.to_string()),
+        _ => None,
+    }
+}
+
+fn repo_title_from_path(path: &str) -> Option<String> {
+    let parts = path
+        .split('/')
+        .filter(|part| !part.trim().is_empty())
+        .take(2)
+        .collect::<Vec<_>>();
+    if parts.len() == 2 {
+        Some(format!("{}/{}", parts[0], parts[1]))
+    } else {
+        None
+    }
+}
+
+fn title_from_url_path(path: &str) -> Option<String> {
+    path.rsplit('/')
+        .find(|part| !part.trim().is_empty())
+        .map(|part| {
+            part.trim_end_matches(".pdf")
+                .replace(['-', '_'], " ")
+                .trim()
+                .to_string()
+        })
+        .filter(|value| !value.is_empty())
+}
+
+fn html_title(html: &str) -> Option<String> {
+    let lower = html.to_ascii_lowercase();
+    let start = lower.find("<title")?;
+    let start_close = lower[start..].find('>')? + start + 1;
+    let end = lower[start_close..].find("</title>")? + start_close;
+    Some(html[start_close..end].trim().to_string()).filter(|value| !value.is_empty())
+}
+
+fn html_to_text_snippet(html: &str) -> String {
+    let mut text = String::with_capacity(html.len().min(10_000));
+    let mut in_tag = false;
+    for ch in html.chars() {
+        match ch {
+            '<' => in_tag = true,
+            '>' => {
+                in_tag = false;
+                text.push(' ');
+            }
+            _ if !in_tag => text.push(ch),
+            _ => {}
+        }
+        if text.len() >= 10_000 {
+            break;
+        }
+    }
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 async fn extract_item(
@@ -1271,5 +1631,64 @@ mod tests {
         let error = collect_provider_task_outcomes(&tasks, outcomes, 8).unwrap_err();
 
         assert!(error.to_string().contains("Firecrawl unavailable"));
+    }
+
+    #[test]
+    fn academic_source_profile_for_code_includes_github_gitee_and_excludes_video_sites() {
+        let profile = academic_source_profile(&ResearchSearchKind::Code);
+
+        assert!(profile.include_domains.contains(&"github.com"));
+        assert!(profile.include_domains.contains(&"gitee.com"));
+        assert!(profile.exclude_domains.contains(&"youtube.com"));
+        assert!(profile.exclude_domains.contains(&"wikipedia.org"));
+    }
+
+    #[test]
+    fn academic_source_filter_rejects_low_quality_domains() {
+        assert!(is_allowed_academic_source(
+            "https://arxiv.org/abs/2401.00001",
+            &ResearchSearchKind::Paper
+        ));
+        assert!(is_allowed_academic_source(
+            "https://gitee.com/model/repo",
+            &ResearchSearchKind::Code
+        ));
+        assert!(!is_allowed_academic_source(
+            "https://www.youtube.com/watch?v=abc",
+            &ResearchSearchKind::Paper
+        ));
+        assert!(!is_allowed_academic_source(
+            "https://en.wikipedia.org/wiki/Traffic_flow",
+            &ResearchSearchKind::Web
+        ));
+    }
+
+    #[test]
+    fn firecrawl_search_body_carries_academic_domain_controls() {
+        let body = firecrawl_search_body("traffic gnn", &ResearchSearchKind::Paper, 8, false);
+
+        let include_domains = body["includeDomains"].as_array().unwrap();
+        let exclude_domains = body["excludeDomains"].as_array().unwrap();
+
+        assert!(include_domains.iter().any(|value| value == "arxiv.org"));
+        assert!(exclude_domains.iter().any(|value| value == "youtube.com"));
+    }
+
+    #[test]
+    fn url_analysis_hint_recognizes_pdf_arxiv_github_and_gitee() {
+        let pdf = analyze_url_hint("https://example.edu/paper.pdf").unwrap();
+        let arxiv = analyze_url_hint("https://arxiv.org/abs/2401.00001").unwrap();
+        let github = analyze_url_hint("https://github.com/org/repo").unwrap();
+        let gitee = analyze_url_hint("https://gitee.com/org/repo").unwrap();
+
+        assert_eq!(pdf.category, "literature");
+        assert_eq!(pdf.raw_json["pdf_url"], "https://example.edu/paper.pdf");
+        assert_eq!(
+            arxiv.raw_json["pdf_url"],
+            "https://arxiv.org/pdf/2401.00001.pdf"
+        );
+        assert_eq!(github.category, "code");
+        assert_eq!(gitee.category, "code");
+        assert_eq!(gitee.provider, "gitee");
     }
 }

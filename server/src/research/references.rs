@@ -6,6 +6,12 @@ use yrs::Transact;
 
 use super::model::SaveItemInput;
 
+#[derive(Debug, Clone)]
+pub struct PdfAttachment {
+    pub url: String,
+    pub filename: String,
+}
+
 /// Generate a references/<slug>.md file body from an AI-saved source.
 pub fn render_md(input: &SaveItemInput) -> String {
     let category_label = category_label(&input.category);
@@ -67,6 +73,53 @@ fn category_label(cat: &str) -> &str {
         "formula" => "Formula",
         "competition" => "Competition",
         _ => "Literature",
+    }
+}
+
+pub fn pdf_attachment_from_input(input: &SaveItemInput) -> Option<PdfAttachment> {
+    let raw_json = input.raw_json.as_ref()?;
+    let url = raw_json
+        .get("pdf_url")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| value.starts_with("http://") || value.starts_with("https://"))?;
+    let filename = raw_json
+        .get("attachment_filename")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(&input.title);
+    Some(PdfAttachment {
+        url: url.to_string(),
+        filename: sanitize_attachment_filename(filename),
+    })
+}
+
+fn sanitize_attachment_filename(filename: &str) -> String {
+    let mut cleaned = filename
+        .chars()
+        .map(|ch| {
+            if ch.is_alphanumeric() || ch == '-' || ch == '_' || ch == '.' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('_')
+        .to_string();
+    if cleaned.is_empty() {
+        cleaned = "research-paper.pdf".to_string();
+    }
+    if !cleaned.to_ascii_lowercase().ends_with(".pdf") {
+        cleaned.push_str(".pdf");
+    }
+    if cleaned.len() > 96 {
+        let mut truncated = cleaned.chars().take(92).collect::<String>();
+        truncated.push_str(".pdf");
+        truncated
+    } else {
+        cleaned
     }
 }
 
@@ -157,6 +210,62 @@ pub async fn create_cloud_text_file(
     Ok(())
 }
 
+pub async fn create_cloud_binary_file(
+    pool: &sqlx::SqlitePool,
+    project_id: &str,
+    file_id: &str,
+    file_name: &str,
+    mime_type: &str,
+    content: &[u8],
+) -> Result<(), AppError> {
+    let now = Utc::now().timestamp();
+    let suffix = file_id.chars().take(8).collect::<String>();
+    let file_stem = file_name
+        .trim_end_matches(".pdf")
+        .trim_end_matches(".PDF")
+        .trim_matches('_');
+    let file_name = if file_stem.is_empty() {
+        format!("research-paper-{suffix}.pdf")
+    } else {
+        format!("{file_stem}-{suffix}.pdf")
+    };
+    let parent_id: Option<String> = sqlx::query_scalar(
+        "SELECT id FROM files
+         WHERE project_id = ?
+           AND parent_id IS NULL
+           AND name = 'Research'
+           AND type = 'folder'
+           AND zone = 'research'
+         LIMIT 1",
+    )
+    .bind(project_id)
+    .fetch_optional(pool)
+    .await?;
+
+    sqlx::query(
+        "INSERT INTO files (id, project_id, parent_id, name, type, mime_type, size, zone, created_at, updated_at)
+         VALUES (?, ?, ?, ?, 'file', ?, ?, 'research', ?, ?)",
+    )
+    .bind(file_id)
+    .bind(project_id)
+    .bind(&parent_id)
+    .bind(&file_name)
+    .bind(mime_type)
+    .bind(content.len() as i64)
+    .bind(now)
+    .bind(now)
+    .execute(pool)
+    .await?;
+
+    sqlx::query("INSERT INTO file_blobs (file_id, content) VALUES (?, ?)")
+        .bind(file_id)
+        .bind(content)
+        .execute(pool)
+        .await?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -188,5 +297,33 @@ mod tests {
         assert!(md.contains("## Key Parameters"));
         assert!(md.contains("## Relevance to Project"));
         assert!(md.contains("## BibTeX"));
+    }
+
+    #[test]
+    fn pdf_attachment_metadata_reads_raw_json() {
+        let input = SaveItemInput {
+            title: "Traffic Flow Paper".to_string(),
+            url: "https://example.edu/paper".to_string(),
+            content: "body".to_string(),
+            category: "literature".to_string(),
+            summary: None,
+            authors: None,
+            publish_year: None,
+            keywords: None,
+            methodology: None,
+            key_parameters: None,
+            ai_relevance: None,
+            relevance_score: None,
+            bibtex: None,
+            raw_json: Some(serde_json::json!({
+                "pdf_url": "https://example.edu/paper.pdf",
+                "attachment_filename": "Traffic Flow Paper.pdf"
+            })),
+        };
+
+        let attachment = pdf_attachment_from_input(&input).unwrap();
+
+        assert_eq!(attachment.url, "https://example.edu/paper.pdf");
+        assert_eq!(attachment.filename, "Traffic_Flow_Paper.pdf");
     }
 }

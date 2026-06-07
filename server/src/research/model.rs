@@ -54,6 +54,7 @@ pub struct SaveItemsResponse {
     pub saved: i32,
     pub items: Vec<ResearchItem>,
     pub files_created: i32,
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]

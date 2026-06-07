@@ -72,6 +72,7 @@ async fn save_items(
 
     let mut saved = Vec::new();
     let mut files_created = 0i32;
+    let mut warnings = Vec::new();
     let now = Utc::now().timestamp();
 
     for input in &req.items {
@@ -94,6 +95,7 @@ async fn save_items(
         if let Some(bibtex) = &input.bibtex {
             raw_value["bibtex"] = serde_json::json!(bibtex);
         }
+        let pdf_attachment = references::pdf_attachment_from_input(input);
         let raw_json = raw_value.to_string();
 
         sqlx::query(
@@ -153,6 +155,52 @@ async fn save_items(
                         Err(err) => tracing::warn!("Failed to create cloud bib file: {err:?}"),
                     }
                 }
+                if let Some(attachment) = pdf_attachment {
+                    let pdf_file_id = Uuid::new_v4().to_string();
+                    match download_pdf_attachment(&attachment.url).await {
+                        Ok(bytes) => match references::create_cloud_binary_file(
+                            &state.pool,
+                            &req.project_id,
+                            &pdf_file_id,
+                            &attachment.filename,
+                            "application/pdf",
+                            &bytes,
+                        )
+                        .await
+                        {
+                            Ok(()) => {
+                                files_created += 1;
+                                raw_value["pdf_file_id"] = serde_json::json!(pdf_file_id);
+                                if let Err(err) = sqlx::query(
+                                    "UPDATE research_items SET raw_json = ? WHERE id = ?",
+                                )
+                                .bind(raw_value.to_string())
+                                .bind(&item_id)
+                                .execute(&state.pool)
+                                .await
+                                {
+                                    tracing::warn!(
+                                        "Failed to link research PDF attachment in raw_json: {err:?}"
+                                    );
+                                }
+                            }
+                            Err(err) => {
+                                tracing::warn!("Failed to create cloud PDF file: {err:?}");
+                                warnings.push(format!(
+                                    "PDF attachment could not be saved for {}.",
+                                    input.title
+                                ));
+                            }
+                        },
+                        Err(err) => {
+                            tracing::warn!("Failed to download PDF attachment: {err:?}");
+                            warnings.push(format!(
+                                "PDF attachment could not be downloaded for {}.",
+                                input.title
+                            ));
+                        }
+                    }
+                }
             }
             Err(err) => {
                 tracing::warn!("Failed to create cloud md file: {err:?}");
@@ -175,7 +223,30 @@ async fn save_items(
         saved: saved.len() as i32,
         items: saved,
         files_created,
+        warnings,
     }))
+}
+
+async fn download_pdf_attachment(url: &str) -> Result<Vec<u8>, AppError> {
+    let response = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|error| AppError::Internal(error.to_string()))?
+        .get(url)
+        .send()
+        .await
+        .map_err(|error| AppError::Internal(error.to_string()))?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(AppError::Internal(format!(
+            "PDF download failed ({status})"
+        )));
+    }
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|error| AppError::Internal(error.to_string()))?;
+    Ok(bytes.to_vec())
 }
 
 async fn list_items(
@@ -290,6 +361,9 @@ async fn delete_item(
     if let Ok(raw_json) = serde_json::from_str::<serde_json::Value>(&item.raw_json) {
         if let Some(bib_file_id) = raw_json["bib_file_id"].as_str() {
             linked_file_ids.push(bib_file_id.to_string());
+        }
+        if let Some(pdf_file_id) = raw_json["pdf_file_id"].as_str() {
+            linked_file_ids.push(pdf_file_id.to_string());
         }
     }
 

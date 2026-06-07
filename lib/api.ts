@@ -397,6 +397,7 @@ export interface SaveItemsResponse {
   saved: number
   items: ResearchItem[]
   files_created: number
+  warnings?: string[]
 }
 
 export async function researchSearch(

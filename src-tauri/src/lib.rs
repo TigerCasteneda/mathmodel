@@ -65,6 +65,7 @@ pub fn run() {
             ai::chat::ai_chat,
             ai::chat::stop_generation,
             ai::research::research_search_native,
+            ai::research::research_analyze_url,
             ai::research::research_extract_and_save,
             ai::session::list_sessions,
             ai::session::load_session,
