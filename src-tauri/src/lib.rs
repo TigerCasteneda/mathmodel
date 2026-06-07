@@ -22,12 +22,12 @@ pub fn run() {
                 watcher_task: std::sync::Mutex::new(None),
                 app_handle: app.handle().clone(),
             });
-            app.manage(AiConfigState::default());
 
             let app_data = app
                 .path()
                 .app_data_dir()
                 .unwrap_or_else(|_| PathBuf::from("data"));
+            app.manage(AiConfigState::new(app_data.clone()));
             app.manage(ai::session::ChatSessionStore::new(app_data.clone()));
             app.manage(ai::permissions::PermissionStore::new(app_data.clone()));
             app.manage(ai::chat::StopFlags::default());

@@ -1,11 +1,15 @@
-use super::config::{AiConfig, AiConfigState};
+use super::config::AiConfigState;
 use futures::StreamExt;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::{json, Value};
+use std::time::Duration;
 use tauri::{AppHandle, Emitter, State};
+
+const SEARCH_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SearchResultsEvent {
+    pub request_id: String,
     pub query: String,
     pub results: Vec<SearchResultItem>,
 }
@@ -20,6 +24,7 @@ pub struct SearchResultItem {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SearchStreamEvent {
+    pub request_id: String,
     pub seq: u64,
     pub content: String,
     pub done: bool,
@@ -27,16 +32,24 @@ pub struct SearchStreamEvent {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SearchQuestionsEvent {
+    pub request_id: String,
     pub questions: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SearchErrorEvent {
+    pub request_id: String,
     pub message: String,
 }
 
+fn tavily_http_error_message(status: u16, body: &str) -> String {
+    format!("Tavily search failed ({status}): {body}")
+}
+
 async fn search_tavily(query: &str, api_key: &str) -> anyhow::Result<Vec<SearchResultItem>> {
-    let response = reqwest::Client::new()
+    let response = reqwest::Client::builder()
+        .timeout(SEARCH_HTTP_TIMEOUT)
+        .build()?
         .post("https://api.tavily.com/search")
         .json(&json!({
             "api_key": api_key,
@@ -45,9 +58,13 @@ async fn search_tavily(query: &str, api_key: &str) -> anyhow::Result<Vec<SearchR
             "search_depth": "advanced",
         }))
         .send()
-        .await?
-        .json::<Value>()
         .await?;
+    let status = response.status();
+    let body = response.text().await?;
+    if !status.is_success() {
+        anyhow::bail!(tavily_http_error_message(status.as_u16(), &body));
+    }
+    let response = serde_json::from_str::<Value>(&body)?;
 
     let results = response["results"]
         .as_array()
@@ -96,6 +113,7 @@ fn build_synthesis_prompt(query: &str, results: &[SearchResultItem]) -> String {
 #[tauri::command]
 pub async fn ai_search(
     query: String,
+    request_id: String,
     app: AppHandle,
     config_state: State<'_, AiConfigState>,
 ) -> Result<(), String> {
@@ -113,13 +131,25 @@ pub async fn ai_search(
     }
 
     // 1. Search Tavily
-    let results = search_tavily(trimmed, api_key)
-        .await
-        .map_err(|e| format!("Tavily search failed: {e}"))?;
+    let results = match search_tavily(trimmed, api_key).await {
+        Ok(results) => results,
+        Err(error) => {
+            let message = error.to_string();
+            let _ = app.emit(
+                "search:error",
+                SearchErrorEvent {
+                    request_id: request_id.clone(),
+                    message: message.clone(),
+                },
+            );
+            return Err(message);
+        }
+    };
 
     let _ = app.emit(
         "search:results",
         SearchResultsEvent {
+            request_id: request_id.clone(),
             query: trimmed.to_string(),
             results: results.clone(),
         },
@@ -129,6 +159,7 @@ pub async fn ai_search(
         let _ = app.emit(
             "search:stream",
             SearchStreamEvent {
+                request_id: request_id.clone(),
                 seq: 0,
                 content: "No search results found. Try a different query.".to_string(),
                 done: true,
@@ -149,16 +180,29 @@ pub async fn ai_search(
         claude_code_rs::ChatMessage::user(trimmed.to_string()),
     ];
 
-    let response = client
-        .chat_stream(messages, None)
-        .await
-        .map_err(|e| format!("AI request failed: {e}"))?;
+    let response = client.chat_stream(messages, None).await.map_err(|e| {
+        let message = format!("AI request failed: {e}");
+        let _ = app.emit(
+            "search:error",
+            SearchErrorEvent {
+                request_id: request_id.clone(),
+                message: message.clone(),
+            },
+        );
+        message
+    })?;
 
     if !response.status().is_success() {
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
         let msg = format!("AI error ({status}): {body}");
-        let _ = app.emit("search:error", SearchErrorEvent { message: msg.clone() });
+        let _ = app.emit(
+            "search:error",
+            SearchErrorEvent {
+                request_id: request_id.clone(),
+                message: msg.clone(),
+            },
+        );
         return Err(msg);
     }
 
@@ -181,6 +225,7 @@ pub async fn ai_search(
                 let _ = app.emit(
                     "search:stream",
                     SearchStreamEvent {
+                        request_id: request_id.clone(),
                         seq: stream_seq,
                         content,
                         done: false,
@@ -194,6 +239,7 @@ pub async fn ai_search(
     let _ = app.emit(
         "search:stream",
         SearchStreamEvent {
+            request_id: request_id.clone(),
             seq: stream_seq + 1,
             content: String::new(),
             done: true,
@@ -207,7 +253,10 @@ pub async fn ai_search(
     let questions = generate_related_questions(&question_client, trimmed, &full_answer).await;
     let _ = app.emit(
         "search:questions",
-        SearchQuestionsEvent { questions },
+        SearchQuestionsEvent {
+            request_id,
+            questions,
+        },
     );
 
     Ok(())
@@ -263,4 +312,35 @@ async fn generate_related_questions(
     };
 
     serde_json::from_str::<Vec<String>>(json_text).unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SearchResultsEvent, SearchStreamEvent};
+
+    #[test]
+    fn search_events_carry_request_id() {
+        let results = SearchResultsEvent {
+            request_id: "search-1".to_string(),
+            query: "traffic".to_string(),
+            results: Vec::new(),
+        };
+        let stream = SearchStreamEvent {
+            request_id: "search-1".to_string(),
+            seq: 1,
+            content: "answer".to_string(),
+            done: false,
+        };
+
+        assert_eq!(results.request_id, "search-1");
+        assert_eq!(stream.request_id, "search-1");
+    }
+
+    #[test]
+    fn tavily_error_message_includes_http_status_and_body() {
+        let message = super::tavily_http_error_message(401, r#"{"error":"bad key"}"#);
+
+        assert!(message.contains("401"));
+        assert!(message.contains("bad key"));
+    }
 }

@@ -305,6 +305,7 @@ function ResearchSearchPanel({
   const [loadingStage, setLoadingStage] = useState<"planning" | "searching" | "ranking">("planning")
   const [saving, setSaving] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
+  const researchSearchIdRef = useRef<string | null>(null)
 
   useEffect(() => {
     listResearchItems(projectId).then(setItems).catch(() => setItems([]))
@@ -314,29 +315,41 @@ function ResearchSearchPanel({
   const selectedResults = Array.from(selected).map((index) => results[index]).filter(Boolean)
 
   const runSearch = async () => {
-    if (!query.trim()) return
+    const trimmedQuery = query.trim()
+    if (!trimmedQuery) return
+    const requestId = crypto.randomUUID()
+    researchSearchIdRef.current = requestId
     setLoading(true)
     setLoadingStage(kind === "auto" ? "planning" : "searching")
     setMessage(null)
     setSelected(new Set())
     const timers: Array<ReturnType<typeof setTimeout>> = []
     if (kind === "auto") {
-      timers.push(setTimeout(() => setLoadingStage("searching"), 700))
-      timers.push(setTimeout(() => setLoadingStage("ranking"), 1800))
+      timers.push(setTimeout(() => {
+        if (researchSearchIdRef.current === requestId) setLoadingStage("searching")
+      }, 700))
+      timers.push(setTimeout(() => {
+        if (researchSearchIdRef.current === requestId) setLoadingStage("ranking")
+      }, 1800))
     } else {
-      timers.push(setTimeout(() => setLoadingStage("ranking"), 1200))
+      timers.push(setTimeout(() => {
+        if (researchSearchIdRef.current === requestId) setLoadingStage("ranking")
+      }, 1200))
     }
     try {
-      const response = await researchSearchNative(query.trim(), kind, 8)
+      const response = await researchSearchNative(trimmedQuery, kind, 8)
+      if (researchSearchIdRef.current !== requestId) return
       setResults(response.results)
       setSelected(new Set(response.results.map((_, index) => index)))
       if (response.warning) setMessage(response.warning)
       else if (response.results.length === 0) setMessage("No research results found.")
     } catch (error) {
+      if (researchSearchIdRef.current !== requestId) return
       setResults([])
       setMessage(errorText(error, "Research search failed."))
     } finally {
       timers.forEach(clearTimeout)
+      if (researchSearchIdRef.current !== requestId) return
       setLoading(false)
     }
   }

@@ -193,6 +193,7 @@ export default function SearchPage() {
   const [history, setHistory] = useState<HistoryEntry[]>([])
   const scrollRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
+  const currentSearchIdRef = useRef<string | null>(null)
 
   useEffect(() => {
     setHistory(loadHistory())
@@ -210,9 +211,39 @@ export default function SearchPage() {
     scrollToBottom()
   }, [answer, scrollToBottom])
 
+  useEffect(() => {
+    const cleanup = [
+      onSearchResults((event: SearchResultsEvent) => {
+        if (event.request_id !== currentSearchIdRef.current) return
+        setResults(event.results)
+        setPhase("streaming")
+      }),
+      onSearchStream((event: SearchStreamEvent) => {
+        if (event.request_id !== currentSearchIdRef.current) return
+        setAnswer((prev) => prev + event.content)
+        if (event.done) {
+          setPhase("complete")
+        }
+      }),
+      onSearchQuestions((event: SearchQuestionsEvent) => {
+        if (event.request_id !== currentSearchIdRef.current) return
+        setQuestions(event.questions)
+      }),
+      onSearchError((event) => {
+        if (event.request_id !== currentSearchIdRef.current) return
+        setError(event.message)
+        setPhase("complete")
+      }),
+    ]
+
+    return () => cleanup.forEach((fn) => fn())
+  }, [])
+
   const handleSearch = async (searchQuery?: string) => {
     const q = (searchQuery || query).trim()
     if (!q) return
+    const requestId = crypto.randomUUID()
+    currentSearchIdRef.current = requestId
 
     setQuery(q)
     setAnswer("")
@@ -224,41 +255,10 @@ export default function SearchPage() {
     saveHistory(q)
     setHistory(loadHistory())
 
-    // Set up listeners
-    const cleanup: (() => void)[] = []
-
-    cleanup.push(
-      onSearchResults((event: SearchResultsEvent) => {
-        setResults(event.results)
-        setPhase("streaming")
-      }),
-    )
-
-    cleanup.push(
-      onSearchStream((event: SearchStreamEvent) => {
-        setAnswer((prev) => prev + event.content)
-        if (event.done) {
-          setPhase("complete")
-        }
-      }),
-    )
-
-    cleanup.push(
-      onSearchQuestions((event: SearchQuestionsEvent) => {
-        setQuestions(event.questions)
-      }),
-    )
-
-    cleanup.push(
-      onSearchError((event) => {
-        setError(event.message)
-        setPhase("complete")
-      }),
-    )
-
     try {
-      await aiSearch(q)
+      await aiSearch(q, requestId)
     } catch (e) {
+      if (currentSearchIdRef.current !== requestId) return
       setError(String(e))
       setPhase("complete")
     }

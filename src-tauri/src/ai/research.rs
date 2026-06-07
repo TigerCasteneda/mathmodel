@@ -2,7 +2,10 @@ use super::config::{AiConfig, AiConfigState};
 use claude_code_rs::{ApiClient, ChatMessage};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::time::Duration;
 use tauri::State;
+
+const PROVIDER_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -89,6 +92,30 @@ struct SearchTask {
     expected_category: String,
 }
 
+#[derive(Debug)]
+struct ProviderSearchResult {
+    items: Vec<ResearchSearchItem>,
+    warning: Option<String>,
+}
+
+#[derive(Debug)]
+enum ProviderTaskOutcome {
+    Success {
+        results: Vec<ResearchSearchItem>,
+        warning: Option<String>,
+    },
+    Failure {
+        query: String,
+        error: String,
+    },
+}
+
+#[derive(Debug)]
+struct CollectedProviderResults {
+    results: Vec<ResearchSearchItem>,
+    warning: Option<String>,
+}
+
 #[tauri::command]
 pub async fn research_search_native(
     query: String,
@@ -119,23 +146,34 @@ pub async fn research_search_native(
     };
 
     let per_task_limit = per_task_limit(limit, tasks.len());
-    let mut result_sets = Vec::new();
+    let mut outcomes = Vec::new();
     for task in &tasks {
         let task_limit = if matches!(&kind, ResearchSearchKind::Auto) {
             per_task_limit
         } else {
             limit
         };
-        let results = match &task.kind {
+        let outcome = match match &task.kind {
             ResearchSearchKind::Docs => search_context7(&config, &task.query, task_limit).await,
             ResearchSearchKind::Auto => unreachable!("auto is never a provider task"),
             _ => search_firecrawl(&config, &task.query, &task.kind, task_limit).await,
-        }
-        .map_err(|error| error.to_string())?;
-        result_sets.push(results);
+        } {
+            Ok(provider_result) => ProviderTaskOutcome::Success {
+                results: provider_result.items,
+                warning: provider_result.warning,
+            },
+            Err(error) => ProviderTaskOutcome::Failure {
+                query: task.query.clone(),
+                error: error.to_string(),
+            },
+        };
+        outcomes.push(outcome);
     }
 
-    let merged = merge_task_results(&tasks, result_sets, limit as usize);
+    let collected = collect_provider_task_outcomes(&tasks, outcomes, limit)
+        .map_err(|error| error.to_string())?;
+    warning = append_warning(warning, collected.warning);
+    let merged = collected.results;
     let results = if merged.is_empty() {
         merged
     } else {
@@ -159,6 +197,15 @@ pub async fn research_search_native(
         results,
         warning,
     })
+}
+
+fn append_warning(current: Option<String>, next: Option<String>) -> Option<String> {
+    match (current, next) {
+        (Some(current), Some(next)) => Some(format!("{current} {next}")),
+        (Some(current), None) => Some(current),
+        (None, Some(next)) => Some(next),
+        (None, None) => None,
+    }
 }
 
 fn manual_search_tasks(kind: &ResearchSearchKind, query: &str) -> Vec<SearchTask> {
@@ -345,6 +392,46 @@ fn merge_task_results(
     merged
 }
 
+fn collect_provider_task_outcomes(
+    tasks: &[SearchTask],
+    outcomes: Vec<ProviderTaskOutcome>,
+    limit: u64,
+) -> anyhow::Result<CollectedProviderResults> {
+    let mut successful_tasks = Vec::new();
+    let mut result_sets = Vec::new();
+    let mut warnings = Vec::new();
+    let mut successes = 0usize;
+
+    for (task, outcome) in tasks.iter().zip(outcomes) {
+        match outcome {
+            ProviderTaskOutcome::Success { results, warning } => {
+                successes += 1;
+                successful_tasks.push(task.clone());
+                result_sets.push(results);
+                if let Some(warning) = warning {
+                    warnings.push(format!("Task \"{}\" warning: {warning}", task.query));
+                }
+            }
+            ProviderTaskOutcome::Failure { query, error } => {
+                warnings.push(format!("Task \"{query}\" failed: {error}"));
+            }
+        }
+    }
+
+    if successes == 0 && !warnings.is_empty() {
+        anyhow::bail!(warnings.join(" "));
+    }
+
+    Ok(CollectedProviderResults {
+        results: merge_task_results(&successful_tasks, result_sets, limit as usize),
+        warning: if warnings.is_empty() {
+            None
+        } else {
+            Some(warnings.join(" "))
+        },
+    })
+}
+
 fn dedupe_keys(item: &ResearchSearchItem) -> Vec<String> {
     let mut keys = Vec::new();
     let url = item.url.trim().to_ascii_lowercase();
@@ -381,8 +468,13 @@ fn apply_ai_ranking(
             .or_else(|| string_field(&ranking, "relevance"))
             .or_else(|| string_field(&ranking, "label"));
         let category = string_field(&ranking, "category");
-        let relevance_score = ranking.get("relevance_score").and_then(|value| value.as_f64());
-        if let Some(item) = results.iter_mut().find(|item| ranking_matches(item, &url, &title)) {
+        let relevance_score = ranking
+            .get("relevance_score")
+            .and_then(|value| value.as_f64());
+        if let Some(item) = results
+            .iter_mut()
+            .find(|item| ranking_matches(item, &url, &title))
+        {
             if let Some(rank) = rank {
                 item.rank = Some(rank);
             }
@@ -408,7 +500,11 @@ fn apply_ai_ranking(
     Ok(results)
 }
 
-fn ranking_matches(item: &ResearchSearchItem, url: &Option<String>, title: &Option<String>) -> bool {
+fn ranking_matches(
+    item: &ResearchSearchItem,
+    url: &Option<String>,
+    title: &Option<String>,
+) -> bool {
     if let Some(url) = url {
         if !url.trim().is_empty() && item.url.eq_ignore_ascii_case(url.trim()) {
             return true;
@@ -483,7 +579,7 @@ async fn search_firecrawl(
     query: &str,
     kind: &ResearchSearchKind,
     limit: u64,
-) -> anyhow::Result<Vec<ResearchSearchItem>> {
+) -> anyhow::Result<ProviderSearchResult> {
     let api_key = config
         .firecrawl_api_key
         .as_deref()
@@ -501,10 +597,10 @@ async fn search_firecrawl(
         }),
     )
     .await;
-    let body = match primary_body {
-        Ok(body) => body,
-        Err(_) => {
-            firecrawl_search_request(
+    let (body, warning) = match primary_body {
+        Ok(body) => (body, None),
+        Err(primary_error) => {
+            let fallback_body = firecrawl_search_request(
                 api_key,
                 json!({
                     "query": query,
@@ -515,20 +611,36 @@ async fn search_firecrawl(
                     }
                 }),
             )
-            .await?
+            .await
+            .map_err(|fallback_error| {
+                anyhow::anyhow!(
+                    "Firecrawl search failed. Primary format: {primary_error}. Legacy format: {fallback_error}"
+                )
+            })?;
+            (
+                fallback_body,
+                Some(format!(
+                    "Firecrawl primary search format failed; used legacy format. {primary_error}"
+                )),
+            )
         }
     };
     let parsed: FirecrawlSearchResponse = serde_json::from_str(&body)?;
     let values = firecrawl_result_values(parsed);
-    Ok(values
-        .into_iter()
-        .take(limit as usize)
-        .map(|value| firecrawl_item(value, kind))
-        .collect())
+    Ok(ProviderSearchResult {
+        items: values
+            .into_iter()
+            .take(limit as usize)
+            .map(|value| firecrawl_item(value, kind))
+            .collect(),
+        warning,
+    })
 }
 
 async fn firecrawl_search_request(api_key: &str, body: Value) -> anyhow::Result<String> {
-    let response = reqwest::Client::new()
+    let response = reqwest::Client::builder()
+        .timeout(PROVIDER_HTTP_TIMEOUT)
+        .build()?
         .post("https://api.firecrawl.dev/v2/search")
         .bearer_auth(api_key)
         .json(&body)
@@ -605,9 +717,9 @@ async fn search_context7(
     config: &AiConfig,
     query: &str,
     limit: u64,
-) -> anyhow::Result<Vec<ResearchSearchItem>> {
+) -> anyhow::Result<ProviderSearchResult> {
     let limit_string = limit.to_string();
-    let body = match context7_get(
+    let primary_body = context7_get(
         config,
         "https://context7.com/api/v2/libs/search",
         &[
@@ -616,11 +728,11 @@ async fn search_context7(
             ("limit", &limit_string),
         ],
     )
-    .await
-    {
-        Ok(body) => body,
-        Err(_) => {
-            context7_get(
+    .await;
+    let (body, warning) = match primary_body {
+        Ok(body) => (body, None),
+        Err(primary_error) => {
+            let fallback_body = context7_get(
                 config,
                 "https://context7.com/api/v1/search",
                 &[
@@ -629,7 +741,16 @@ async fn search_context7(
                     ("limit", &limit_string),
                 ],
             )
-            .await?
+            .await
+            .map_err(|fallback_error| {
+                anyhow::anyhow!("Context7 search failed. v2: {primary_error}. v1: {fallback_error}")
+            })?;
+            (
+                fallback_body,
+                Some(format!(
+                    "Context7 v2 search failed; used v1 fallback. {primary_error}"
+                )),
+            )
         }
     };
     let parsed: Context7SearchResponse = serde_json::from_str(&body).or_else(|_| {
@@ -672,7 +793,7 @@ async fn search_context7(
             rank: None,
         });
     }
-    Ok(items)
+    Ok(ProviderSearchResult { items, warning })
 }
 
 async fn fetch_context7_docs(
@@ -714,7 +835,11 @@ async fn context7_get(
     url: &str,
     query: &[(&str, &str)],
 ) -> anyhow::Result<String> {
-    let mut request = reqwest::Client::new().get(url).query(query);
+    let mut request = reqwest::Client::builder()
+        .timeout(PROVIDER_HTTP_TIMEOUT)
+        .build()?
+        .get(url)
+        .query(query);
     if let Some(key) = config
         .context7_api_key
         .as_deref()
@@ -973,7 +1098,10 @@ mod tests {
         assert!(matches!(parsed[1].kind, ResearchSearchKind::Dataset));
         assert!(matches!(parsed[2].kind, ResearchSearchKind::Code));
         assert!(matches!(parsed[3].kind, ResearchSearchKind::Docs));
-        assert_eq!(parsed[0].query, "traffic congestion prediction graph neural networks");
+        assert_eq!(
+            parsed[0].query,
+            "traffic congestion prediction graph neural networks"
+        );
         assert_eq!(parsed[1].expected_category, "dataset");
     }
 
@@ -1015,13 +1143,29 @@ mod tests {
         ];
         let result_sets = vec![
             vec![
-                item("Traffic Forecasting", "https://example.com/paper", ResearchSearchKind::Paper),
-                item("Duplicate URL", "https://example.com/shared", ResearchSearchKind::Paper),
+                item(
+                    "Traffic Forecasting",
+                    "https://example.com/paper",
+                    ResearchSearchKind::Paper,
+                ),
+                item(
+                    "Duplicate URL",
+                    "https://example.com/shared",
+                    ResearchSearchKind::Paper,
+                ),
             ],
             vec![
-                item("Duplicate URL", "https://example.com/shared", ResearchSearchKind::Dataset),
+                item(
+                    "Duplicate URL",
+                    "https://example.com/shared",
+                    ResearchSearchKind::Dataset,
+                ),
                 item("Traffic Forecasting", "", ResearchSearchKind::Dataset),
-                item("Metro Dataset", "https://example.com/dataset", ResearchSearchKind::Dataset),
+                item(
+                    "Metro Dataset",
+                    "https://example.com/dataset",
+                    ResearchSearchKind::Dataset,
+                ),
             ],
         ];
 
@@ -1031,7 +1175,10 @@ mod tests {
         assert_eq!(merged[0].url, "https://example.com/paper");
         assert_eq!(merged[1].url, "https://example.com/shared");
         assert_eq!(merged[2].url, "https://example.com/dataset");
-        assert!(matches!(merged[2].planned_kind, Some(ResearchSearchKind::Dataset)));
+        assert!(matches!(
+            merged[2].planned_kind,
+            Some(ResearchSearchKind::Dataset)
+        ));
         assert_eq!(merged[2].planned_query.as_deref(), Some("traffic datasets"));
         assert_eq!(merged[2].reason.as_deref(), Some("data"));
     }
@@ -1040,7 +1187,11 @@ mod tests {
     fn applies_ai_ranking_reason_category_and_rank() {
         let results = vec![
             item("Low", "https://example.com/low", ResearchSearchKind::Web),
-            item("High", "https://example.com/high", ResearchSearchKind::Dataset),
+            item(
+                "High",
+                "https://example.com/high",
+                ResearchSearchKind::Dataset,
+            ),
         ];
 
         let ranked = apply_ai_ranking(
@@ -1061,5 +1212,64 @@ mod tests {
         assert_eq!(ranked[0].reason.as_deref(), Some("best dataset match"));
         assert_eq!(ranked[0].category, "dataset");
         assert_eq!(ranked[0].relevance_score, 0.95);
+    }
+
+    #[test]
+    fn provider_task_outcomes_keep_successes_and_collect_warnings() {
+        let tasks = vec![
+            SearchTask {
+                kind: ResearchSearchKind::Web,
+                query: "traffic models".to_string(),
+                reason: "models".to_string(),
+                expected_category: "literature".to_string(),
+            },
+            SearchTask {
+                kind: ResearchSearchKind::Dataset,
+                query: "traffic dataset".to_string(),
+                reason: "data".to_string(),
+                expected_category: "dataset".to_string(),
+            },
+        ];
+        let outcomes = vec![
+            ProviderTaskOutcome::Success {
+                results: vec![item(
+                    "Traffic Model",
+                    "https://example.com/model",
+                    ResearchSearchKind::Web,
+                )],
+                warning: None,
+            },
+            ProviderTaskOutcome::Failure {
+                query: "traffic dataset".to_string(),
+                error: "Firecrawl rate limited".to_string(),
+            },
+        ];
+
+        let collected = collect_provider_task_outcomes(&tasks, outcomes, 8).unwrap();
+
+        assert_eq!(collected.results.len(), 1);
+        assert_eq!(collected.results[0].title, "Traffic Model");
+        assert!(collected
+            .warning
+            .unwrap()
+            .contains("Firecrawl rate limited"));
+    }
+
+    #[test]
+    fn provider_task_outcomes_error_when_every_task_fails() {
+        let tasks = vec![SearchTask {
+            kind: ResearchSearchKind::Web,
+            query: "traffic models".to_string(),
+            reason: "models".to_string(),
+            expected_category: "literature".to_string(),
+        }];
+        let outcomes = vec![ProviderTaskOutcome::Failure {
+            query: "traffic models".to_string(),
+            error: "Firecrawl unavailable".to_string(),
+        }];
+
+        let error = collect_provider_task_outcomes(&tasks, outcomes, 8).unwrap_err();
+
+        assert!(error.to_string().contains("Firecrawl unavailable"));
     }
 }

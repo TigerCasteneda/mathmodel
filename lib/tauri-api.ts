@@ -407,21 +407,25 @@ export interface SearchResultItem {
 }
 
 export interface SearchResultsEvent {
+  request_id: string
   query: string
   results: SearchResultItem[]
 }
 
 export interface SearchStreamEvent {
+  request_id: string
   seq: number
   content: string
   done: boolean
 }
 
 export interface SearchQuestionsEvent {
+  request_id: string
   questions: string[]
 }
 
 export interface SearchErrorEvent {
+  request_id: string
   message: string
 }
 
@@ -441,9 +445,9 @@ export function onSearchError(callback: (event: SearchErrorEvent) => void): () =
   return listenEvent<SearchErrorEvent>("search:error", callback)
 }
 
-export async function aiSearch(query: string): Promise<void> {
+export async function aiSearch(query: string, requestId: string): Promise<void> {
   if (!isTauri()) return
-  return invoke("ai_search", { query })
+  return invoke("ai_search", { query, requestId })
 }
 
 export async function resolvePermissionRequest(requestId: string, allow: boolean): Promise<void> {
