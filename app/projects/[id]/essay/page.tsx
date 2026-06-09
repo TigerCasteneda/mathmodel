@@ -121,9 +121,10 @@ function EssayPageContent() {
           if (!cancelled) setInitialContent("")
         }
       } catch (err) {
-        console.error("[essay] failed to load file:", err)
+        // File read failed — start with empty editor; don't treat as "not found"
+        console.warn("[essay] could not load file content:", err)
         if (!cancelled) {
-          setNotFound(true)
+          setInitialContent("")
         }
       }
       if (!cancelled) setLoading(false)
