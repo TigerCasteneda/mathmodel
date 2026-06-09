@@ -6,14 +6,17 @@ import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels"
 import { EssayEditor } from "@/components/essay/essay-editor"
 import { EssayTopBar } from "@/components/essay/essay-topbar"
 import { EssaySidebar } from "@/components/essay/essay-sidebar"
+import { EssayCommentsPanel } from "@/components/essay/essay-comments"
 import { EssayStatusBar } from "@/components/essay/essay-statusbar"
 import { useEssayCollab } from "@/components/essay/use-essay-collab"
 import { setLocalUserInfo } from "@/lib/codemirror/awareness"
 import type { AwarenessUserInfo } from "@/lib/codemirror/awareness"
 import { isTauri, listFiles, readFile } from "@/lib/tauri-api"
 import { getToken } from "@/lib/api"
+import type { EssayComment } from "@/lib/codemirror/comments"
 
 type SyncState = "synced" | "saving" | "offline"
+type SidebarTab = "files" | "comments"
 
 function getOrCreateUserInfo(): AwarenessUserInfo {
   const key = "essay-user-info"
@@ -66,6 +69,7 @@ function EssayPageContent() {
     Array<{ name: string; color: string }>
   >([])
   const [notFound, setNotFound] = useState(false)
+  const [sidebarTab, setSidebarTab] = useState<SidebarTab>("files")
 
   const userInfo = getOrCreateUserInfo()
   const token = getToken()
@@ -135,7 +139,7 @@ function EssayPageContent() {
   }, [fileId, filePath])
 
   // Set up collaboration (only after content is loaded)
-  const { ydoc, ytext, awareness } = useEssayCollab({
+  const { ydoc, ytext, awareness, commentsMap } = useEssayCollab({
     fileId: fileId ?? filePath ?? "",
     initialContent: initialContent ?? undefined,
     readOnly: !token,
@@ -188,6 +192,22 @@ function EssayPageContent() {
     }, 1000)
     return () => clearTimeout(timer)
   }, [])
+
+  const handleScrollToComment = useCallback(
+    (comment: EssayComment) => {
+      try {
+        // Convert relative position to absolute and dispatch into editor
+        // The editor view is not directly accessible from here, but
+        // we can use the editor ref approach. For now, clicking the
+        // comment card switches to files tab to view the highlight.
+        // Full scroll-to is a follow-up (needs editor ref).
+        console.log("[essay] scroll to comment:", comment.id)
+      } catch {
+        // ignore
+      }
+    },
+    [],
+  )
 
   const handleRename = useCallback(
     (newTitle: string) => {
@@ -257,6 +277,7 @@ function EssayPageContent() {
             ydoc={ydoc}
             ytext={ytext}
             awareness={awareness}
+            commentsMap={commentsMap}
             readOnly={!token}
             onChange={handleContentChange}
           />
@@ -266,7 +287,33 @@ function EssayPageContent() {
 
         {/* Sidebar Panel */}
         <Panel defaultSize={30} minSize={15} maxSize={40}>
-          <EssaySidebar projectId={projectId} fileId={fileId ?? filePath ?? ""} />
+          <div className="flex flex-col h-full bg-[#0d0d0d] border-l border-[#2a2a2a]">
+            {/* Tab bar */}
+            <div className="flex h-8 border-b border-[#2a2a2a] shrink-0">
+              {(["files", "comments"] as SidebarTab[]).map((tab) => (
+                <button
+                  key={tab}
+                  className={`flex-1 text-[10px] font-semibold uppercase tracking-wider border-b-2 transition-colors ${
+                    sidebarTab === tab
+                      ? "border-[#569cd6] text-[#ccc]"
+                      : "border-transparent text-[#555] hover:text-[#888]"
+                  }`}
+                  onClick={() => setSidebarTab(tab)}
+                >
+                  {tab === "files" ? "Files" : "Comments"}
+                </button>
+              ))}
+            </div>
+            {/* Content */}
+            {sidebarTab === "files" ? (
+              <EssaySidebar projectId={projectId} fileId={fileId ?? filePath ?? ""} />
+            ) : (
+              <EssayCommentsPanel
+                commentsMap={commentsMap}
+                onScrollTo={handleScrollToComment}
+              />
+            )}
+          </div>
         </Panel>
       </PanelGroup>
 

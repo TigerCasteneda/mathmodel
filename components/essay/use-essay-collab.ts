@@ -5,6 +5,7 @@ import * as Y from "yjs"
 import { YjsWebsocketProvider } from "@/lib/yjs-provider"
 import type { AwarenessProtocol } from "@/lib/yjs-provider"
 import { getToken } from "@/lib/api"
+import type { EssayComment } from "@/lib/codemirror/comments"
 
 interface UseEssayCollabOptions {
   fileId: string
@@ -16,6 +17,7 @@ interface UseEssayCollabOptions {
 interface UseEssayCollabResult {
   ydoc: Y.Doc
   ytext: Y.Text
+  commentsMap: Y.Map<EssayComment>
   awareness: AwarenessProtocol | null
   provider: YjsWebsocketProvider | null
   synced: boolean
@@ -111,9 +113,12 @@ export function useEssayCollab({
     }
   }, [fileId, readOnly, onSynced, ydoc])
 
+  const commentsMap = ydoc.getMap<EssayComment>("comments")
+
   return {
     ydoc,
     ytext,
+    commentsMap,
     awareness: awarenessRef.current,
     provider: providerRef.current,
     synced: syncedRef.current,

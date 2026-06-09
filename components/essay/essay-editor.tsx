@@ -30,11 +30,14 @@ import { yCollab } from "y-codemirror.next"
 import type { AwarenessProtocol } from "@/lib/yjs-provider"
 import { essayTheme } from "@/lib/codemirror/theme"
 import { livePreview } from "@/lib/codemirror/live-preview"
+import { commentsPlugin } from "@/lib/codemirror/comments"
+import type { EssayComment } from "@/lib/codemirror/comments"
 
 interface EssayEditorProps {
   ydoc: Y.Doc
   ytext: Y.Text
   awareness: AwarenessProtocol | null
+  commentsMap?: Y.Map<EssayComment>
   readOnly?: boolean
   onChange?: (content: string) => void
   onCursorMove?: (line: number, col: number) => void
@@ -44,6 +47,7 @@ export function EssayEditor({
   ydoc,
   ytext,
   awareness,
+  commentsMap,
   readOnly = false,
   onChange,
   onCursorMove,
@@ -110,6 +114,9 @@ export function EssayEditor({
 
       // Live Preview
       livePreview(),
+
+      // Comments (PDF-style annotation)
+      ...(commentsMap ? [commentsPlugin(commentsMap)] : []),
 
       // Read-only
       EditorState.readOnly.of(readOnly),
