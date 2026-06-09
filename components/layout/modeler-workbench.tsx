@@ -275,16 +275,25 @@ function FileNode({
         )}
         <span className="truncate flex-1">{item.name}</span>
         {isMd && onOpenEssay && (
-          <button
-            className="opacity-0 group-hover/file:opacity-100 transition-opacity shrink-0 p-0.5 rounded hover:bg-[#3a3a3a]"
+          <span
+            className="opacity-0 group-hover/file:opacity-100 transition-opacity shrink-0 p-0.5 rounded hover:bg-[#3a3a3a] cursor-pointer"
             title="Open in Essay Editor"
+            role="button"
+            tabIndex={0}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault()
+                e.stopPropagation()
+                onOpenEssay(item)
+              }
+            }}
             onClick={(e) => {
               e.stopPropagation()
               onOpenEssay(item)
             }}
           >
             <PencilLine className="h-3 w-3 text-[#d4a574]" />
-          </button>
+          </span>
         )}
       </button>
       {folder && open && item.children?.map((child) => (
