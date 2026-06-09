@@ -10,7 +10,6 @@
   },
   "dependencies": {
     "@codemirror/commands": "^6.10.3",
-    "@codemirror/fold": "^0.19.4",
     "@codemirror/lang-markdown": "^6.5.0",
     "@codemirror/language": "^6.12.3",
     "@codemirror/search": "^6.7.0",

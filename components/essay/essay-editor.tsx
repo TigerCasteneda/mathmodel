@@ -12,10 +12,6 @@ import {
 import { EditorState } from "@codemirror/state"
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown"
 import {
-  foldGutter,
-  foldKeymap,
-} from "@codemirror/fold"
-import {
   defaultKeymap,
   history,
   historyKeymap,
@@ -25,6 +21,8 @@ import {
   defaultHighlightStyle,
   bracketMatching,
   indentOnInput,
+  foldGutter,
+  foldKeymap,
 } from "@codemirror/language"
 import { searchKeymap } from "@codemirror/search"
 import * as Y from "yjs"
@@ -82,8 +80,7 @@ export function EssayEditor({
           return span
         },
       }),
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      keymap.of(foldKeymap as any),
+      keymap.of(foldKeymap),
 
       // Core editor features
       EditorView.lineWrapping,
