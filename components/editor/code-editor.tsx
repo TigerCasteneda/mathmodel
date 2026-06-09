@@ -67,9 +67,9 @@ function CollaborativeCodeEditor({
 
   useEffect(() => {
     return () => {
-      bindingRef.current?.destroy()
-      providerRef.current?.destroy()
-      docRef.current?.destroy()
+      try { bindingRef.current?.destroy() } catch { /* noop */ }
+      try { providerRef.current?.destroy() } catch { /* noop */ }
+      try { docRef.current?.destroy() } catch { /* noop */ }
       bindingRef.current = null
       providerRef.current = null
       docRef.current = null
