@@ -180,8 +180,9 @@ export class YjsWebsocketProvider {
       }
     }
 
-    this.ws.onerror = (err) => {
-      console.error("[YjsWS] error", err)
+    this.ws.onerror = () => {
+      // Expected when server is not running — not a fatal error
+      console.warn("[YjsWS] connection failed (server may be offline)")
     }
   }
 
