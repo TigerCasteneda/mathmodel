@@ -271,17 +271,20 @@ class CommentsPlugin implements PluginValue {
       this.toolbarEl.style.display = "none"
       return
     }
-    const headCoords = view.coordsAtPos(sel.head)
-    if (!headCoords) {
-      this.toolbarEl.style.display = "none"
-      return
-    }
-    const scrollParent = view.scrollDOM.parentElement
-    if (!scrollParent) return
-    const editorRect = scrollParent.getBoundingClientRect()
-    this.toolbarEl.style.display = "block"
-    this.toolbarEl.style.left = `${headCoords.left - editorRect.left}px`
-    this.toolbarEl.style.top = `${headCoords.top - editorRect.top - 34}px`
+    // coordsAtPos cannot be called during a CM update — defer to next frame
+    requestAnimationFrame(() => {
+      const headCoords = view.coordsAtPos(sel.head)
+      if (!headCoords) {
+        this.toolbarEl!.style.display = "none"
+        return
+      }
+      const scrollParent = view.scrollDOM.parentElement
+      if (!scrollParent) return
+      const editorRect = scrollParent.getBoundingClientRect()
+      this.toolbarEl!.style.display = "block"
+      this.toolbarEl!.style.left = `${headCoords.left - editorRect.left}px`
+      this.toolbarEl!.style.top = `${headCoords.top - editorRect.top - 34}px`
+    })
   }
 
   private startComment(view: EditorView, from: number, to: number) {
