@@ -125,22 +125,30 @@ async fn handle_socket(
 
     // Subscribe to updates from other clients
     let mut update_rx = room.read().await.update_tx.subscribe();
+    // Subscribe to awareness updates from other clients
+    let mut awareness_rx = room.read().await.awareness_tx.subscribe();
 
     loop {
         tokio::select! {
             client_msg = socket.recv() => {
                 match client_msg {
                     Some(Ok(Message::Text(text))) => {
-                        if !can_write {
-                            continue;
-                        }
-                        if let Ok(SyncMessage::SyncUpdate { update }) =
-                            serde_json::from_str::<SyncMessage>(&text)
-                        {
-                            let mut r = room.write().await;
-                            if r.apply_update(&update).is_ok() {
-                                let _ = r.update_tx.send(update);
+                        match serde_json::from_str::<SyncMessage>(&text) {
+                            Ok(SyncMessage::SyncUpdate { update }) => {
+                                if !can_write {
+                                    continue;
+                                }
+                                let mut r = room.write().await;
+                                if r.apply_update(&update).is_ok() {
+                                    let _ = r.update_tx.send(update);
+                                }
                             }
+                            // Fan-out incoming awareness to all other clients
+                            Ok(SyncMessage::Awareness { state }) => {
+                                let r = room.read().await;
+                                let _ = r.awareness_tx.send(state);
+                            }
+                            _ => continue,
                         }
                     }
                     Some(Ok(Message::Close(_))) | None => break,
@@ -149,6 +157,13 @@ async fn handle_socket(
             }
             Ok(update) = update_rx.recv() => {
                 let msg = SyncMessage::SyncUpdate { update };
+                if let Ok(json) = serde_json::to_string(&msg) {
+                    let _ = socket.send(Message::Text(json.into())).await;
+                }
+            }
+            // Fan-out awareness to this client
+            Ok(awareness_update) = awareness_rx.recv() => {
+                let msg = SyncMessage::Awareness { state: awareness_update };
                 if let Ok(json) = serde_json::to_string(&msg) {
                     let _ = socket.send(Message::Text(json.into())).await;
                 }

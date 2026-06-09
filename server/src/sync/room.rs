@@ -11,17 +11,20 @@ pub struct SyncRoom {
     pub file_id: String,
     pub doc: yrs::Doc,
     pub update_tx: broadcast::Sender<Vec<u8>>,
+    pub awareness_tx: broadcast::Sender<Vec<u8>>,
     pub clients: AtomicUsize,
 }
 
 impl SyncRoom {
     pub fn new(file_id: String) -> Self {
         let doc = yrs::Doc::new();
-        let (tx, _) = broadcast::channel::<Vec<u8>>(256);
+        let (update_tx, _) = broadcast::channel::<Vec<u8>>(256);
+        let (awareness_tx, _) = broadcast::channel::<Vec<u8>>(256);
         Self {
             file_id,
             doc,
-            update_tx: tx,
+            update_tx,
+            awareness_tx,
             clients: AtomicUsize::new(0),
         }
     }
