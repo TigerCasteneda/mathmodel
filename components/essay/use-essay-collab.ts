@@ -5,6 +5,7 @@ import * as Y from "yjs"
 import { YjsWebsocketProvider } from "@/lib/yjs-provider"
 import type { AwarenessProtocol } from "@/lib/yjs-provider"
 import { getToken } from "@/lib/api"
+import { isTauri } from "@/lib/tauri-api"
 import type { EssayComment } from "@/lib/codemirror/comments"
 
 interface UseEssayCollabOptions {
@@ -72,8 +73,8 @@ export function useEssayCollab({
 
   useEffect(() => {
     const token = getToken()
-    // No token = local-only mode, skip WebSocket entirely
-    if (!token) {
+    // Tauri local mode or no token: skip WebSocket, use in-memory Y.Doc only
+    if (!token || isTauri()) {
       syncedRef.current = true
       onSynced?.()
       awarenessRef.current = null
