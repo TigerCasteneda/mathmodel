@@ -103,6 +103,11 @@ export function useEssayCollab({
         if (provider?.synced) {
           syncedRef.current = true
           clearInterval(checkSynced)
+          // Server SyncFull may have overwritten local content — re-seed if empty
+          if (ydoc.getText("content").toString() === "" && initialContent && !seededRef.current) {
+            ydoc.getText("content").insert(0, initialContent)
+            seededRef.current = true
+          }
           onSynced?.()
         }
       }, 100)
