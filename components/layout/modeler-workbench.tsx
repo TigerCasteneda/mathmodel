@@ -246,17 +246,20 @@ function FileNode({
   depth,
   activePath,
   onOpen,
+  onOpenEssay,
 }: {
   item: FileTreeItem
   depth: number
   activePath?: string
   onOpen: (file: FileTreeItem) => void
+  onOpenEssay?: (file: FileTreeItem) => void
 }) {
   const [open, setOpen] = useState(depth < 1)
   const folder = item.type === "folder"
+  const isMd = !folder && item.name.endsWith(".md")
 
   return (
-    <div>
+    <div className="group/file">
       <button
         className={cn(
           "flex h-7 w-full items-center gap-2 px-2 text-left text-xs text-[#b4b4b4] hover:bg-[#232323]",
@@ -266,14 +269,26 @@ function FileNode({
         onClick={() => folder ? setOpen((value) => !value) : onOpen(item)}
       >
         {folder ? (
-          open ? <FolderOpen className="h-4 w-4 text-[#d4a574]" /> : <Folder className="h-4 w-4 text-[#d4a574]" />
+          open ? <FolderOpen className="h-4 w-4 text-[#d4a574] shrink-0" /> : <Folder className="h-4 w-4 text-[#d4a574] shrink-0" />
         ) : (
-          <FileCode className="h-4 w-4 text-[#64b5f6]" />
+          <FileCode className="h-4 w-4 text-[#64b5f6] shrink-0" />
         )}
-        <span className="truncate">{item.name}</span>
+        <span className="truncate flex-1">{item.name}</span>
+        {isMd && onOpenEssay && (
+          <button
+            className="opacity-0 group-hover/file:opacity-100 transition-opacity shrink-0 p-0.5 rounded hover:bg-[#3a3a3a]"
+            title="Open in Essay Editor"
+            onClick={(e) => {
+              e.stopPropagation()
+              onOpenEssay(item)
+            }}
+          >
+            <PencilLine className="h-3 w-3 text-[#d4a574]" />
+          </button>
+        )}
       </button>
       {folder && open && item.children?.map((child) => (
-        <FileNode key={child.path || child.name} item={child} depth={depth + 1} activePath={activePath} onOpen={onOpen} />
+        <FileNode key={child.path || child.name} item={child} depth={depth + 1} activePath={activePath} onOpen={onOpen} onOpenEssay={onOpenEssay} />
       ))}
     </div>
   )
@@ -1513,12 +1528,6 @@ export function ModelerWorkbench({ projectId }: { projectId: string }) {
       ? await getProjectFileContent(projectId, file.id)
       : null
     const lang = fileLanguage(file)
-    // Route .md files to essay editor
-    if (lang === "markdown") {
-      const essayFileId = (file as any).id || file.path
-      router.push(`/projects/${projectId}/essay?file=${encodeURIComponent(essayFileId)}`)
-      return
-    }
     // Binary previews load bytes on their own.
     const content = lang === "pdf" || lang === "image"
       ? ""
@@ -1538,6 +1547,15 @@ export function ModelerWorkbench({ projectId }: { projectId: string }) {
     }
     setTabs((prev) => prev.some((tab) => tab.id === next.id) ? prev.map((tab) => tab.id === next.id ? next : tab) : [...prev, next])
     setActiveTab(next.id)
+  }
+
+  const openEssay = (file: FileTreeItem) => {
+    const essayFileId = (file as any).id || file.path
+    const essayPath = file.path
+    const params = new URLSearchParams()
+    params.set("file", essayFileId)
+    params.set("path", essayPath)
+    router.push(`/projects/${projectId}/essay?${params.toString()}`)
   }
 
   const scheduleHostCollaborativeWrite = (path: string, content: string) => {
@@ -1858,7 +1876,7 @@ export function ModelerWorkbench({ projectId }: { projectId: string }) {
                 )}
               </div>
               <div className="py-1">
-                <FileNode item={tree} depth={0} activePath={activeFilePath} onOpen={openFile} />
+                <FileNode item={tree} depth={0} activePath={activeFilePath} onOpen={openFile} onOpenEssay={openEssay} />
               </div>
             </>
           )}

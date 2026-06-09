@@ -10,7 +10,7 @@ import { EssayStatusBar } from "@/components/essay/essay-statusbar"
 import { useEssayCollab } from "@/components/essay/use-essay-collab"
 import { setLocalUserInfo } from "@/lib/codemirror/awareness"
 import type { AwarenessUserInfo } from "@/lib/codemirror/awareness"
-import { isTauri, listFiles } from "@/lib/tauri-api"
+import { isTauri, listFiles, readFile } from "@/lib/tauri-api"
 import { getToken } from "@/lib/api"
 
 type SyncState = "synced" | "saving" | "offline"
@@ -50,8 +50,11 @@ function EssayPageContent() {
 
   const projectId = params.id
   const fileId = searchParams.get("file")
+  const filePath = searchParams.get("path")
 
   const [title, setTitle] = useState("Untitled Essay")
+  const [initialContent, setInitialContent] = useState<string | null>(null)
+  const [loading, setLoading] = useState(true)
   const [syncState, setSyncState] = useState<SyncState>("offline")
   const [wordCount, setWordCount] = useState(0)
   const [sectionInfo, setSectionInfo] = useState({
@@ -67,46 +70,74 @@ function EssayPageContent() {
   const userInfo = getOrCreateUserInfo()
   const token = getToken()
 
-  // Load file info
+  // Load file content and metadata before mounting editor
   useEffect(() => {
-    if (!fileId) {
+    if (!fileId && !filePath) {
       setNotFound(true)
+      setLoading(false)
       return
     }
 
-    // Try to load file name from Tauri
-    if (isTauri()) {
-      listFiles()
-        .then((tree) => {
-          const findFile = (
-            node: typeof tree,
-          ): { name: string } | null => {
-            if ((node as any).id === fileId) {
-              return { name: node.name }
-            }
-            if (node.children) {
-              for (const c of node.children) {
-                const found = findFile(c)
-                if (found) return found
+    let cancelled = false
+
+    async function load() {
+      try {
+        // Derive title
+        if (isTauri() && filePath) {
+          const name = filePath.split("/").pop() || filePath
+          setTitle(name.replace(/\.md$/, ""))
+
+          // Load file content from Tauri filesystem
+          const content = await readFile(filePath)
+          if (!cancelled) {
+            setInitialContent(content)
+          }
+        } else {
+          // For server mode, try to get title from file tree
+          if (isTauri()) {
+            const tree = await listFiles()
+            if (cancelled) return
+            const findFile = (
+              node: typeof tree,
+            ): { name: string } | null => {
+              if ((node as any).id === fileId) {
+                return { name: node.name }
               }
+              if (node.children) {
+                for (const c of node.children) {
+                  const found = findFile(c)
+                  if (found) return found
+                }
+              }
+              return null
             }
-            return null
+            const found = findFile(tree)
+            if (found) {
+              setTitle(found.name.replace(/\.md$/, ""))
+            }
           }
-          const found = findFile(tree)
-          if (found) {
-            setTitle(found.name.replace(/\.md$/, ""))
-          }
-        })
-        .catch(() => {})
+
+          // For server mode: content loaded via Yjs sync from server
+          if (!cancelled) setInitialContent("")
+        }
+      } catch (err) {
+        console.error("[essay] failed to load file:", err)
+        if (!cancelled) {
+          setNotFound(true)
+        }
+      }
+      if (!cancelled) setLoading(false)
     }
 
-    setNotFound(false)
-  }, [fileId])
+    load()
+    return () => { cancelled = true }
+  }, [fileId, filePath])
 
-  // Set up collaboration
+  // Set up collaboration (only after content is loaded)
   const { ydoc, ytext, awareness } = useEssayCollab({
-    fileId: fileId ?? "",
-    readOnly: false,
+    fileId: fileId ?? filePath ?? "",
+    initialContent: initialContent ?? undefined,
+    readOnly: !token,
     onSynced: () => setSyncState("synced"),
   })
 
@@ -115,7 +146,6 @@ function EssayPageContent() {
     if (awareness) {
       setLocalUserInfo(awareness, userInfo)
 
-      // Poll awareness states for collaborator list
       const interval = setInterval(() => {
         const states = awareness.getStates()
         const others: Array<{ name: string; color: string }> = []
@@ -136,7 +166,6 @@ function EssayPageContent() {
 
   // Compute word count and section info
   const handleContentChange = useCallback((content: string) => {
-    // Word count (markdown-aware: strip syntax chars roughly)
     const words = content
       .replace(/[#*`~>\[\]()!_|]/g, " ")
       .replace(/\$\$[\s\S]*?\$\$/g, " ")
@@ -145,14 +174,12 @@ function EssayPageContent() {
       .filter(Boolean)
     setWordCount(words.length)
 
-    // Section count
     const headings = content.match(/^#{1,6}\s/gm)
     setSectionInfo({
       index: 1,
       count: headings ? headings.length + 1 : 1,
     })
 
-    // Debounced save indicator
     setSyncState("saving")
     const timer = setTimeout(() => {
       setSyncState("synced")
@@ -164,9 +191,6 @@ function EssayPageContent() {
   const handleRename = useCallback(
     (newTitle: string) => {
       setTitle(newTitle)
-      // Title displayed in TopBar updates immediately; server-side rename
-      // (file metadata update) is deferred to a follow-up task since it
-      // requires project-specific API endpoints beyond this plan's scope.
       console.log("[essay] rename requested:", newTitle)
     },
     [],
@@ -184,8 +208,17 @@ function EssayPageContent() {
     return () => window.removeEventListener("keydown", handler)
   }, [projectId, router])
 
+  // Loading state
+  if (loading) {
+    return (
+      <div className="flex h-screen items-center justify-center bg-[#0d0d0d]">
+        <div className="text-sm text-[#666]">Loading...</div>
+      </div>
+    )
+  }
+
   // Not found state
-  if (notFound || !fileId) {
+  if (notFound) {
     return (
       <div className="flex h-screen items-center justify-center bg-[#0d0d0d]">
         <div className="text-center">
@@ -232,7 +265,7 @@ function EssayPageContent() {
 
         {/* Sidebar Panel */}
         <Panel defaultSize={30} minSize={15} maxSize={40}>
-          <EssaySidebar projectId={projectId} fileId={fileId} />
+          <EssaySidebar projectId={projectId} fileId={fileId ?? filePath ?? ""} />
         </Panel>
       </PanelGroup>
 
