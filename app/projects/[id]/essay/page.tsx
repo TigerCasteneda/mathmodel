@@ -142,7 +142,7 @@ function EssayPageContent() {
   const { ydoc, ytext, awareness, commentsMap } = useEssayCollab({
     fileId: fileId ?? filePath ?? "",
     initialContent: initialContent ?? undefined,
-    readOnly: !isTauri() && !token,
+    readOnly: !token,
     onSynced: () => setSyncState("synced"),
   })
 
@@ -278,7 +278,7 @@ function EssayPageContent() {
             ytext={ytext}
             awareness={awareness}
             commentsMap={commentsMap}
-            readOnly={!isTauri() && !token}
+            readOnly={!token}
             onChange={handleContentChange}
           />
         </Panel>
