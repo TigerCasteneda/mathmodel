@@ -1513,6 +1513,12 @@ export function ModelerWorkbench({ projectId }: { projectId: string }) {
       ? await getProjectFileContent(projectId, file.id)
       : null
     const lang = fileLanguage(file)
+    // Route .md files to essay editor
+    if (lang === "markdown") {
+      const essayFileId = (file as any).id || file.path
+      router.push(`/projects/${projectId}/essay?file=${encodeURIComponent(essayFileId)}`)
+      return
+    }
     // Binary previews load bytes on their own.
     const content = lang === "pdf" || lang === "image"
       ? ""
