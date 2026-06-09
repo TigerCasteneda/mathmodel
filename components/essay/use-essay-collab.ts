@@ -25,9 +25,9 @@ interface UseEssayCollabResult {
 }
 
 /**
- * Hook that manages the Yjs document lifecycle for an essay file.
- * In Tauri local mode (no auth token), uses Y.Doc in-memory without WebSocket.
- * When a valid token exists, connects via WebSocket for real-time collaboration.
+ * Manages the Yjs document lifecycle for one essay file.
+ * Tauri local mode uses an in-memory Y.Doc; authenticated web mode connects
+ * the same doc to the CRDT WebSocket backend.
  */
 export function useEssayCollab({
   fileId,
@@ -39,44 +39,43 @@ export function useEssayCollab({
   const providerRef = useRef<YjsWebsocketProvider | null>(null)
   const awarenessRef = useRef<AwarenessProtocol | null>(null)
   const syncedRef = useRef(false)
-  const seededRef = useRef(false)
+  const fileIdRef = useRef<string | null>(null)
+  const seededForFileRef = useRef<string | null>(null)
+  const onSyncedRef = useRef(onSynced)
 
-  // Create once per fileId — seed initial content BEFORE any sync
-  if (!ydocRef.current || ydocRef.current.guid !== fileId) {
+  onSyncedRef.current = onSynced
+
+  // Y.Doc.guid is random, so keep the app file id in a separate ref.
+  if (!ydocRef.current || fileIdRef.current !== fileId) {
     providerRef.current?.destroy()
     ydocRef.current?.destroy()
 
-    const doc = new Y.Doc()
-    const ytext = doc.getText("content")
-
-    // Seed initial content NOW, before any provider connects.
-    // The provider's SyncFull will overwrite if the server has content;
-    // if there's no server, this is the permanent content.
-    if (initialContent !== undefined && ytext.toString() === "" && !seededRef.current) {
-      ytext.insert(0, initialContent)
-      seededRef.current = true
-    }
-
-    ydocRef.current = doc
+    ydocRef.current = new Y.Doc()
+    fileIdRef.current = fileId
+    seededForFileRef.current = null
+    awarenessRef.current = null
+    providerRef.current = null
     syncedRef.current = false
-  } else {
-    // Same doc — if initialContent changed and doc is empty, seed
-    const ytext = ydocRef.current.getText("content")
-    if (initialContent !== undefined && ytext.toString() === "" && !seededRef.current) {
-      ytext.insert(0, initialContent)
-      seededRef.current = true
-    }
   }
 
   const ydoc = ydocRef.current
   const ytext = ydoc.getText("content")
 
+  if (
+    initialContent !== undefined &&
+    ytext.toString() === "" &&
+    seededForFileRef.current !== fileId
+  ) {
+    ytext.insert(0, initialContent)
+    seededForFileRef.current = fileId
+  }
+
   useEffect(() => {
     const token = getToken()
-    // Tauri local mode or no token: skip WebSocket, use in-memory Y.Doc only
+
     if (!token || isTauri()) {
       syncedRef.current = true
-      onSynced?.()
+      onSyncedRef.current?.()
       awarenessRef.current = null
       providerRef.current = null
       return
@@ -84,10 +83,12 @@ export function useEssayCollab({
 
     let awareness: AwarenessProtocol | null = null
     let provider: YjsWebsocketProvider | null = null
+    let checkSynced: ReturnType<typeof setInterval> | null = null
     let cancelled = false
 
     void import("y-protocols/awareness").then((mod) => {
       if (cancelled) return
+
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       awareness = new (mod as any).Awareness(ydoc) as AwarenessProtocol
       awarenessRef.current = awareness
@@ -99,25 +100,32 @@ export function useEssayCollab({
         ;(awareness as any).setLocalState(null)
       }
 
-      const checkSynced = setInterval(() => {
-        if (provider?.synced) {
-          syncedRef.current = true
-          clearInterval(checkSynced)
-          // Server SyncFull may have overwritten local content — re-seed if empty
-          if (ydoc.getText("content").toString() === "" && initialContent && !seededRef.current) {
-            ydoc.getText("content").insert(0, initialContent)
-            seededRef.current = true
-          }
-          onSynced?.()
+      checkSynced = setInterval(() => {
+        if (!provider?.synced) return
+
+        syncedRef.current = true
+        if (checkSynced) clearInterval(checkSynced)
+        checkSynced = null
+
+        if (
+          ydoc.getText("content").toString() === "" &&
+          initialContent !== undefined &&
+          seededForFileRef.current !== fileId
+        ) {
+          ydoc.getText("content").insert(0, initialContent)
+          seededForFileRef.current = fileId
         }
+
+        onSyncedRef.current?.()
       }, 100)
     })
 
     return () => {
       cancelled = true
+      if (checkSynced) clearInterval(checkSynced)
       provider?.destroy()
     }
-  }, [fileId, readOnly, onSynced, ydoc])
+  }, [fileId, readOnly, ydoc, initialContent])
 
   const commentsMap = ydoc.getMap<EssayComment>("comments")
 

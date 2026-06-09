@@ -12,7 +12,7 @@ import { useEssayCollab } from "@/components/essay/use-essay-collab"
 import { setLocalUserInfo } from "@/lib/codemirror/awareness"
 import type { AwarenessUserInfo } from "@/lib/codemirror/awareness"
 import { isTauri, listFiles, readFile } from "@/lib/tauri-api"
-import { getToken } from "@/lib/api"
+import { getProjectFileContent, getToken } from "@/lib/api"
 import type { EssayComment } from "@/lib/codemirror/comments"
 
 type SyncState = "synced" | "saving" | "offline"
@@ -54,9 +54,10 @@ function EssayPageContent() {
   const projectId = params.id
   const fileId = searchParams.get("file")
   const filePath = searchParams.get("path")
+  const fileKey = fileId ?? filePath ?? ""
 
   const [title, setTitle] = useState("Untitled Essay")
-  const [initialContent, setInitialContent] = useState<string | null>(null)
+  const [loadedFile, setLoadedFile] = useState<{ key: string; content: string } | null>(null)
   const [loading, setLoading] = useState(true)
   const [syncState, setSyncState] = useState<SyncState>("offline")
   const [wordCount, setWordCount] = useState(0)
@@ -83,6 +84,10 @@ function EssayPageContent() {
     }
 
     let cancelled = false
+    const nextFileKey = fileId ?? filePath ?? ""
+    setLoading(true)
+    setNotFound(false)
+    setLoadedFile(null)
 
     async function load() {
       try {
@@ -94,7 +99,20 @@ function EssayPageContent() {
           // Load file content from Tauri filesystem
           const content = await readFile(filePath)
           if (!cancelled) {
-            setInitialContent(content)
+            setLoadedFile({ key: nextFileKey, content })
+          }
+        } else if (isTauri() && fileId) {
+          const name = fileId.split("/").pop() || fileId
+          setTitle(name.replace(/\.md$/, ""))
+
+          const content = await readFile(fileId)
+          if (!cancelled) {
+            setLoadedFile({ key: nextFileKey, content })
+          }
+        } else if (fileId) {
+          const response = await getProjectFileContent(projectId, fileId)
+          if (!cancelled) {
+            setLoadedFile({ key: nextFileKey, content: response.content })
           }
         } else {
           // For server mode, try to get title from file tree
@@ -121,14 +139,13 @@ function EssayPageContent() {
             }
           }
 
-          // For server mode: content loaded via Yjs sync from server
-          if (!cancelled) setInitialContent("")
+          if (!cancelled) setLoadedFile({ key: nextFileKey, content: "" })
         }
       } catch (err) {
         // File read failed — start with empty editor; don't treat as "not found"
         console.warn("[essay] could not load file content:", err)
         if (!cancelled) {
-          setInitialContent("")
+          setLoadedFile({ key: nextFileKey, content: "" })
         }
       }
       if (!cancelled) setLoading(false)
@@ -136,12 +153,12 @@ function EssayPageContent() {
 
     load()
     return () => { cancelled = true }
-  }, [fileId, filePath])
+  }, [projectId, fileId, filePath])
 
   // Set up collaboration (only after content is loaded)
   const { ydoc, ytext, awareness, commentsMap } = useEssayCollab({
-    fileId: fileId ?? filePath ?? "",
-    initialContent: initialContent ?? undefined,
+    fileId: fileKey,
+    initialContent: loadedFile?.key === fileKey ? loadedFile.content : undefined,
     readOnly: !token,
     onSynced: () => setSyncState("synced"),
   })
@@ -229,15 +246,6 @@ function EssayPageContent() {
     return () => window.removeEventListener("keydown", handler)
   }, [projectId, router])
 
-  // Loading state
-  if (loading) {
-    return (
-      <div className="flex h-screen items-center justify-center bg-[#0d0d0d]">
-        <div className="text-sm text-[#666]">Loading...</div>
-      </div>
-    )
-  }
-
   // Not found state
   if (notFound) {
     return (
@@ -260,6 +268,15 @@ function EssayPageContent() {
     )
   }
 
+  // Loading state
+  if (loading || loadedFile?.key !== fileKey) {
+    return (
+      <div className="flex h-screen items-center justify-center bg-[#0d0d0d]">
+        <div className="text-sm text-[#666]">Loading...</div>
+      </div>
+    )
+  }
+
   return (
     <div className="flex h-screen flex-col bg-[#0d0d0d] overflow-hidden">
       <EssayTopBar
@@ -274,6 +291,7 @@ function EssayPageContent() {
         {/* Editor Panel */}
         <Panel defaultSize={70} minSize={40}>
           <EssayEditor
+            key={fileKey}
             ydoc={ydoc}
             ytext={ytext}
             awareness={awareness}

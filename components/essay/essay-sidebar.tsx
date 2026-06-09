@@ -45,15 +45,14 @@ export function EssaySidebar({
 
   const handleFileClick = useCallback(
     (file: FileTreeItem) => {
-      if (file.id === fileId) return // already open
+      const nextFileId = file.id ?? file.path
+      if (nextFileId === fileId) return // already open
       const ext = file.name.split(".").pop()?.toLowerCase()
       if (ext === "md") {
-        // Navigate to another essay
-        if (file.id) {
-          router.push(
-            `/projects/${projectId}/essay?file=${file.id}`,
-          )
-        }
+        const params = new URLSearchParams()
+        params.set("file", nextFileId)
+        params.set("path", file.path)
+        router.push(`/projects/${projectId}/essay?${params.toString()}`)
       } else {
         // Navigate back to project with this file
         router.push(`/projects/${projectId}`)
@@ -120,7 +119,7 @@ function FileTreeRenderer({
 }) {
   const isFolder = tree.type === "folder"
   const isExpanded = expanded.has(tree.path)
-  const isActive = tree.id === activeFileId
+  const isActive = (tree.id ?? tree.path) === activeFileId
 
   return (
     <div>
