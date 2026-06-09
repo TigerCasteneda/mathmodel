@@ -3,6 +3,19 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionStatus {
+    Active,
+    Archived,
+}
+
+impl Default for SessionStatus {
+    fn default() -> Self {
+        Self::Active
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionMessage {
     pub role: String,
@@ -23,6 +36,8 @@ pub struct Session {
     pub updated_at: i64,
     #[serde(default)]
     pub messages: Vec<SessionMessage>,
+    #[serde(default)]
+    pub status: SessionStatus,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -31,6 +46,7 @@ pub struct SessionInfo {
     pub name: String,
     pub created_at: i64,
     pub message_count: usize,
+    pub status: SessionStatus,
 }
 
 /// Persisted session store backed by JSON files in the Tauri app data dir.
@@ -60,11 +76,13 @@ impl ChatSessionStore {
                 if path.extension().and_then(|e| e.to_str()) == Some("json") {
                     if let Ok(content) = std::fs::read_to_string(&path) {
                         if let Ok(session) = serde_json::from_str::<Session>(&content) {
+                            let status = session.status.clone();
                             list.push(SessionInfo {
                                 id: session.id,
                                 name: session.name,
                                 created_at: session.created_at,
                                 message_count: session.messages.len(),
+                                status,
                             });
                         }
                     }
@@ -96,6 +114,7 @@ impl ChatSessionStore {
                 created_at: chrono::Utc::now().timestamp(),
                 updated_at: chrono::Utc::now().timestamp(),
                 messages: Vec::new(),
+                status: SessionStatus::Active,
             }
         };
 
@@ -205,6 +224,60 @@ impl ChatSessionStore {
         Ok(())
     }
 
+    /// Rename a session.
+    pub fn rename(&self, conversation_id: &str, new_name: &str) -> Result<(), String> {
+        let mut session = self.load(conversation_id)?;
+        session.name = new_name.trim().chars().take(100).collect();
+        session.updated_at = chrono::Utc::now().timestamp();
+        self.persist(&session)
+    }
+
+    /// Archive a session (sets status to Archived).
+    pub fn archive(&self, conversation_id: &str) -> Result<(), String> {
+        let mut session = self.load(conversation_id)?;
+        session.status = SessionStatus::Archived;
+        session.updated_at = chrono::Utc::now().timestamp();
+        self.persist(&session)
+    }
+
+    /// Unarchive a session (sets status back to Active).
+    pub fn unarchive(&self, conversation_id: &str) -> Result<(), String> {
+        let mut session = self.load(conversation_id)?;
+        session.status = SessionStatus::Active;
+        session.updated_at = chrono::Utc::now().timestamp();
+        self.persist(&session)
+    }
+
+    /// Search sessions by name and message content.
+    /// Returns matching SessionInfo, scanning at most the first 2KB of each
+    /// message body for performance.
+    pub fn search(&self, query: &str) -> Result<Vec<SessionInfo>, String> {
+        let query = query.trim().to_lowercase();
+        if query.is_empty() {
+            return self.list();
+        }
+        let all = self.list()?;
+        Ok(all
+            .into_iter()
+            .filter(|info| {
+                if info.name.to_lowercase().contains(&query) {
+                    return true;
+                }
+                // Light scan of message content
+                let path = self.sessions_dir.join(format!("{}.json", info.id));
+                if let Ok(content) = std::fs::read_to_string(&path) {
+                    let search_buf: String = content
+                        .chars()
+                        .take(8_192)
+                        .collect();
+                    search_buf.to_lowercase().contains(&query)
+                } else {
+                    false
+                }
+            })
+            .collect())
+    }
+
     #[cfg(test)]
     fn sessions_dir_for_tests(&self) -> &PathBuf {
         &self.sessions_dir
@@ -234,6 +307,47 @@ pub fn delete_session(
     store: tauri::State<'_, ChatSessionStore>,
 ) -> Result<(), String> {
     store.delete(&conversation_id)
+}
+
+#[tauri::command]
+pub fn rename_session(
+    conversation_id: String,
+    new_name: String,
+    store: tauri::State<'_, ChatSessionStore>,
+) -> Result<(), String> {
+    store.rename(&conversation_id, &new_name)
+}
+
+#[tauri::command]
+pub fn archive_session(
+    conversation_id: String,
+    store: tauri::State<'_, ChatSessionStore>,
+) -> Result<(), String> {
+    store.archive(&conversation_id)
+}
+
+#[tauri::command]
+pub fn unarchive_session(
+    conversation_id: String,
+    store: tauri::State<'_, ChatSessionStore>,
+) -> Result<(), String> {
+    store.unarchive(&conversation_id)
+}
+
+#[tauri::command]
+pub fn search_sessions(
+    query: String,
+    store: tauri::State<'_, ChatSessionStore>,
+) -> Result<Vec<SessionInfo>, String> {
+    store.search(&query)
+}
+
+#[tauri::command]
+pub fn export_session(
+    conversation_id: String,
+    store: tauri::State<'_, ChatSessionStore>,
+) -> Result<Vec<claude_code_rs::api::ChatMessage>, String> {
+    store.history(&conversation_id)
 }
 
 impl Default for ChatSessionStore {

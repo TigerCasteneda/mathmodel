@@ -479,6 +479,7 @@ export interface SessionInfo {
   name: string
   created_at: number
   message_count: number
+  status: string
 }
 
 export interface Session {
@@ -487,6 +488,7 @@ export interface Session {
   created_at: number
   updated_at: number
   messages: SessionMessage[]
+  status: string
 }
 
 export interface SessionToolCallFunction {
@@ -514,11 +516,69 @@ export async function listSessions(): Promise<SessionInfo[]> {
 }
 
 export async function loadSession(conversationId?: string): Promise<Session> {
-  if (!isTauri()) return { id: "default", name: "New Chat", created_at: 0, updated_at: 0, messages: [] }
+  if (!isTauri()) return { id: "default", name: "New Chat", created_at: 0, updated_at: 0, messages: [], status: "active" }
   return invoke<Session>("load_session", { conversationId: conversationId || null })
 }
 
 export async function deleteSession(conversationId: string): Promise<void> {
   if (!isTauri()) return
   return invoke("delete_session", { conversationId })
+}
+
+export async function renameSession(conversationId: string, newName: string): Promise<void> {
+  if (!isTauri()) return
+  return invoke("rename_session", { conversationId, newName })
+}
+
+export async function archiveSession(conversationId: string): Promise<void> {
+  if (!isTauri()) return
+  return invoke("archive_session", { conversationId })
+}
+
+export async function unarchiveSession(conversationId: string): Promise<void> {
+  if (!isTauri()) return
+  return invoke("unarchive_session", { conversationId })
+}
+
+export async function searchSessions(query: string): Promise<SessionInfo[]> {
+  if (!isTauri()) return []
+  return invoke<SessionInfo[]>("search_sessions", { query })
+}
+
+export async function exportSession(
+  conversationId: string,
+): Promise<SessionMessage[]> {
+  if (!isTauri()) return []
+  return invoke<SessionMessage[]>("export_session", { conversationId })
+}
+
+// ─── Operation History ─────────────────────────────────
+
+export interface OperationEntry {
+  id: string
+  session_id: string
+  op_type: string
+  tool_name: string
+  input_preview: string
+  success: boolean
+  duration_ms: number
+  timestamp: number
+}
+
+export interface OperationStats {
+  total: number
+  successful: number
+  failed: number
+  avg_duration_ms: number
+  top_tools: Array<{ tool_name: string; count: number }>
+}
+
+export async function listOperations(sessionId: string): Promise<OperationEntry[]> {
+  if (!isTauri()) return []
+  return invoke<OperationEntry[]>("list_operations", { sessionId })
+}
+
+export async function getOperationStats(sessionId: string): Promise<OperationStats | null> {
+  if (!isTauri()) return null
+  return invoke<OperationStats>("get_operation_stats", { sessionId })
 }

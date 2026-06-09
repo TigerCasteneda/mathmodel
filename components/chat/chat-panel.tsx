@@ -58,6 +58,7 @@ import {
 import {
   aiChat,
   getAiConfigStatus,
+  listOperations,
   loadSession,
   onChatBackgroundTask,
   onChatError,
@@ -71,6 +72,7 @@ import {
   stopGeneration,
   type AiPermissionMode,
   type ChatBackgroundTaskEvent,
+  type OperationEntry,
   type PermissionRequestEvent,
   type SessionMessage as PersistedSessionMessage,
   type ChatToolCallEvent,
@@ -795,6 +797,8 @@ export function ChatPanel({
   const [resolvingPermission, setResolvingPermission] = useState(false)
   const [stopRequested, setStopRequested] = useState(false)
   const [showSlashMenu, setShowSlashMenu] = useState(false)
+  const [showOpHistory, setShowOpHistory] = useState(false)
+  const [operations, setOperations] = useState<OperationEntry[]>([])
   const scrollRef = useRef<HTMLDivElement>(null)
   const seenStreamEventsRef = useRef<Set<string>>(new Set())
   const stopRequestedRef = useRef(false)
@@ -1083,7 +1087,24 @@ export function ChatPanel({
           <span className="text-sm font-medium">Modeler AI</span>
           <span className="mt-1 text-[10px] uppercase tracking-[0.18em] text-[#787878]">Claude Code Runtime</span>
         </div>
-        <span className="ml-auto flex items-center gap-1.5 rounded-full border border-[#373737] bg-[#1a1a1a] px-2 py-1 text-[11px] text-[#b4b4b4]">
+        <button
+          type="button"
+          onClick={() => {
+            setShowOpHistory((prev) => !prev)
+            if (!showOpHistory) {
+              listOperations(conversationId).then(setOperations).catch(() => setOperations([]))
+            }
+          }}
+          title="Operation history"
+          className={cn(
+            "ml-auto inline-flex items-center gap-1 rounded-full border border-[#373737] px-2 py-1 text-xs text-[#787878] hover:bg-[#232323] hover:text-[#e8e8e8] transition-colors",
+            showOpHistory && "bg-[#232323] text-[#e8e8e8] border-[#d4a574]/40",
+          )}
+        >
+          <Wrench className="h-3 w-3" />
+          {operations.length}
+        </button>
+        <span className="flex items-center gap-1.5 rounded-full border border-[#373737] bg-[#1a1a1a] px-2 py-1 text-[11px] text-[#b4b4b4]">
           <span className={cn("h-1.5 w-1.5 rounded-full", sending ? "cc-live-dot bg-[#64b5f6]" : "bg-[#4caf50]")} />
           {sending ? "Streaming" : workspaceMode === "guest" ? "Guest Remote" : "Host Local"}
         </span>
@@ -1132,6 +1153,46 @@ export function ChatPanel({
           </div>
         )}
       </div>
+
+      {/* Operation history panel */}
+      {showOpHistory && (
+        <div className="border-t border-[#373737] bg-[#0d0d0d] px-3 py-2 max-h-48 overflow-y-auto shrink-0">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-xs font-medium text-[#b4b4b4]">Operation History</span>
+            <button
+              type="button"
+              onClick={() => setShowOpHistory(false)}
+              className="text-xs text-[#787878] hover:text-[#e8e8e8]"
+            >
+              ✕
+            </button>
+          </div>
+          {operations.length === 0 ? (
+            <p className="text-xs text-[#787878]">No tool calls in this session yet.</p>
+          ) : (
+            <div className="grid gap-1">
+              {operations.map((op) => {
+                const meta = TOOL_META[op.tool_name] || { label: op.tool_name, tone: "neutral", icon: Wrench }
+                const Icon = meta.icon
+                return (
+                  <div key={op.id} className="flex items-center gap-2 rounded px-2 py-1 text-xs hover:bg-[#1a1a1a]">
+                    <span className={cn(
+                      "h-1.5 w-1.5 shrink-0 rounded-full",
+                      op.success ? "bg-[#4caf50]" : "bg-[#f44336]",
+                    )} />
+                    <Icon className="h-3 w-3 shrink-0 text-[#787878]" />
+                    <span className="font-medium text-[#e8e8e8]">{meta.label}</span>
+                    <span className="truncate text-[#787878]">{op.input_preview}</span>
+                    <span className="ml-auto shrink-0 tabular-nums text-[#555]">
+                      {new Date(op.timestamp * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                    </span>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Input area */}
       <form onSubmit={handleSubmit} className="border-t border-[#373737] bg-[#121212] p-3 shrink-0">

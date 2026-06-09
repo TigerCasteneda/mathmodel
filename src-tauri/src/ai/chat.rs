@@ -1,6 +1,7 @@
 use super::compaction::{self, ContextMessage};
 use super::config::{AiConfig, AiConfigState, AiConfigStatus};
 use super::executor::{build_execution_requests, execute_tool_calls};
+use super::history::{classify_operation, OperationEntry, OperationHistoryStore};
 use super::permissions::PermissionStore;
 use super::runtime::{ModelerAiRuntime, PermissionMode};
 use super::session::ChatSessionStore;
@@ -379,6 +380,7 @@ pub async fn ai_chat(
     sessions: State<'_, ChatSessionStore>,
     permissions: State<'_, PermissionStore>,
     stop_flags: State<'_, StopFlags>,
+    op_history: State<'_, OperationHistoryStore>,
 ) -> Result<(), String> {
     let conversation_id = conversation_id.unwrap_or_else(|| "default".to_string());
     stop_flags.clear(&conversation_id)?;
@@ -606,6 +608,25 @@ pub async fn ai_chat(
                     message: ChatMessage::tool(&result.id, result.output),
                     timestamp: chrono::Utc::now().timestamp(),
                 });
+
+                // Record operation in history
+                let preview: String = result
+                    .arguments
+                    .to_string()
+                    .chars()
+                    .take(200)
+                    .collect();
+                let entry = OperationEntry {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    session_id: conversation_id.clone(),
+                    op_type: classify_operation(&result.name),
+                    tool_name: result.name.clone(),
+                    input_preview: preview,
+                    success: status != "error",
+                    duration_ms: 0,
+                    timestamp: chrono::Utc::now().timestamp(),
+                };
+                let _ = op_history.record(entry);
             }
 
             for persisted in
