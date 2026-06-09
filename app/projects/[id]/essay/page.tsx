@@ -1,0 +1,262 @@
+"use client"
+
+import { useEffect, useState, useCallback, Suspense } from "react"
+import { useParams, useRouter, useSearchParams } from "next/navigation"
+import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels"
+import { EssayEditor } from "@/components/essay/essay-editor"
+import { EssayTopBar } from "@/components/essay/essay-topbar"
+import { EssaySidebar } from "@/components/essay/essay-sidebar"
+import { EssayStatusBar } from "@/components/essay/essay-statusbar"
+import { useEssayCollab } from "@/components/essay/use-essay-collab"
+import { setLocalUserInfo } from "@/lib/codemirror/awareness"
+import type { AwarenessUserInfo } from "@/lib/codemirror/awareness"
+import { isTauri, listFiles } from "@/lib/tauri-api"
+import { getToken } from "@/lib/api"
+
+type SyncState = "synced" | "saving" | "offline"
+
+function getOrCreateUserInfo(): AwarenessUserInfo {
+  const key = "essay-user-info"
+  if (typeof window !== "undefined") {
+    const stored = localStorage.getItem(key)
+    if (stored) {
+      try {
+        return JSON.parse(stored)
+      } catch {
+        // fall through
+      }
+    }
+  }
+  const colors = [
+    "#f87171", "#60a5fa", "#34d399", "#fbbf24",
+    "#a78bfa", "#f472b6", "#38bdf8", "#fb923c",
+  ]
+  const color = colors[Math.floor(Math.random() * colors.length)]
+  const info: AwarenessUserInfo = {
+    name: "User",
+    color,
+    colorLight: color + "33",
+  }
+  if (typeof window !== "undefined") {
+    localStorage.setItem(key, JSON.stringify(info))
+  }
+  return info
+}
+
+function EssayPageContent() {
+  const params = useParams<{ id: string }>()
+  const searchParams = useSearchParams()
+  const router = useRouter()
+
+  const projectId = params.id
+  const fileId = searchParams.get("file")
+
+  const [title, setTitle] = useState("Untitled Essay")
+  const [syncState, setSyncState] = useState<SyncState>("offline")
+  const [wordCount, setWordCount] = useState(0)
+  const [sectionInfo, setSectionInfo] = useState({
+    index: 1,
+    count: 1,
+  })
+  const [lastSaved, setLastSaved] = useState<Date | null>(null)
+  const [collaborators, setCollaborators] = useState<
+    Array<{ name: string; color: string }>
+  >([])
+  const [notFound, setNotFound] = useState(false)
+
+  const userInfo = getOrCreateUserInfo()
+  const token = getToken()
+
+  // Load file info
+  useEffect(() => {
+    if (!fileId) {
+      setNotFound(true)
+      return
+    }
+
+    // Try to load file name from Tauri
+    if (isTauri()) {
+      listFiles()
+        .then((tree) => {
+          const findFile = (
+            node: typeof tree,
+          ): { name: string } | null => {
+            if ((node as any).id === fileId) {
+              return { name: node.name }
+            }
+            if (node.children) {
+              for (const c of node.children) {
+                const found = findFile(c)
+                if (found) return found
+              }
+            }
+            return null
+          }
+          const found = findFile(tree)
+          if (found) {
+            setTitle(found.name.replace(/\.md$/, ""))
+          }
+        })
+        .catch(() => {})
+    }
+
+    setNotFound(false)
+  }, [fileId])
+
+  // Set up collaboration
+  const { ydoc, ytext, awareness } = useEssayCollab({
+    fileId: fileId ?? "",
+    readOnly: false,
+    onSynced: () => setSyncState("synced"),
+  })
+
+  // Set local user info once awareness is ready
+  useEffect(() => {
+    if (awareness) {
+      setLocalUserInfo(awareness, userInfo)
+
+      // Poll awareness states for collaborator list
+      const interval = setInterval(() => {
+        const states = awareness.getStates()
+        const others: Array<{ name: string; color: string }> = []
+        states.forEach((state, clientId) => {
+          if (clientId !== (awareness as any).doc?.clientID) {
+            const user = state.user as AwarenessUserInfo | undefined
+            if (user) {
+              others.push({ name: user.name, color: user.color })
+            }
+          }
+        })
+        setCollaborators(others)
+      }, 2000)
+
+      return () => clearInterval(interval)
+    }
+  }, [awareness, userInfo])
+
+  // Compute word count and section info
+  const handleContentChange = useCallback((content: string) => {
+    // Word count (markdown-aware: strip syntax chars roughly)
+    const words = content
+      .replace(/[#*`~>\[\]()!_|]/g, " ")
+      .replace(/\$\$[\s\S]*?\$\$/g, " ")
+      .replace(/\$[^$]*\$/g, " ")
+      .split(/\s+/)
+      .filter(Boolean)
+    setWordCount(words.length)
+
+    // Section count
+    const headings = content.match(/^#{1,6}\s/gm)
+    setSectionInfo({
+      index: 1,
+      count: headings ? headings.length + 1 : 1,
+    })
+
+    // Debounced save indicator
+    setSyncState("saving")
+    const timer = setTimeout(() => {
+      setSyncState("synced")
+      setLastSaved(new Date())
+    }, 1000)
+    return () => clearTimeout(timer)
+  }, [])
+
+  const handleRename = useCallback(
+    (newTitle: string) => {
+      setTitle(newTitle)
+      // Title displayed in TopBar updates immediately; server-side rename
+      // (file metadata update) is deferred to a follow-up task since it
+      // requires project-specific API endpoints beyond this plan's scope.
+      console.log("[essay] rename requested:", newTitle)
+    },
+    [],
+  )
+
+  // Handle keyboard shortcut to exit
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.ctrlKey && e.shiftKey && e.key === "E") {
+        e.preventDefault()
+        router.push(`/projects/${projectId}`)
+      }
+    }
+    window.addEventListener("keydown", handler)
+    return () => window.removeEventListener("keydown", handler)
+  }, [projectId, router])
+
+  // Not found state
+  if (notFound || !fileId) {
+    return (
+      <div className="flex h-screen items-center justify-center bg-[#0d0d0d]">
+        <div className="text-center">
+          <h1 className="text-2xl font-semibold text-[#e0e0e0] mb-2">
+            File not found
+          </h1>
+          <p className="text-sm text-[#666] mb-4">
+            The requested essay file does not exist or you do not have access.
+          </p>
+          <button
+            onClick={() => router.push(`/projects/${projectId}`)}
+            className="text-sm text-[#569cd6] hover:underline"
+          >
+            ← Back to project
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex h-screen flex-col bg-[#0d0d0d] overflow-hidden">
+      <EssayTopBar
+        title={title}
+        projectId={projectId}
+        syncState={syncState}
+        collaborators={collaborators}
+        onRename={handleRename}
+      />
+
+      <PanelGroup direction="horizontal" className="flex-1">
+        {/* Editor Panel */}
+        <Panel defaultSize={70} minSize={40}>
+          <EssayEditor
+            ydoc={ydoc}
+            ytext={ytext}
+            awareness={awareness}
+            readOnly={!token}
+            onChange={handleContentChange}
+          />
+        </Panel>
+
+        <PanelResizeHandle className="w-1 bg-[#2a2a2a] hover:bg-[#444] transition-colors active:bg-[#569cd6]" />
+
+        {/* Sidebar Panel */}
+        <Panel defaultSize={30} minSize={15} maxSize={40}>
+          <EssaySidebar projectId={projectId} fileId={fileId} />
+        </Panel>
+      </PanelGroup>
+
+      <EssayStatusBar
+        wordCount={wordCount}
+        sectionIndex={sectionInfo.index}
+        sectionCount={sectionInfo.count}
+        lastSaved={lastSaved}
+      />
+    </div>
+  )
+}
+
+// Wrap in Suspense for useSearchParams
+export default function EssayPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="flex h-screen items-center justify-center bg-[#0d0d0d]">
+          <div className="text-sm text-[#666]">Loading...</div>
+        </div>
+      }
+    >
+      <EssayPageContent />
+    </Suspense>
+  )
+}
