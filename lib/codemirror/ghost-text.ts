@@ -91,7 +91,8 @@ class GhostTextPlugin implements PluginValue {
 
   update(update: ViewUpdate) {
     if (update.docChanged) {
-      this.dismissGhost()
+      // dispatch() not allowed during update — defer to next frame
+      requestAnimationFrame(() => this.dismissGhost())
       this.debounceTimer = setTimeout(() => this.scheduleAfterTyping(), 1500)
     }
   }
