@@ -32,12 +32,20 @@ import { essayTheme } from "@/lib/codemirror/theme"
 import { livePreview } from "@/lib/codemirror/live-preview"
 import { commentsPlugin } from "@/lib/codemirror/comments"
 import type { EssayComment } from "@/lib/codemirror/comments"
+import { ghostTextPlugin, ghostKeymap } from "@/lib/codemirror/ghost-text"
+import { createGhostFetcher } from "@/components/essay/essay-ghost"
 
 interface EssayEditorProps {
   ydoc: Y.Doc
   ytext: Y.Text
   awareness: AwarenessProtocol | null
   commentsMap?: Y.Map<EssayComment>
+  /** File ID for ghost text AI conversation */
+  fileId?: string
+  /** Essay file name for context collection */
+  essayFileName?: string
+  /** Server base URL for AI calls */
+  serverBase?: string
   readOnly?: boolean
   onChange?: (content: string) => void
   onCursorMove?: (line: number, col: number) => void
@@ -48,6 +56,9 @@ export function EssayEditor({
   ytext,
   awareness,
   commentsMap,
+  fileId,
+  essayFileName,
+  serverBase,
   readOnly = false,
   onChange,
   onCursorMove,
@@ -64,6 +75,9 @@ export function EssayEditor({
       trackedOrigins: new Set([null]), // null = local origin
     })
     undoManagerRef.current = undoManager
+
+    // Ghost text plugin — created outside array so we can reference it
+    const g = ghostTextPlugin()
 
     // Build extensions
     const extensions = [
@@ -118,6 +132,10 @@ export function EssayEditor({
       // Comments (PDF-style annotation)
       ...(commentsMap ? [commentsPlugin(commentsMap)] : []),
 
+      // Ghost text (inline AI completion — Tabby-style)
+      g.plugin,
+      ghostKeymap(g),
+
       // Read-only
       EditorState.readOnly.of(readOnly),
       EditorView.editable.of(!readOnly),
@@ -145,6 +163,14 @@ export function EssayEditor({
     })
 
     viewRef.current = view
+
+    // Configure ghost text AI fetcher (next tick so plugin is attached)
+    if (fileId) {
+      setTimeout(() => {
+        const ghost = g.get(view)
+        ghost?.configure(createGhostFetcher(fileId, essayFileName, serverBase))
+      }, 0)
+    }
 
     return () => {
       view.destroy()

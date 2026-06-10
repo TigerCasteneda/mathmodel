@@ -296,6 +296,8 @@ function EssayPageContent() {
             ytext={ytext}
             awareness={awareness}
             commentsMap={commentsMap}
+            fileId={fileKey}
+            essayFileName={filePath ?? undefined}
             readOnly={!token}
             onChange={handleContentChange}
           />
