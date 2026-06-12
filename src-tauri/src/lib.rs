@@ -30,6 +30,20 @@ pub fn run() {
             app.manage(AiConfigState::new(app_data.clone()));
             app.manage(ai::session::ChatSessionStore::new(app_data.clone()));
             app.manage(ai::permissions::PermissionStore::new(app_data.clone()));
+            app.manage(ai::tools::question::QuestionStore::new());
+            app.manage(ai::hooks::HookManager::new(app_data.clone()));
+            app.manage(ai::skills::SkillRegistry::new(app_data.clone()));
+            app.manage(ai::plugins::PluginManager::new(app_data.clone()));
+            app.manage(ai::plan::PlanService::new(app_data.clone()));
+            let work_dir = app
+                .path()
+                .app_data_dir()
+                .unwrap_or_else(|_| PathBuf::from("."));
+            let agent_orchestrator = ai::agent::AgentOrchestrator::new(
+                app.handle().clone(),
+                work_dir,
+            );
+            app.manage(agent_orchestrator);
             app.manage(ai::chat::StopFlags::default());
             app.manage(ai::history::OperationHistoryStore::new(app_data.clone()));
 
@@ -82,10 +96,66 @@ pub fn run() {
             ai::permissions::resolve_permission_request,
             ai::permissions::set_permission_config,
             ai::search::ai_search,
+            resolve_question,
+            list_hooks,
+            toggle_hook,
+            list_skills,
+            list_plugins,
+            toggle_plugin,
             get_server_port,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[tauri::command]
+async fn list_hooks(
+    hooks: State<'_, ai::hooks::HookManager>,
+) -> Result<Vec<ai::hooks::Hook>, String> {
+    Ok(hooks.list_hooks().await)
+}
+
+#[tauri::command]
+async fn list_skills(
+    skills: State<'_, ai::skills::SkillRegistry>,
+) -> Result<Vec<ai::skills::SkillDefinition>, String> {
+    Ok(skills.list_all().await)
+}
+
+#[tauri::command]
+async fn list_plugins(
+    plugins: State<'_, ai::plugins::PluginManager>,
+) -> Result<Vec<ai::plugins::PluginInfo>, String> {
+    Ok(plugins.list().await)
+}
+
+#[tauri::command]
+async fn toggle_plugin(
+    name: String,
+    enabled: bool,
+    plugins: State<'_, ai::plugins::PluginManager>,
+) -> Result<bool, String> {
+    plugins.toggle(&name, enabled).await;
+    Ok(enabled)
+}
+
+#[tauri::command]
+async fn toggle_hook(
+    name: String,
+    enabled: bool,
+    hooks: State<'_, ai::hooks::HookManager>,
+) -> Result<bool, String> {
+    hooks.toggle_hook(&name, enabled).await;
+    Ok(enabled)
+}
+
+#[tauri::command]
+async fn resolve_question(
+    request_id: String,
+    answers: String,
+    store: State<'_, ai::tools::question::QuestionStore>,
+) -> Result<bool, String> {
+    Ok(store.resolve(&request_id, &answers).await)
 }
 
 async fn start_server(data_dir: PathBuf) -> anyhow::Result<u16> {

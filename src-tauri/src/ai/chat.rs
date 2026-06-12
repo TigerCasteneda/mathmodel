@@ -2,8 +2,13 @@ use super::compaction::{self, ContextMessage};
 use super::config::{AiConfig, AiConfigState, AiConfigStatus};
 use super::executor::{build_execution_requests, execute_tool_calls};
 use super::history::{classify_operation, OperationEntry, OperationHistoryStore};
+use super::agent::AgentOrchestrator;
+use super::hooks::{HookContext, HookManager, HookPoint};
 use super::permissions::PermissionStore;
-use super::runtime::{ModelerAiRuntime, PermissionMode};
+use super::plan::PlanService;
+use super::runtime::{is_tool_read_only, ModelerAiRuntime, PermissionMode};
+use super::skills::SkillRegistry;
+use super::tools::question::QuestionStore;
 use super::session::ChatSessionStore;
 use super::workspace::WorkspaceContext;
 use crate::agent::state::AgentState;
@@ -11,7 +16,7 @@ use claude_code_rs::ChatMessage;
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use tauri::{AppHandle, Emitter, State};
 
 #[derive(Debug, Clone, Serialize)]
@@ -379,6 +384,11 @@ pub async fn ai_chat(
     config_state: State<'_, AiConfigState>,
     sessions: State<'_, ChatSessionStore>,
     permissions: State<'_, PermissionStore>,
+    question_store: State<'_, QuestionStore>,
+    hooks: State<'_, HookManager>,
+    plan: State<'_, PlanService>,
+    agent: State<'_, AgentOrchestrator>,
+    skills: State<'_, SkillRegistry>,
     stop_flags: State<'_, StopFlags>,
     op_history: State<'_, OperationHistoryStore>,
 ) -> Result<(), String> {
@@ -419,6 +429,10 @@ pub async fn ai_chat(
         conversation_id.clone(),
         permission_mode,
         permissions.inner().clone(),
+        question_store.inner().clone(),
+        Arc::new(agent.inner().clone()),
+        Arc::new(plan.inner().clone()),
+        Arc::new(skills.inner().clone()),
     )
     .await
     .map_err(|e| {
@@ -578,7 +592,30 @@ pub async fn ai_chat(
             });
 
             let execution_requests = build_execution_requests(&tool_calls);
+
+            // Plan mode guard: filter out write/execute tools
+            let is_planning = plan.is_planning().await;
+            let filtered_calls: Vec<_> = if is_planning {
+                let blocked: Vec<_> = tool_calls.iter()
+                    .filter(|tc| !is_tool_read_only(&tc.function.name))
+                    .map(|tc| tc.function.name.clone())
+                    .collect();
+                if !blocked.is_empty() {
+                    let msg = format!("Plan mode: blocked tools ({}) — read-only only.", blocked.join(", "));
+                    context_messages.push(ContextMessage {
+                        message: ChatMessage::tool("plan_guard", &msg),
+                        timestamp: chrono::Utc::now().timestamp(),
+                    });
+                }
+                tool_calls.iter().filter(|tc| is_tool_read_only(&tc.function.name)).cloned().collect()
+            } else {
+                tool_calls.clone()
+            };
+
             for request in &execution_requests {
+                if is_planning && !is_tool_read_only(&request.name) {
+                    continue; // skip emitting "running" for blocked tools
+                }
                 emit_tool(
                     &app,
                     &conversation_id,
@@ -588,24 +625,48 @@ pub async fn ai_chat(
                     "",
                     "running",
                 );
+
+                // PreToolUse hook
+                let hook_ctx = HookContext {
+                    hook_point: "pre_tool_use".into(),
+                    conversation_id: conversation_id.clone(),
+                    tool_name: Some(request.name.clone()),
+                    tool_arguments: Some(request.arguments.clone()),
+                    tool_output: None,
+                    timestamp: chrono::Utc::now().timestamp_millis(),
+                };
+                hooks.execute(HookPoint::PreToolUse, &hook_ctx).await;
             }
 
             let mut persisted_tool_results = Vec::new();
             // Execute concurrency-safe tools in parallel while preserving result order.
-            for result in execute_tool_calls(&runtime, &tool_calls).await {
-                let status = tool_result_status(&result.output);
+            for result in execute_tool_calls(&runtime, &filtered_calls).await {
+                let tool_output_text = result.output.clone();
+                let status = tool_result_status(&tool_output_text);
                 emit_tool(
                     &app,
                     &conversation_id,
                     Some(&result.id),
                     &result.name,
                     &result.arguments,
-                    &result.output,
+                    &tool_output_text,
                     status,
                 );
-                persisted_tool_results.push((result.id.clone(), result.output.clone()));
+                persisted_tool_results.push((result.id.clone(), tool_output_text.clone()));
+
+                // PostToolUse hook
+                let post_hook_ctx = HookContext {
+                    hook_point: "post_tool_use".into(),
+                    conversation_id: conversation_id.clone(),
+                    tool_name: Some(result.name.clone()),
+                    tool_arguments: Some(result.arguments.clone()),
+                    tool_output: Some(serde_json::json!({ "output": tool_output_text })),
+                    timestamp: chrono::Utc::now().timestamp_millis(),
+                };
+                hooks.execute(HookPoint::PostToolUse, &post_hook_ctx).await;
+
                 context_messages.push(ContextMessage {
-                    message: ChatMessage::tool(&result.id, result.output),
+                    message: ChatMessage::tool(&result.id, tool_output_text),
                     timestamp: chrono::Utc::now().timestamp(),
                 });
 

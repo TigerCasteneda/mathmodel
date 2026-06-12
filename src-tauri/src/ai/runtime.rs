@@ -4,13 +4,24 @@ use claude_code_rs::mcp::{McpTool, ToolExecutor, ToolRegistry};
 use claude_code_rs::ApiClient;
 use serde_json::{json, Value};
 use std::collections::HashSet;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::RwLock;
 
 use super::config::AiConfig;
 use super::permissions::{PermissionDecision, PermissionStore};
+use super::agent::{
+    AgentListExecutor, AgentOrchestrator, AgentSpawnExecutor, AgentStatusExecutor,
+};
+use super::plan::{
+    EnterPlanModeExecutor, ExitPlanModeExecutor, PlanService, PlanUpdateExecutor,
+};
+use super::skills::SkillRegistry;
+use super::tasks::TaskStore;
+use super::tools::git::GitExecutor;
+use super::tools::question::{AskUserQuestionExecutor, QuestionStore};
 use super::workspace::{
     build_workspace_provider, tool_optional_path_arg, tool_path_arg, WorkspaceContext,
     WorkspaceProvider,
@@ -195,6 +206,136 @@ const TOOL_CATALOG: &[ToolCatalogEntry] = &[
         is_concurrency_safe: true,
         is_read_only: false,
     },
+    ToolCatalogEntry {
+        name: "git_operations",
+        description: "Execute git version control operations: status, add, commit, push, pull, log, diff, branch, checkout.",
+        exposure: ToolExposure::Deferred,
+        keywords: &["git", "commit", "push", "pull", "branch", "diff", "log", "version", "control"],
+        search_hint: "Run git commands for version control in the workspace.",
+        aliases: &["Git", "git"],
+        is_concurrency_safe: false,
+        is_read_only: false,
+    },
+    ToolCatalogEntry {
+        name: "task_create",
+        description: "Create a new task in the task list to track progress and organize work.",
+        exposure: ToolExposure::Core,
+        keywords: &["task", "create", "todo", "track"],
+        search_hint: "Create a task to track a piece of work.",
+        aliases: &[],
+        is_concurrency_safe: true,
+        is_read_only: false,
+    },
+    ToolCatalogEntry {
+        name: "task_update",
+        description: "Update the status, subject, or description of an existing task.",
+        exposure: ToolExposure::Core,
+        keywords: &["task", "update", "status", "progress"],
+        search_hint: "Update task status, priority, or details.",
+        aliases: &[],
+        is_concurrency_safe: true,
+        is_read_only: false,
+    },
+    ToolCatalogEntry {
+        name: "task_list",
+        description: "List all tasks, optionally filtered by status or priority.",
+        exposure: ToolExposure::Core,
+        keywords: &["task", "list", "all", "status", "filter"],
+        search_hint: "List current tasks.",
+        aliases: &[],
+        is_concurrency_safe: true,
+        is_read_only: true,
+    },
+    ToolCatalogEntry {
+        name: "task_get",
+        description: "Get full details of a specific task by ID.",
+        exposure: ToolExposure::Core,
+        keywords: &["task", "get", "detail", "view"],
+        search_hint: "View details of a specific task.",
+        aliases: &[],
+        is_concurrency_safe: true,
+        is_read_only: true,
+    },
+    ToolCatalogEntry {
+        name: "ask_user_question",
+        description: "Ask the user a structured question with multiple-choice options when a decision is needed.",
+        exposure: ToolExposure::Core,
+        keywords: &["ask", "question", "user", "prompt", "choice", "decide"],
+        search_hint: "Ask the user for input when a decision is needed.",
+        aliases: &["AskUserQuestion"],
+        is_concurrency_safe: true,
+        is_read_only: false,
+    },
+    ToolCatalogEntry {
+        name: "agent_spawn",
+        description: "Launch a specialized sub-agent for parallel work (architect, planner, reviewer, explorer, general).",
+        exposure: ToolExposure::Core,
+        keywords: &["agent", "spawn", "parallel", "subagent", "delegate"],
+        search_hint: "Launch a sub-agent to handle a task in parallel.",
+        aliases: &[],
+        is_concurrency_safe: true,
+        is_read_only: false,
+    },
+    ToolCatalogEntry {
+        name: "agent_list",
+        description: "List available agent types and their capabilities.",
+        exposure: ToolExposure::Core,
+        keywords: &["agent", "list", "types", "available"],
+        search_hint: "List available agent types.",
+        aliases: &[],
+        is_concurrency_safe: true,
+        is_read_only: true,
+    },
+    ToolCatalogEntry {
+        name: "agent_status",
+        description: "Check the status of a running agent session.",
+        exposure: ToolExposure::Core,
+        keywords: &["agent", "status", "session", "check"],
+        search_hint: "Check agent session status.",
+        aliases: &[],
+        is_concurrency_safe: true,
+        is_read_only: true,
+    },
+    ToolCatalogEntry {
+        name: "enter_plan_mode",
+        description: "Enter plan-only mode: restrict to read-only tools for exploring and designing before implementing.",
+        exposure: ToolExposure::Core,
+        keywords: &["plan", "design", "explore", "readonly", "mode"],
+        search_hint: "Enter plan mode for read-only exploration and design.",
+        aliases: &[],
+        is_concurrency_safe: true,
+        is_read_only: false,
+    },
+    ToolCatalogEntry {
+        name: "exit_plan_mode",
+        description: "Exit plan mode and submit a structured plan for approval. Takes title and phases[] with steps.",
+        exposure: ToolExposure::Core,
+        keywords: &["plan", "submit", "exit", "approval"],
+        search_hint: "Submit a plan for user approval before implementation.",
+        aliases: &[],
+        is_concurrency_safe: true,
+        is_read_only: false,
+    },
+    ToolCatalogEntry {
+        name: "plan_update",
+        description: "Update a plan phase status during plan execution (phase: title, status: pending|in_progress|completed|skipped).",
+        exposure: ToolExposure::Core,
+        keywords: &["plan", "update", "phase", "progress"],
+        search_hint: "Update plan execution progress.",
+        aliases: &[],
+        is_concurrency_safe: true,
+        is_read_only: false,
+    },
+    ToolCatalogEntry {
+        name: "skill_invoke",
+        description: "Invoke a registered skill by name (e.g. code-review, math-verify, model-fit, refactor, latex-compile).",
+        exposure: ToolExposure::Core,
+        keywords: &["skill", "invoke", "capability", "specialized"],
+        search_hint: "Invoke a specialized skill for focused tasks.",
+        aliases: &[],
+        is_concurrency_safe: true,
+        is_read_only: false,
+    },
 ];
 
 pub struct ModelerAiRuntime {
@@ -205,6 +346,7 @@ pub struct ModelerAiRuntime {
     enabled_deferred_tools: Arc<RwLock<HashSet<String>>>,
     permission_mode: PermissionMode,
     permission_store: PermissionStore,
+    question_store: QuestionStore,
     app_handle: AppHandle,
     conversation_id: String,
 }
@@ -217,14 +359,23 @@ impl ModelerAiRuntime {
         conversation_id: String,
         permission_mode: PermissionMode,
         permission_store: PermissionStore,
+        question_store: QuestionStore,
+        agent: Arc<AgentOrchestrator>,
+        plan: Arc<PlanService>,
+        skills: Arc<SkillRegistry>,
     ) -> anyhow::Result<Self> {
         let client = ApiClient::new(config.to_claude_settings(context.work_dir.clone()));
         let workspace_label = context.label();
         let can_write = context.has_capability("files.write") && context.has_capability("ai.write");
+        let work_dir = context.work_dir.clone();
         let workspace = build_workspace_provider(context, app_handle.clone())?;
         let registry = Arc::new(ToolRegistry::new());
         let enabled_deferred_tools = Arc::new(RwLock::new(HashSet::new()));
 
+        let data_dir = app_handle
+            .path()
+            .app_data_dir()
+            .unwrap_or_else(|_| PathBuf::from("."));
         register_workspace_tools(
             &registry,
             workspace.clone(),
@@ -232,8 +383,109 @@ impl ModelerAiRuntime {
             enabled_deferred_tools.clone(),
             app_handle.clone(),
             conversation_id.clone(),
+            work_dir,
+            data_dir,
+            question_store.clone(),
         )
         .await;
+
+        // Register agent tools
+        registry
+            .register(
+                McpTool::new(
+                    "agent_spawn",
+                    "Launch a specialized sub-agent for parallel work. Use agent_list to see available types.",
+                    json!({
+                        "type": "object",
+                        "properties": {
+                            "agent_type": { "type": "string", "enum": ["architect", "planner", "code_reviewer", "security_reviewer", "explorer", "general"], "description": "Agent type" },
+                            "prompt": { "type": "string", "description": "The task to delegate to the agent" }
+                        },
+                        "required": ["agent_type", "prompt"]
+                    }),
+                ),
+                Arc::new(AgentSpawnExecutor {
+                    orchestrator: agent.clone(),
+                    config: config.clone(),
+                }),
+            )
+            .await;
+
+        registry
+            .register(
+                McpTool::new("agent_list", "List available agent types and their capabilities.", json!({ "type": "object", "properties": {} })),
+                Arc::new(AgentListExecutor { orchestrator: agent.clone() }),
+            )
+            .await;
+
+        registry
+            .register(
+                McpTool::new("agent_status", "Check the status of a running agent session.", json!({
+                    "type": "object",
+                    "properties": { "session_id": { "type": "string" } },
+                    "required": ["session_id"]
+                })),
+                Arc::new(AgentStatusExecutor { orchestrator: agent }),
+            )
+            .await;
+
+        // Register plan tools
+        registry
+            .register(
+                McpTool::new("enter_plan_mode", "Enter plan-only mode: restrict to read-only tools for exploration before implementing.", json!({ "type": "object", "properties": {} })),
+                Arc::new(EnterPlanModeExecutor { plan_service: plan.clone() }),
+            )
+            .await;
+
+        registry
+            .register(
+                McpTool::new("exit_plan_mode", "Exit plan mode and submit a structured plan with title and phases.", json!({
+                    "type": "object",
+                    "properties": {
+                        "title": { "type": "string" },
+                        "phases": { "type": "array", "items": {
+                            "type": "object",
+                            "properties": {
+                                "title": { "type": "string" },
+                                "steps": { "type": "array", "items": { "type": "string" } }
+                            },
+                            "required": ["title"]
+                        }}
+                    },
+                    "required": ["title", "phases"]
+                })),
+                Arc::new(ExitPlanModeExecutor { plan_service: plan.clone() }),
+            )
+            .await;
+
+        registry
+            .register(
+                McpTool::new("plan_update", "Update a plan phase status during execution.", json!({
+                    "type": "object",
+                    "properties": {
+                        "phase": { "type": "string", "description": "Phase title" },
+                        "status": { "type": "string", "enum": ["pending", "in_progress", "completed", "skipped"] }
+                    },
+                    "required": ["phase", "status"]
+                })),
+                Arc::new(PlanUpdateExecutor { plan_service: plan }),
+            )
+            .await;
+
+        // Register skill tool
+        registry
+            .register(
+                McpTool::new("skill_invoke", "Invoke a registered skill. Use skill names from the skill registry.", json!({
+                    "type": "object",
+                    "properties": {
+                        "skill": { "type": "string", "description": "Skill name (e.g. code-review, math-verify, model-fit, refactor, latex-compile)" },
+                        "input": { "type": "string", "description": "Task description for the skill" }
+                    },
+                    "required": ["skill", "input"]
+                })),
+                Arc::new(SkillInvokeExecutor { skills: skills.clone() }),
+            )
+            .await;
 
         Ok(Self {
             client,
@@ -243,6 +495,7 @@ impl ModelerAiRuntime {
             enabled_deferred_tools,
             permission_mode,
             permission_store,
+            question_store,
             app_handle,
             conversation_id,
         })
@@ -254,6 +507,10 @@ impl ModelerAiRuntime {
 
     pub fn workspace_label(&self) -> &'static str {
         self.workspace_label
+    }
+
+    pub fn question_store(&self) -> &QuestionStore {
+        &self.question_store
     }
 
     pub fn permission_label(&self) -> &'static str {
@@ -400,7 +657,13 @@ async fn register_workspace_tools(
     enabled_deferred_tools: Arc<RwLock<HashSet<String>>>,
     app_handle: AppHandle,
     conversation_id: String,
+    work_dir: std::path::PathBuf,
+    data_dir: std::path::PathBuf,
+    question_store: QuestionStore,
 ) {
+    let ah = app_handle.clone();
+    let cid = conversation_id.clone();
+    let task_store = Arc::new(TaskStore::new(cid.clone(), data_dir));
     register_tool_search(registry, enabled_deferred_tools).await;
     register_file_read(registry, workspace.clone(), "file_read").await;
     register_file_read(registry, workspace.clone(), "read_file").await;
@@ -562,7 +825,90 @@ async fn register_workspace_tools(
                     "required": ["pattern"]
                 }),
             ),
-            Arc::new(SearchFilesExecutor { workspace }),
+            Arc::new(SearchFilesExecutor { workspace: workspace.clone() }),
+        )
+        .await;
+
+    registry
+        .register(
+            McpTool::new(
+                "git_operations",
+                "Execute git version control operations. Supports: status, add, commit, push, pull, log, diff, branch, checkout. Use commit with -m for message.",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "operation": {
+                            "type": "string",
+                            "enum": ["status", "add", "commit", "push", "pull", "log", "diff", "branch", "checkout"],
+                            "description": "Git operation to perform"
+                        },
+                        "message": { "type": "string", "description": "Commit message (required for commit)" },
+                        "files": { "type": "array", "items": { "type": "string" }, "description": "Files to add (for add operation)" },
+                        "branch": { "type": "string", "description": "Branch name (for branch, checkout, push, pull)" },
+                        "remote": { "type": "string", "description": "Remote name (defaults to origin)" },
+                        "args": { "type": "array", "items": { "type": "string" }, "description": "Additional args" }
+                    },
+                    "required": ["operation"]
+                }),
+            ),
+            Arc::new(GitExecutor {
+                work_dir: work_dir.clone(),
+                workspace: workspace.clone(),
+            }),
+        )
+        .await;
+
+    // Task tools
+    register_task_create(registry, task_store.clone()).await;
+    register_task_update(registry, task_store.clone()).await;
+    register_task_list(registry, task_store.clone()).await;
+    register_task_get(registry, task_store).await;
+
+    // AskUserQuestion tool
+    registry
+        .register(
+            McpTool::new(
+                "ask_user_question",
+                "Ask the user a structured question with multiple-choice options when you need their input to proceed.",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "questions": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "question": { "type": "string", "description": "The complete question to ask the user" },
+                                    "header": { "type": "string", "description": "Short label (max 12 chars)" },
+                                    "options": {
+                                        "type": "array",
+                                        "items": {
+                                            "type": "object",
+                                            "properties": {
+                                                "label": { "type": "string", "description": "Display text for this option" },
+                                                "description": { "type": "string", "description": "What this option means" }
+                                            },
+                                            "required": ["label", "description"]
+                                        },
+                                        "minItems": 2,
+                                        "maxItems": 4
+                                    },
+                                    "multiSelect": { "type": "boolean", "description": "Allow multiple selections" }
+                                },
+                                "required": ["question", "header", "options"]
+                            },
+                            "minItems": 1,
+                            "maxItems": 4
+                        }
+                    },
+                    "required": ["questions"]
+                }),
+            ),
+            Arc::new(AskUserQuestionExecutor {
+                question_store: question_store.clone(),
+                app_handle: ah,
+                conversation_id: cid,
+            }),
         )
         .await;
 }
@@ -1194,6 +1540,196 @@ impl ToolExecutor for SearchFilesExecutor {
             "pattern": pattern,
             "results": results
         }))
+    }
+}
+
+// ── Task tool registration ──
+
+async fn register_task_create(
+    registry: &Arc<ToolRegistry>,
+    store: Arc<TaskStore>,
+) {
+    let store = store.clone();
+    registry
+        .register(
+            McpTool::new(
+                "task_create",
+                "Create a new task to track progress and organize work. Use this to break down complex work into manageable pieces.",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "subject": { "type": "string", "description": "Brief title for the task" },
+                        "description": { "type": "string", "description": "What needs to be done" },
+                        "priority": { "type": "string", "enum": ["low", "medium", "high", "critical"], "description": "Task priority" },
+                        "blocks": { "type": "array", "items": { "type": "string" }, "description": "Task IDs that this task blocks" },
+                        "tags": { "type": "array", "items": { "type": "string" }, "description": "Tags for categorization" }
+                    },
+                    "required": ["subject", "description"]
+                }),
+            ),
+            Arc::new(TaskCreateExecutor { store }),
+        )
+        .await;
+}
+
+struct TaskCreateExecutor {
+    store: Arc<TaskStore>,
+}
+
+#[async_trait]
+impl ToolExecutor for TaskCreateExecutor {
+    async fn execute(&self, input: Value) -> anyhow::Result<Value> {
+        let subject = input["subject"].as_str().ok_or_else(|| anyhow::anyhow!("subject required"))?;
+        let description = input["description"].as_str().ok_or_else(|| anyhow::anyhow!("description required"))?;
+        let priority = input["priority"].as_str();
+        let blocks: Option<Vec<String>> = input["blocks"].as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect());
+        let tags: Option<Vec<String>> = input["tags"].as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect());
+        let task = self.store.create(subject, description, priority, blocks, tags);
+        Ok(serde_json::to_value(&task)?)
+    }
+}
+
+async fn register_task_update(
+    registry: &Arc<ToolRegistry>,
+    store: Arc<TaskStore>,
+) {
+    let store = store.clone();
+    registry
+        .register(
+            McpTool::new(
+                "task_update",
+                "Update an existing task's status, subject, description, or priority.",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "task_id": { "type": "string", "description": "ID of the task to update" },
+                        "status": { "type": "string", "enum": ["pending", "in_progress", "completed", "deleted"], "description": "New status" },
+                        "subject": { "type": "string", "description": "New subject" },
+                        "description": { "type": "string", "description": "New description" },
+                        "priority": { "type": "string", "enum": ["low", "medium", "high", "critical"] }
+                    },
+                    "required": ["task_id"]
+                }),
+            ),
+            Arc::new(TaskUpdateExecutor { store }),
+        )
+        .await;
+}
+
+struct TaskUpdateExecutor {
+    store: Arc<TaskStore>,
+}
+
+#[async_trait]
+impl ToolExecutor for TaskUpdateExecutor {
+    async fn execute(&self, input: Value) -> anyhow::Result<Value> {
+        let task_id = input["task_id"].as_str().ok_or_else(|| anyhow::anyhow!("task_id required"))?;
+        let status = input["status"].as_str();
+        let subject = input["subject"].as_str();
+        let description = input["description"].as_str();
+        let priority = input["priority"].as_str();
+        self.store.update(task_id, status, subject, description, priority)
+            .map(|t| serde_json::to_value(&t).map_err(anyhow::Error::from))
+            .unwrap_or_else(|| Ok(json!({ "error": "task not found" })))
+    }
+}
+
+async fn register_task_list(
+    registry: &Arc<ToolRegistry>,
+    store: Arc<TaskStore>,
+) {
+    let store = store.clone();
+    registry
+        .register(
+            McpTool::new(
+                "task_list",
+                "List all tasks, optionally filtered by status or priority.",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "status": { "type": "string", "enum": ["pending", "in_progress", "completed"], "description": "Filter by status" },
+                        "priority": { "type": "string", "enum": ["low", "medium", "high", "critical"], "description": "Filter by priority" }
+                    },
+                    "required": []
+                }),
+            ),
+            Arc::new(TaskListExecutor { store }),
+        )
+        .await;
+}
+
+struct TaskListExecutor {
+    store: Arc<TaskStore>,
+}
+
+#[async_trait]
+impl ToolExecutor for TaskListExecutor {
+    async fn execute(&self, input: Value) -> anyhow::Result<Value> {
+        let status = input["status"].as_str();
+        let priority = input["priority"].as_str();
+        let tasks = self.store.list(status, priority);
+        Ok(serde_json::to_value(&tasks)?)
+    }
+}
+
+async fn register_task_get(
+    registry: &Arc<ToolRegistry>,
+    store: Arc<TaskStore>,
+) {
+    let store = store.clone();
+    registry
+        .register(
+            McpTool::new(
+                "task_get",
+                "Get full details of a specific task by ID.",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "task_id": { "type": "string", "description": "ID of the task" }
+                    },
+                    "required": ["task_id"]
+                }),
+            ),
+            Arc::new(TaskGetExecutor { store }),
+        )
+        .await;
+}
+
+struct TaskGetExecutor {
+    store: Arc<TaskStore>,
+}
+
+#[async_trait]
+impl ToolExecutor for TaskGetExecutor {
+    async fn execute(&self, input: Value) -> anyhow::Result<Value> {
+        let task_id = input["task_id"].as_str().ok_or_else(|| anyhow::anyhow!("task_id required"))?;
+        self.store.get(task_id)
+            .map(|t| serde_json::to_value(&t).map_err(anyhow::Error::from))
+            .unwrap_or_else(|| Ok(json!({ "error": "task not found" })))
+    }
+}
+
+struct SkillInvokeExecutor {
+    skills: Arc<SkillRegistry>,
+}
+
+#[async_trait]
+impl ToolExecutor for SkillInvokeExecutor {
+    async fn execute(&self, input: Value) -> anyhow::Result<Value> {
+        let skill_name = input["skill"].as_str()
+            .ok_or_else(|| anyhow::anyhow!("skill name required"))?;
+        let _task = input["input"].as_str().unwrap_or("");
+        match self.skills.list_all().await.iter().find(|s| s.name == skill_name || s.name.ends_with(&format!(":{}", skill_name))) {
+            Some(skill) => Ok(json!({
+                "skill": skill.name,
+                "description": skill.description,
+                "category": skill.category,
+                "tools_used": skill.tools_used,
+                "system_prompt_fragment": skill.system_prompt_fragment,
+                "note": "Apply the system_prompt_fragment guidance for this task."
+            })),
+            None => Ok(json!({ "error": "unknown skill", "available": self.skills.list_all().await.iter().map(|s| &s.name).collect::<Vec<_>>() })),
+        }
     }
 }
 

@@ -42,6 +42,7 @@ pub fn routes() -> Router<AppState> {
         )
         .route("/projects/{project_id}/arena/index", get(get_index))
         .route("/projects/{project_id}/arena/log", post(append_log))
+        .merge(super::chat::routes())
 }
 
 fn default_capabilities(role: &str) -> Vec<String> {

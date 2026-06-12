@@ -407,6 +407,76 @@ export async function getArenaIndex(projectId: string): Promise<ArenaIndex> {
   return apiFetch<ArenaIndex>(`/projects/${projectId}/arena/index`)
 }
 
+// ── Arena Chat ──
+
+export interface ChatMessage {
+  id: string
+  project_id: string
+  user_id: string
+  display_name: string
+  content: string
+  content_type: "text" | "file" | "system" | string
+  reply_to_id?: string | null
+  file_id?: string | null
+  file_name?: string | null
+  file_mime?: string | null
+  content_attributes: Record<string, unknown>
+  status: "sent" | "failed" | "sending"
+  echo_id?: string | null
+  replied_to?: {
+    user_id: string
+    display_name: string
+    content_preview: string
+  } | null
+  created_at: number
+}
+
+export interface OnlineUser {
+  user_id: string
+  display_name: string
+}
+
+export interface ChatHistoryPage {
+  messages: ChatMessage[]
+  has_more: boolean
+  next_cursor?: number | null
+}
+
+export interface FetchChatHistoryParams {
+  before?: number
+  limit?: number
+}
+
+export async function fetchChatHistory(
+  projectId: string,
+  params?: FetchChatHistoryParams,
+): Promise<ChatHistoryPage> {
+  const sp = new URLSearchParams()
+  if (params?.before != null) sp.set("before", String(params.before))
+  if (params?.limit != null) sp.set("limit", String(params.limit))
+  const qs = sp.toString()
+  return apiFetch<ChatHistoryPage>(`/projects/${projectId}/arena/chat/messages${qs ? `?${qs}` : ""}`)
+}
+
+export async function uploadChatFile(projectId: string, file: File): Promise<ProjectFileNode> {
+  const formData = new FormData()
+  formData.append("file", file)
+  const token = getToken()
+  const base = await getApiBase()
+  const res = await fetch(`${base}/projects/${projectId}/files/upload`, {
+    method: "POST",
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    body: formData,
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: "upload failed" }))
+    throw new Error(err.error || `HTTP ${res.status}`)
+  }
+  return res.json()
+}
+
+// ── Search ──
+
 export interface SearchResultItem {
   title: string
   url: string

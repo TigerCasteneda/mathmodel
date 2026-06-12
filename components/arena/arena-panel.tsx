@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useMemo, useState } from "react"
-import { BookOpen, FilePlus2, Link2, Loader2, MessageSquare, RefreshCw, Save, Send } from "lucide-react"
+import { BookOpen, FilePlus2, Link2, Loader2, MessageSquare, PanelRightClose, RefreshCw, Save } from "lucide-react"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import remarkMath from "remark-math"
@@ -10,7 +10,6 @@ import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
 import { cn } from "@/lib/utils"
 import {
-  appendArenaLog,
   createArenaCard,
   getArenaIndex,
   updateArenaCard,
@@ -18,6 +17,7 @@ import {
   type ArenaIndex,
   type ProjectCapability,
 } from "@/lib/api"
+import { ArenaChat } from "@/components/arena/arena-chat"
 
 type ArenaCardType = "formula" | "finding" | "assumption" | "decision"
 
@@ -84,7 +84,7 @@ export function ArenaPanel({
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [draft, setDraft] = useState("")
   const [mode, setMode] = useState<"edit" | "preview">("edit")
-  const [logMessage, setLogMessage] = useState("")
+  const [sidebarTab, setSidebarTab] = useState<"info" | "chat">("info")
   const [status, setStatus] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -158,21 +158,6 @@ export function ArenaPanel({
       setStatus("Saved.")
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "Save failed.")
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  const appendLog = async () => {
-    if (!canWrite || !logMessage.trim()) return
-    setSaving(true)
-    setStatus(null)
-    try {
-      await appendArenaLog(projectId, logMessage.trim())
-      setLogMessage("")
-      setStatus("Daily Log saved.")
-    } catch (error) {
-      setStatus(error instanceof Error ? error.message : "Log save failed.")
     } finally {
       setSaving(false)
     }
@@ -272,53 +257,63 @@ export function ArenaPanel({
       </main>
 
       <aside className="flex min-h-0 flex-col border-l border-[#373737] bg-[#151515]">
-        <section className="border-b border-[#373737] p-3">
-          <div className="mb-2 flex items-center gap-2 text-xs font-medium uppercase text-[#b4b4b4]">
-            <Link2 className="h-3.5 w-3.5 text-[#d4a574]" />
-            Backlinks
+        {/* Tab bar */}
+        <div className="flex border-b border-[#373737] bg-[#121212]">
+          {([
+            { key: "info" as const, label: "Info", Icon: Link2 },
+            { key: "chat" as const, label: "Chat", Icon: MessageSquare },
+          ]).map(({ key, label, Icon }) => (
+            <button
+              key={key}
+              onClick={() => setSidebarTab(key)}
+              className={cn(
+                "flex flex-1 items-center justify-center gap-1.5 py-2 text-xs font-medium uppercase transition-colors",
+                sidebarTab === key
+                  ? "border-b-2 border-[#d4a574] text-[#e8e8e8] bg-[#1a1a1a]"
+                  : "text-[#787878] hover:text-[#b4b4b4] hover:bg-[#181818]",
+              )}
+            >
+              <Icon className="h-3.5 w-3.5" />
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {sidebarTab === "info" ? (
+          <>
+            <section className="border-b border-[#373737] p-3">
+              <div className="mb-2 flex items-center gap-2 text-xs font-medium uppercase text-[#b4b4b4]">
+                <Link2 className="h-3.5 w-3.5 text-[#d4a574]" />
+                Backlinks
+              </div>
+              <div className="space-y-1">
+                {(selected?.backlinks || []).length === 0 ? (
+                  <div className="text-xs text-[#787878]">None</div>
+                ) : selected?.backlinks.map((title) => (
+                  <button key={title} className="block w-full truncate rounded px-2 py-1 text-left text-xs text-[#b4b4b4] hover:bg-[#232323]">
+                    {title}
+                  </button>
+                ))}
+              </div>
+            </section>
+            <section className="border-b border-[#373737] p-3">
+              <div className="mb-2 text-xs font-medium uppercase text-[#b4b4b4]">Unresolved</div>
+              <div className="flex flex-wrap gap-1">
+                {(selected?.unresolved_links || index.unresolved_links).length === 0 ? (
+                  <span className="text-xs text-[#787878]">None</span>
+                ) : (selected?.unresolved_links || index.unresolved_links).map((link) => (
+                  <span key={link} className="rounded border border-[#5f3f24] px-1.5 py-0.5 text-[11px] text-[#ebc396]">
+                    {link}
+                  </span>
+                ))}
+              </div>
+            </section>
+          </>
+        ) : (
+          <div className="min-h-0 flex-1">
+            <ArenaChat projectId={projectId} capabilities={capabilities} />
           </div>
-          <div className="space-y-1">
-            {(selected?.backlinks || []).length === 0 ? (
-              <div className="text-xs text-[#787878]">None</div>
-            ) : selected?.backlinks.map((title) => (
-              <button key={title} className="block w-full truncate rounded px-2 py-1 text-left text-xs text-[#b4b4b4] hover:bg-[#232323]">
-                {title}
-              </button>
-            ))}
-          </div>
-        </section>
-        <section className="border-b border-[#373737] p-3">
-          <div className="mb-2 text-xs font-medium uppercase text-[#b4b4b4]">Unresolved</div>
-          <div className="flex flex-wrap gap-1">
-            {(selected?.unresolved_links || index.unresolved_links).length === 0 ? (
-              <span className="text-xs text-[#787878]">None</span>
-            ) : (selected?.unresolved_links || index.unresolved_links).map((link) => (
-              <span key={link} className="rounded border border-[#5f3f24] px-1.5 py-0.5 text-[11px] text-[#ebc396]">
-                {link}
-              </span>
-            ))}
-          </div>
-        </section>
-        <section className="flex min-h-0 flex-1 flex-col p-3">
-          <div className="mb-2 flex items-center gap-2 text-xs font-medium uppercase text-[#b4b4b4]">
-            <MessageSquare className="h-3.5 w-3.5 text-[#d4a574]" />
-            Daily Log
-          </div>
-          <Textarea
-            value={logMessage}
-            readOnly={!canWrite}
-            onChange={(event) => setLogMessage(event.target.value)}
-            className="min-h-28 resize-none border-[#373737] bg-[#202020] text-sm"
-          />
-          <Button
-            onClick={appendLog}
-            disabled={!canWrite || saving || !logMessage.trim()}
-            className="mt-2 h-8 bg-[#d4a574] text-xs text-[#111111] hover:bg-[#ebc396]"
-          >
-            <Send className="mr-1.5 h-3.5 w-3.5" />
-            Append
-          </Button>
-        </section>
+        )}
       </aside>
     </section>
   )

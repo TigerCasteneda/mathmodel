@@ -472,6 +472,58 @@ export async function resolvePermissionRequest(requestId: string, allow: boolean
   return invoke("resolve_permission_request", { requestId, allow })
 }
 
+// ─── Questions ──
+
+export interface QuestionOption {
+  label: string
+  description: string
+}
+
+export interface QuestionItem {
+  question: string
+  header: string
+  options: QuestionOption[]
+  multiSelect: boolean
+}
+
+export interface QuestionEvent {
+  request_id: string
+  conversation_id: string
+  questions: QuestionItem[]
+  expires_at_ms: number
+}
+
+export function onQuestion(callback: (event: QuestionEvent) => void): () => void {
+  if (!isTauri()) return () => {}
+  const unlisten = listen<QuestionEvent>("chat:question", (event) => callback(event.payload))
+  return () => { unlisten.then((fn) => fn()) }
+}
+
+export async function resolveQuestion(requestId: string, answers: Record<string, any>): Promise<void> {
+  if (!isTauri()) return
+  return invoke("resolve_question", { requestId, answers: JSON.stringify(answers) })
+}
+
+// ─── Agent events ──
+
+export interface AgentSessionEvent {
+  session_id: string
+  agent_type: string
+  status: string
+  prompt: string
+  result?: string | null
+}
+
+export function onAgentStart(callback: (event: AgentSessionEvent) => void): UnlistenFn {
+  const p = listen<AgentSessionEvent>("chat:agent_start", (e) => callback(e.payload))
+  return () => { p.then((fn) => fn()) }
+}
+
+export function onAgentComplete(callback: (event: { session_id: string; result: string }) => void): UnlistenFn {
+  const p = listen<{ session_id: string; result: string }>("chat:agent_complete", (e) => callback(e.payload))
+  return () => { p.then((fn) => fn()) }
+}
+
 // ─── Sessions ────────────────────────────────────────
 
 export interface SessionInfo {

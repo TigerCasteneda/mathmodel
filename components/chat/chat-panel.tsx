@@ -60,6 +60,8 @@ import {
   getAiConfigStatus,
   listOperations,
   loadSession,
+  onAgentComplete,
+  onAgentStart,
   onChatBackgroundTask,
   onChatError,
   onChatThinking,
@@ -78,6 +80,9 @@ import {
   type ChatToolCallEvent,
 } from "@/lib/tauri-api"
 import { getToken, type ProjectCapability } from "@/lib/api"
+import { QuestionDialog } from "@/components/chat/question-dialog"
+import { TaskPanel } from "@/components/chat/task-panel"
+import { AgentCard } from "@/components/chat/agent-card"
 
 // ── types ──
 
@@ -87,6 +92,14 @@ type BackgroundTaskEntry = {
   prompt: string
   status: "running" | "completed" | "error"
   result: string
+}
+
+type AgentSession = {
+  session_id: string
+  agent_type: string
+  status: string
+  prompt: string
+  result?: string | null
 }
 
 type PendingPermissionRequest = PermissionRequestEvent
@@ -793,6 +806,7 @@ export function ChatPanel({
   const [selectedModel, setSelectedModel] = useState("deepseek-v4-pro")
   const [permissionMode, setPermissionMode] = useState<AiPermissionMode>("default")
   const [backgroundTasks, setBackgroundTasks] = useState<BackgroundTaskEntry[]>([])
+  const [agentSessions, setAgentSessions] = useState<AgentSession[]>([])
   const [pendingPermissionRequests, setPendingPermissionRequests] = useState<PendingPermissionRequest[]>([])
   const [resolvingPermission, setResolvingPermission] = useState(false)
   const [stopRequested, setStopRequested] = useState(false)
@@ -929,7 +943,25 @@ export function ChatPanel({
       setPendingPermissionRequests((prev) => [...prev, event])
     })
 
-    return () => { offStream(); offThinking(); offUsage(); offTool(); offError(); offBackground(); offPermission() }
+    const offAgentStart = onAgentStart((event) => {
+      setAgentSessions((prev) => [...prev, {
+        session_id: event.session_id,
+        agent_type: event.agent_type,
+        status: event.status,
+        prompt: event.prompt,
+        result: event.result,
+      }])
+    })
+
+    const offAgentComplete = onAgentComplete((event) => {
+      setAgentSessions((prev) => prev.map((s) =>
+        s.session_id === event.session_id
+          ? { ...s, status: "completed", result: event.result }
+          : s,
+      ))
+    })
+
+    return () => { offStream(); offThinking(); offUsage(); offTool(); offError(); offBackground(); offPermission(); offAgentStart(); offAgentComplete() }
   }, [conversationId, setStopRequestedState])
 
   useEffect(() => {
@@ -1080,6 +1112,8 @@ export function ChatPanel({
         </AlertDialogContent>
       </AlertDialog>
 
+      <QuestionDialog conversationId={conversationId} />
+
       {/* Header bar */}
       <div className="flex h-11 items-center gap-2 border-b border-[#373737] bg-[#121212]/95 px-3 shrink-0">
         <OrangeMark className="cc-claude-mark h-7 w-7" />
@@ -1135,6 +1169,13 @@ export function ChatPanel({
                 onToggleThinking={toggleThinkingItem}
               />
             ))}
+            {agentSessions.length > 0 && (
+              <div className="ml-11 max-w-[80%]">
+                {agentSessions.map((session) => (
+                  <AgentCard key={session.session_id} session={session} />
+                ))}
+              </div>
+            )}
             {backgroundTasks.length > 0 && (
               <div className="ml-11 max-w-[80%]">
                 {backgroundTasks.map((task) => (
@@ -1193,6 +1234,8 @@ export function ChatPanel({
           )}
         </div>
       )}
+
+      <TaskPanel conversationId={conversationId} />
 
       {/* Input area */}
       <form onSubmit={handleSubmit} className="border-t border-[#373737] bg-[#121212] p-3 shrink-0">

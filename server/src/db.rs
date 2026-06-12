@@ -22,6 +22,7 @@ async fn run_migrations(pool: &SqlitePool) {
     run_specific_migration(pool, include_str!("../migrations/001_initial.sql")).await;
     run_specific_migration(pool, include_str!("../migrations/003_history.sql")).await;
     run_specific_migration(pool, include_str!("../migrations/004_research.sql")).await;
+    run_specific_migration(pool, include_str!("../migrations/008_arena_chat.sql")).await;
     run_005_migration(pool).await;
     run_006_migration(pool).await;
     run_007_migration(pool).await;
