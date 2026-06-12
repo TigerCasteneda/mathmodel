@@ -1,9 +1,10 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useRef, useCallback } from "react"
 import dynamic from "next/dynamic"
-import { Loader2, AlertCircle, FileText, Maximize2 } from "lucide-react"
+import { Loader2, AlertCircle, FileText, Maximize2, ChevronLeft, ChevronRight, Printer } from "lucide-react"
 import type { PDFDocumentProxy } from "pdfjs-dist"
+import type { PdfDocumentRendererHandle } from "@/components/editor/pdf-document-renderer"
 import { readFileBase64 } from "@/lib/tauri-api"
 
 const PdfDocumentRenderer = dynamic(
@@ -36,8 +37,10 @@ export default function PdfViewer({ filePath }: PdfViewerProps) {
   const [pdfBytes, setPdfBytes] = useState<Uint8Array | null>(null)
   const [pdfDataUrl, setPdfDataUrl] = useState<string | null>(null)
   const [numPages, setNumPages] = useState(0)
+  const [currentPage, setCurrentPage] = useState(0)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const pdfRendererRef = useRef<PdfDocumentRendererHandle>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -69,6 +72,61 @@ export default function PdfViewer({ filePath }: PdfViewerProps) {
     }
   }
 
+  const handlePrint = useCallback(() => {
+    if (!pdfBytes) return
+    const blob = new Blob([pdfBytes], { type: "application/pdf" })
+    const url = URL.createObjectURL(blob)
+
+    const iframe = document.createElement("iframe")
+    iframe.style.display = "none"
+    iframe.src = url
+    document.body.appendChild(iframe)
+
+    const cleanup = () => {
+      URL.revokeObjectURL(url)
+      if (iframe.parentNode) document.body.removeChild(iframe)
+    }
+
+    let fallbackTimer: ReturnType<typeof setTimeout> | null = null
+
+    iframe.onload = () => {
+      fallbackTimer = setTimeout(() => {
+        try {
+          iframe.contentWindow?.print()
+        } catch {
+          cleanup()
+          window.open(url, "_blank")
+        }
+      }, 500)
+    }
+
+    iframe.onerror = () => {
+      cleanup()
+      window.open(url, "_blank")
+    }
+
+    setTimeout(() => {
+      if (fallbackTimer) clearTimeout(fallbackTimer)
+      cleanup()
+    }, 30000)
+  }, [pdfBytes])
+
+  const handlePrevPage = useCallback(() => {
+    const next = Math.max(1, currentPage - 1)
+    setCurrentPage(next)
+    pdfRendererRef.current?.scrollToPage(next)
+  }, [currentPage])
+
+  const handleNextPage = useCallback(() => {
+    const next = Math.min(numPages, currentPage + 1)
+    setCurrentPage(next)
+    pdfRendererRef.current?.scrollToPage(next)
+  }, [currentPage, numPages])
+
+  const handlePageChange = useCallback((pageNumber: number) => {
+    setCurrentPage(pageNumber)
+  }, [])
+
   const retry = () => {
     setError(null)
     setLoading(true)
@@ -92,11 +150,53 @@ export default function PdfViewer({ filePath }: PdfViewerProps) {
     <div className="flex h-full flex-col bg-[#0d0d0d]">
       {/* Toolbar */}
       <div className="flex h-8 shrink-0 items-center gap-2 border-b border-[#373737] bg-[#121212] px-3">
-        <div className="flex-1" />
         <span className="text-xs text-[#555] truncate max-w-48">
           <FileText className="mr-1 inline h-3.5 w-3.5 text-[#f44336]" />
           {filePath.split("/").pop()?.split("\\").pop()}
         </span>
+
+        <div className="flex-1" />
+
+        {numPages > 0 && (
+          <>
+            <button
+              type="button"
+              onClick={handlePrevPage}
+              disabled={currentPage <= 1}
+              className="rounded p-1 text-[#787878] hover:bg-[#232323] hover:text-[#e8e8e8] disabled:opacity-30 disabled:cursor-not-allowed"
+              title="Previous page"
+            >
+              <ChevronLeft className="h-3.5 w-3.5" />
+            </button>
+
+            <span className="text-xs text-[#787878] whitespace-nowrap">
+              {currentPage} / {numPages}
+            </span>
+
+            <button
+              type="button"
+              onClick={handleNextPage}
+              disabled={currentPage >= numPages}
+              className="rounded p-1 text-[#787878] hover:bg-[#232323] hover:text-[#e8e8e8] disabled:opacity-30 disabled:cursor-not-allowed"
+              title="Next page"
+            >
+              <ChevronRight className="h-3.5 w-3.5" />
+            </button>
+
+            <span className="w-px h-4 bg-[#373737]" />
+          </>
+        )}
+
+        <button
+          type="button"
+          onClick={handlePrint}
+          disabled={!pdfBytes}
+          className="rounded p-1 text-[#787878] hover:bg-[#232323] hover:text-[#e8e8e8] disabled:opacity-30 disabled:cursor-not-allowed"
+          title="Print"
+        >
+          <Printer className="h-3.5 w-3.5" />
+        </button>
+
         <button
           type="button"
           onClick={openExternal}
@@ -137,10 +237,12 @@ export default function PdfViewer({ filePath }: PdfViewerProps) {
 
         {pdfBytes && !loading && !error && (
           <PdfDocumentRenderer
+            ref={pdfRendererRef}
             fileData={pdfBytes}
             numPages={numPages}
             onLoadSuccess={handleLoadSuccess}
             onLoadError={(e) => setError(e.message)}
+            onVisiblePageChange={handlePageChange}
           />
         )}
       </div>

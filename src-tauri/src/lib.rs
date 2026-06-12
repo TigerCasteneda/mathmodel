@@ -31,6 +31,7 @@ pub fn run() {
             app.manage(ai::session::ChatSessionStore::new(app_data.clone()));
             app.manage(ai::permissions::PermissionStore::new(app_data.clone()));
             app.manage(ai::chat::StopFlags::default());
+            app.manage(ai::history::OperationHistoryStore::new(app_data.clone()));
 
             // ── Embedded server startup ──
             let handle = app.handle().clone();
@@ -70,6 +71,13 @@ pub fn run() {
             ai::session::list_sessions,
             ai::session::load_session,
             ai::session::delete_session,
+            ai::session::rename_session,
+            ai::session::archive_session,
+            ai::session::unarchive_session,
+            ai::session::search_sessions,
+            ai::session::export_session,
+            ai::history::list_operations,
+            ai::history::get_operation_stats,
             ai::permissions::get_permission_config,
             ai::permissions::resolve_permission_request,
             ai::permissions::set_permission_config,

@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react"
 import { useRouter } from "next/navigation"
-import { AlertCircle, BookOpen, CheckCircle2, Copy, Database, FileCode, FileImage, FileText, Folder, FolderOpen, Globe2, Library, Link, Loader2, LogOut, MessageSquare, Network, MonitorUp, MonitorX, RefreshCw, RotateCcw, Save, Search, Settings, SidebarIcon, Trash2 } from "lucide-react"
+import { AlertCircle, Archive, BookOpen, CheckCircle2, ChevronDown, ChevronRight, Copy, Database, FileCode, FileImage, FileText, Folder, FolderOpen, Globe2, Library, Link, Loader2, LogOut, MessageSquare, Network, MonitorUp, MonitorX, PencilLine, RefreshCw, RotateCcw, Save, Search, Settings, SidebarIcon, Trash2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { ScrollArea } from "@/components/ui/scroll-area"
@@ -13,9 +13,13 @@ import ImageViewer from "@/components/editor/image-viewer"
 import PdfViewer from "@/components/editor/pdf-viewer"
 import { cn } from "@/lib/utils"
 import {
+  archiveSession,
   deleteSession,
   getAiConfigStatus,
   listSessions,
+  renameSession,
+  searchSessions,
+  unarchiveSession,
   researchAnalyzeUrl,
   researchExtractAndSave,
   researchSearchNative,
@@ -242,17 +246,20 @@ function FileNode({
   depth,
   activePath,
   onOpen,
+  onOpenEssay,
 }: {
   item: FileTreeItem
   depth: number
   activePath?: string
   onOpen: (file: FileTreeItem) => void
+  onOpenEssay?: (file: FileTreeItem) => void
 }) {
   const [open, setOpen] = useState(depth < 1)
   const folder = item.type === "folder"
+  const isMd = !folder && item.name.endsWith(".md")
 
   return (
-    <div>
+    <div className="group/file">
       <button
         className={cn(
           "flex h-7 w-full items-center gap-2 px-2 text-left text-xs text-[#b4b4b4] hover:bg-[#232323]",
@@ -262,14 +269,35 @@ function FileNode({
         onClick={() => folder ? setOpen((value) => !value) : onOpen(item)}
       >
         {folder ? (
-          open ? <FolderOpen className="h-4 w-4 text-[#d4a574]" /> : <Folder className="h-4 w-4 text-[#d4a574]" />
+          open ? <FolderOpen className="h-4 w-4 text-[#d4a574] shrink-0" /> : <Folder className="h-4 w-4 text-[#d4a574] shrink-0" />
         ) : (
-          <FileCode className="h-4 w-4 text-[#64b5f6]" />
+          <FileCode className="h-4 w-4 text-[#64b5f6] shrink-0" />
         )}
-        <span className="truncate">{item.name}</span>
+        <span className="truncate flex-1">{item.name}</span>
+        {isMd && onOpenEssay && (
+          <span
+            className="opacity-0 group-hover/file:opacity-100 transition-opacity shrink-0 p-0.5 rounded hover:bg-[#3a3a3a] cursor-pointer"
+            title="Open in Essay Editor"
+            role="button"
+            tabIndex={0}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault()
+                e.stopPropagation()
+                onOpenEssay(item)
+              }
+            }}
+            onClick={(e) => {
+              e.stopPropagation()
+              onOpenEssay(item)
+            }}
+          >
+            <PencilLine className="h-3 w-3 text-[#d4a574]" />
+          </span>
+        )}
       </button>
       {folder && open && item.children?.map((child) => (
-        <FileNode key={child.path || child.name} item={child} depth={depth + 1} activePath={activePath} onOpen={onOpen} />
+        <FileNode key={child.path || child.name} item={child} depth={depth + 1} activePath={activePath} onOpen={onOpen} onOpenEssay={onOpenEssay} />
       ))}
     </div>
   )
@@ -995,6 +1023,8 @@ export function ModelerWorkbench({ projectId }: { projectId: string }) {
     { id: "chat", title: "Chat", kind: "chat" },
   ])
   const [sessions, setSessions] = useState<SessionInfo[]>([])
+  const [sessionQuery, setSessionQuery] = useState("")
+  const [showArchived, setShowArchived] = useState(false)
   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>("host")
   const [remoteTree, setRemoteTree] = useState<FileTreeItem | null>(null)
   const [remoteStatus, setRemoteStatus] = useState<"idle" | "loading" | "error">("idle")
@@ -1431,7 +1461,35 @@ export function ModelerWorkbench({ projectId }: { projectId: string }) {
   }
 
   const refreshSessions = async () => {
-    try { setSessions(await listSessions()) } catch {}
+    try {
+      setSessionQuery("")
+      setSessions(await listSessions())
+    } catch {}
+  }
+
+  const handleSessionSearch = async (query: string) => {
+    setSessionQuery(query)
+    try {
+      setSessions(query.trim() ? await searchSessions(query) : await listSessions())
+    } catch {}
+  }
+
+  const handleRenameSession = async (sessionId: string) => {
+    const name = window.prompt("Rename session:")
+    if (name?.trim()) {
+      try { await renameSession(sessionId, name.trim()) } catch {}
+      await refreshSessions()
+    }
+  }
+
+  const handleArchiveSession = async (sessionId: string) => {
+    try { await archiveSession(sessionId) } catch {}
+    await refreshSessions()
+  }
+
+  const handleUnarchiveSession = async (sessionId: string) => {
+    try { await unarchiveSession(sessionId) } catch {}
+    await refreshSessions()
   }
 
   const newChat = async () => {
@@ -1498,6 +1556,15 @@ export function ModelerWorkbench({ projectId }: { projectId: string }) {
     }
     setTabs((prev) => prev.some((tab) => tab.id === next.id) ? prev.map((tab) => tab.id === next.id ? next : tab) : [...prev, next])
     setActiveTab(next.id)
+  }
+
+  const openEssay = (file: FileTreeItem) => {
+    const essayFileId = (file as any).id || file.path
+    const essayPath = file.path
+    const params = new URLSearchParams()
+    params.set("file", essayFileId)
+    params.set("path", essayPath)
+    router.push(`/projects/${projectId}/essay?${params.toString()}`)
   }
 
   const scheduleHostCollaborativeWrite = (path: string, content: string) => {
@@ -1818,7 +1885,7 @@ export function ModelerWorkbench({ projectId }: { projectId: string }) {
                 )}
               </div>
               <div className="py-1">
-                <FileNode item={tree} depth={0} activePath={activeFilePath} onOpen={openFile} />
+                <FileNode item={tree} depth={0} activePath={activeFilePath} onOpen={openFile} onOpenEssay={openEssay} />
               </div>
             </>
           )}
@@ -1836,6 +1903,15 @@ export function ModelerWorkbench({ projectId }: { projectId: string }) {
           )}
           {activeActivity === "chat" && (
             <>
+              {/* Search */}
+              <div className="px-2 pb-1">
+                <Input
+                  placeholder="Search sessions..."
+                  value={sessionQuery}
+                  onChange={(e) => handleSessionSearch(e.target.value)}
+                  className="h-7 text-xs border-[#373737] bg-[#1a1a1a] placeholder:text-[#787878]"
+                />
+              </div>
               <button
                 onClick={() => { refreshSessions(); newChat() }}
                 className="flex h-8 w-full items-center gap-2 px-3 text-left text-xs text-[#b4b4b4] hover:bg-[#232323] hover:text-[#e8e8e8] transition-colors"
@@ -1844,9 +1920,10 @@ export function ModelerWorkbench({ projectId }: { projectId: string }) {
                 New Chat
               </button>
               <div className="py-1">
-                {sessions.length === 0 ? (
+                {/* Active sessions */}
+                {sessions.filter((s) => s.status !== "archived").length === 0 ? (
                   <p className="px-3 py-4 text-center text-xs text-[#787878]">No conversations yet</p>
-                ) : sessions.map((s) => (
+                ) : sessions.filter((s) => s.status !== "archived").map((s) => (
                   <div
                     key={s.id}
                     role="button"
@@ -1865,6 +1942,20 @@ export function ModelerWorkbench({ projectId }: { projectId: string }) {
                     <span className="flex-1 truncate">{s.name || new Date(s.created_at * 1000).toLocaleDateString()}</span>
                     <span className="hidden text-[#787878] group-hover:inline-flex">{s.message_count}</span>
                     <button
+                      className="hidden h-4 w-4 items-center justify-center rounded text-[#787878] hover:bg-[#373737] hover:text-[#e8e8e8] group-hover:flex"
+                      title="Rename"
+                      onClick={(e) => { e.stopPropagation(); handleRenameSession(s.id) }}
+                    >
+                      <PencilLine className="h-3 w-3" />
+                    </button>
+                    <button
+                      className="hidden h-4 w-4 items-center justify-center rounded text-[#787878] hover:bg-[#373737] hover:text-[#f59e0b] group-hover:flex"
+                      title="Archive"
+                      onClick={(e) => { e.stopPropagation(); handleArchiveSession(s.id) }}
+                    >
+                      <Archive className="h-3 w-3" />
+                    </button>
+                    <button
                       className="ml-1 hidden h-4 w-4 items-center justify-center rounded text-[#787878] hover:bg-[#373737] hover:text-[#f44336] group-hover:flex"
                       onClick={(e) => { e.stopPropagation(); deleteChat(s.id) }}
                     >
@@ -1872,6 +1963,42 @@ export function ModelerWorkbench({ projectId }: { projectId: string }) {
                     </button>
                   </div>
                 ))}
+                {/* Archived section */}
+                {sessions.some((s) => s.status === "archived") && (
+                  <>
+                    <button
+                      onClick={() => setShowArchived((prev) => !prev)}
+                      className="mt-2 flex h-7 w-full items-center gap-2 px-3 text-left text-xs text-[#787878] hover:text-[#b4b4b4] transition-colors"
+                    >
+                      {showArchived ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+                      Archived ({sessions.filter((s) => s.status === "archived").length})
+                    </button>
+                    {showArchived && sessions.filter((s) => s.status === "archived").map((s) => (
+                      <div
+                        key={s.id}
+                        role="button"
+                        tabIndex={0}
+                        className="group flex h-8 w-full items-center gap-2 px-3 text-left text-xs text-[#787878] opacity-80 hover:bg-[#232323] hover:text-[#e8e8e8] hover:opacity-100 transition-colors"
+                      >
+                        <MessageSquare className="h-3.5 w-3.5 text-[#555]" />
+                        <span className="flex-1 truncate">{s.name || new Date(s.created_at * 1000).toLocaleDateString()}</span>
+                        <button
+                          className="hidden h-4 w-4 items-center justify-center rounded text-[#787878] hover:bg-[#373737] hover:text-[#4caf50] group-hover:flex"
+                          title="Restore"
+                          onClick={(e) => { e.stopPropagation(); handleUnarchiveSession(s.id) }}
+                        >
+                          <RefreshCw className="h-3 w-3" />
+                        </button>
+                        <button
+                          className="ml-1 hidden h-4 w-4 items-center justify-center rounded text-[#787878] hover:bg-[#373737] hover:text-[#f44336] group-hover:flex"
+                          onClick={(e) => { e.stopPropagation(); deleteChat(s.id) }}
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    ))}
+                  </>
+                )}
               </div>
             </>
           )}

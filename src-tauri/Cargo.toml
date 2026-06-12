@@ -30,6 +30,7 @@ chrono = "0.4"
 futures = "0.3"
 base64 = "0.22"
 async-trait = "0.1"
+uuid = { version = "1", features = ["v4"] }
 tiktoken-rs = { version = "0.7", optional = true }
 claude_code_rs = { path = "../claude-code-rust", default-features = false }
 
