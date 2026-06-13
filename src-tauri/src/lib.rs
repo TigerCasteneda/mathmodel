@@ -5,9 +5,7 @@ use agent::state::AgentState;
 use ai::config::AiConfigState;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tauri::Emitter;
-use tauri::Manager;
-use tauri::State;
+use tauri::{AppHandle, Emitter, Manager, State};
 
 /// Managed state holding the embedded server's actual port.
 pub struct ServerPort(pub u16);
@@ -97,6 +95,7 @@ pub fn run() {
             ai::permissions::set_permission_config,
             ai::search::ai_search,
             resolve_question,
+            list_tasks,
             list_hooks,
             toggle_hook,
             list_skills,
@@ -113,6 +112,20 @@ async fn list_hooks(
     hooks: State<'_, ai::hooks::HookManager>,
 ) -> Result<Vec<ai::hooks::Hook>, String> {
     Ok(hooks.list_hooks().await)
+}
+
+#[tauri::command]
+async fn list_tasks(
+    conversation_id: String,
+    app: AppHandle,
+) -> Result<Vec<serde_json::Value>, String> {
+    let data_dir = app.path().app_data_dir().unwrap_or_default();
+    let path = data_dir.join("task-lists").join(format!("{conversation_id}.json"));
+    let tasks: Vec<serde_json::Value> = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|data| serde_json::from_str(&data).ok())
+        .unwrap_or_default();
+    Ok(tasks)
 }
 
 #[tauri::command]

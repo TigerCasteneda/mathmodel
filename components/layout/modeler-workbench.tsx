@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { ArenaPanel } from "@/components/arena/arena-panel"
+import { KnowledgeBasePanel } from "@/components/knowledge/knowledge-base-panel"
 import { ChatPanel } from "@/components/chat/chat-panel"
 import { CodeEditor } from "@/components/editor/code-editor"
 import ImageViewer from "@/components/editor/image-viewer"
@@ -34,6 +35,7 @@ import { useTauriAgent } from "@/hooks/use-tauri-agent"
 import { useScreenShare } from "@/hooks/use-screen-share"
 import {
   ALL_PROJECT_CAPABILITIES,
+  createArenaCard,
   createProjectFile,
   createProjectInvite,
   deleteProjectFile,
@@ -57,9 +59,10 @@ import {
   type ProjectRole,
   type ResearchItem,
 } from "@/lib/api"
+import { researchItemToArenaInput, searchResultToArenaInput } from "@/lib/research-to-arena"
 import { useAuth } from "@/hooks/use-auth"
 
-type Activity = "explorer" | "arena" | "research" | "chat" | "settings"
+type Activity = "explorer" | "arena" | "knowledge" | "research" | "chat" | "settings"
 type Tab = {
   id: string
   title: string
@@ -118,6 +121,7 @@ function remoteTreeToFileTree(items: ProjectFileTreeItem[]): FileTreeItem {
 const activities = [
   { id: "explorer" as const, icon: FileText, label: "Explorer" },
   { id: "arena" as const, icon: Network, label: "Arena" },
+  { id: "knowledge" as const, icon: Library, label: "Knowledge Base" },
   { id: "research" as const, icon: BookOpen, label: "Research" },
   { id: "chat" as const, icon: MessageSquare, label: "Chat" },
   { id: "settings" as const, icon: Settings, label: "Settings" },
@@ -338,6 +342,7 @@ function ResearchSearchPanel({
   const [loadingStage, setLoadingStage] = useState<"planning" | "searching" | "ranking">("planning")
   const [saving, setSaving] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
+  const [arenaSendingUrl, setArenaSendingUrl] = useState<string | null>(null)
   const researchSearchIdRef = useRef<string | null>(null)
   const urlAnalyzeIdRef = useRef<string | null>(null)
 
@@ -444,6 +449,39 @@ function ResearchSearchPanel({
       setMessage(errorText(error, "Research save failed."))
     } finally {
       setSaving(false)
+    }
+  }
+
+  // Send a single search result straight to the Arena as a card, without the
+  // full Save & Extract flow. Direct field mapping, no AI call.
+  const sendResultToArena = async (result: NativeResearchSearchItem) => {
+    if (!canSave || arenaSendingUrl) return
+    setArenaSendingUrl(result.url)
+    setMessage(null)
+    try {
+      const input = searchResultToArenaInput(result)
+      await createArenaCard(projectId, input)
+      setMessage(`Added to Arena: ${input.title}`)
+    } catch (error) {
+      setMessage(errorText(error, "Send to Arena failed."))
+    } finally {
+      setArenaSendingUrl(null)
+    }
+  }
+
+  // Send an already-saved reference to the Arena as a card.
+  const sendItemToArena = async (item: ResearchItem) => {
+    if (!canSave || arenaSendingUrl) return
+    setArenaSendingUrl(item.id)
+    setMessage(null)
+    try {
+      const input = researchItemToArenaInput(item)
+      await createArenaCard(projectId, input)
+      setMessage(`Added to Arena: ${input.title}`)
+    } catch (error) {
+      setMessage(errorText(error, "Send to Arena failed."))
+    } finally {
+      setArenaSendingUrl(null)
     }
   }
 
@@ -555,6 +593,23 @@ function ResearchSearchPanel({
                       <div className="mt-1 truncate text-[11px] text-[#787878]">Task: {result.planned_query}</div>
                     )}
                     <p className="mt-2 line-clamp-4 text-xs leading-5 text-[#b4b4b4]">{result.content}</p>
+                    <div className="mt-2 flex justify-end">
+                      <button
+                        type="button"
+                        onClick={() => sendResultToArena(result)}
+                        disabled={!canSave || arenaSendingUrl === result.url}
+                        title={canSave ? "Send to Arena as a card" : "files.write and ai.write permissions required"}
+                        className={cn(
+                          "inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-[11px] transition-colors",
+                          canSave
+                            ? "border-[#d4a574]/40 text-[#ebc396] hover:border-[#d4a574] hover:bg-[#2d241a]"
+                            : "border-[#373737] text-[#5f5f5f] cursor-not-allowed",
+                        )}
+                      >
+                        {arenaSendingUrl === result.url ? <Loader2 className="h-3 w-3 animate-spin" /> : <Network className="h-3 w-3" />}
+                        Send to Arena
+                      </button>
+                    </div>
                   </div>
                 </div>
               </article>
@@ -588,6 +643,23 @@ function ResearchSearchPanel({
                     <div className="text-[10px] uppercase text-[#d4a574]">{item.category}</div>
                     <h4 className="mt-1 line-clamp-2 text-xs font-medium text-[#e8e8e8]">{item.title || "Untitled"}</h4>
                     {item.summary && <p className="mt-1 line-clamp-2 text-[11px] leading-4 text-[#787878]">{item.summary}</p>}
+                    <div className="mt-1.5 flex justify-end">
+                      <button
+                        type="button"
+                        onClick={() => sendItemToArena(item)}
+                        disabled={!canSave || arenaSendingUrl === item.id}
+                        title={canSave ? "Send to Arena as a card" : "files.write and ai.write permissions required"}
+                        className={cn(
+                          "inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[10px] transition-colors",
+                          canSave
+                            ? "border-[#d4a574]/40 text-[#ebc396] hover:border-[#d4a574] hover:bg-[#2d241a]"
+                            : "border-[#373737] text-[#5f5f5f] cursor-not-allowed",
+                        )}
+                      >
+                        {arenaSendingUrl === item.id ? <Loader2 className="h-2.5 w-2.5 animate-spin" /> : <Network className="h-2.5 w-2.5" />}
+                        Arena
+                      </button>
+                    </div>
                   </article>
                 ))}
               </div>
@@ -1734,6 +1806,7 @@ export function ModelerWorkbench({ projectId }: { projectId: string }) {
       return tauriAgent.workDir?.split(/[/\\]/).pop() || "Explorer"
     }
     if (activeActivity === "arena") return "Arena"
+    if (activeActivity === "knowledge") return "Knowledge Base"
     if (activeActivity === "research") return "Research"
     if (activeActivity === "chat") return "Chats"
     return "Settings"
@@ -1896,9 +1969,21 @@ export function ModelerWorkbench({ projectId }: { projectId: string }) {
             </button>
           )}
           {activeActivity === "arena" && (
-            <button className="flex h-8 w-full items-center gap-2 px-3 text-left text-xs text-[#e8e8e8]">
-              <Network className="h-4 w-4 text-[#d4a574]" />
+            <button
+              onClick={() => setActiveActivity("knowledge")}
+              className="flex h-8 w-full items-center gap-2 px-3 text-left text-xs text-[#b4b4b4] hover:bg-[#232323] hover:text-[#e8e8e8] transition-colors"
+            >
+              <Library className="h-4 w-4 text-[#d4a574]" />
               Knowledge Base
+            </button>
+          )}
+          {activeActivity === "knowledge" && (
+            <button
+              onClick={() => setActiveActivity("arena")}
+              className="flex h-8 w-full items-center gap-2 px-3 text-left text-xs text-[#b4b4b4] hover:bg-[#232323] hover:text-[#e8e8e8] transition-colors"
+            >
+              <Network className="h-4 w-4 text-[#d4a574]" />
+              Arena Cards
             </button>
           )}
           {activeActivity === "chat" && (
@@ -2068,6 +2153,8 @@ export function ModelerWorkbench({ projectId }: { projectId: string }) {
             />
           ) : activeActivity === "arena" ? (
             <ArenaPanel projectId={projectId} capabilities={capabilities} />
+          ) : activeActivity === "knowledge" ? (
+            <KnowledgeBasePanel projectId={projectId} capabilities={capabilities} />
           ) : active?.kind === "chat" ? (
             <ChatPanel
               conversationId={active.id}

@@ -495,15 +495,12 @@ function ToolStatusDot({ status }: { status: ToolCallEntry["status"] }) {
 }
 
 function ToolCallCard({ tc }: { tc: ToolCallEntry }) {
-  const [expanded, setExpanded] = useState(tc.status === "error")
+  const [expanded, setExpanded] = useState(false)
   const meta = TOOL_META[tc.name] || { label: tc.name, tone: "neutral", icon: Wrench }
   const Icon = meta.icon
   const summary = primaryToolArg(tc.arguments)
   const statusLabel = tc.status === "running" ? "Running" : tc.status === "success" ? "Done" : "Error"
 
-  useEffect(() => {
-    if (tc.status === "error") setExpanded(true)
-  }, [tc.status])
 
   return (
     <div
@@ -657,8 +654,14 @@ function TimelineTextItem({
 }) {
   return (
     <div className="cc-transcript-text py-1 text-sm leading-6 text-[#e8e8e8]">
-      <MarkdownContent content={item.content} />
-      {active && <span className="cc-stream-cursor mt-1 inline-block" />}
+      {active ? (
+        <span className="whitespace-pre-wrap">
+          {item.content}
+          <span className="cc-stream-cursor ml-0.5 inline align-baseline" />
+        </span>
+      ) : (
+        <MarkdownContent content={item.content} />
+      )}
     </div>
   )
 }
@@ -690,6 +693,74 @@ function TimelineStatusItem({ item }: { item: Extract<AssistantTimelineItem, { t
       <span>{item.message}</span>
     </div>
   )
+}
+
+// Groups consecutive tool items into a collapsible summary.
+// Auto-expands while streaming, auto-collapses when done.
+function ToolsSummary({ tools, streaming }: { tools: ToolCallEntry[]; streaming?: boolean }) {
+  const [expanded, setExpanded] = useState(!!streaming)
+  const prevStreamingRef = useRef(streaming)
+
+  useEffect(() => {
+    if (streaming && !prevStreamingRef.current) setExpanded(true)
+    else if (!streaming && prevStreamingRef.current) setExpanded(false)
+    prevStreamingRef.current = streaming
+  }, [streaming])
+
+  const runningCount = tools.filter((t) => t.status === "running").length
+  const errorCount = tools.filter((t) => t.status === "error").length
+
+  return (
+    <div className="my-1">
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        className="flex items-center gap-1.5 text-xs text-[#787878] hover:text-[#b4b4b4]"
+      >
+        {expanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+        <Wrench className="h-3 w-3" />
+        <span>
+          {tools.length} tool call{tools.length !== 1 ? "s" : ""}
+        </span>
+        {runningCount > 0 && <span className="cc-live-dot h-1.5 w-1.5 rounded-full bg-[#64b5f6]" />}
+        {errorCount > 0 && <AlertCircle className="h-3 w-3 text-[#f44336]" />}
+      </button>
+      {expanded && (
+        <div className="mt-1 grid gap-0.5">
+          {tools.map((tc) => (
+            <ToolCallCard key={tc.id} tc={tc} />
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+type RenderSegment =
+  | { type: "item"; item: AssistantTimelineItem }
+  | { type: "tools"; tools: ToolCallEntry[] }
+
+function groupTimelineSegments(timeline: AssistantTimelineItem[]): RenderSegment[] {
+  const segments: RenderSegment[] = []
+  let batch: ToolCallEntry[] = []
+
+  const flush = () => {
+    if (batch.length > 0) {
+      segments.push({ type: "tools", tools: [...batch] })
+      batch = []
+    }
+  }
+
+  for (const item of timeline) {
+    if (item.type === "tool") {
+      batch.push(item.toolCall)
+    } else {
+      flush()
+      segments.push({ type: "item", item })
+    }
+  }
+  flush()
+  return segments
 }
 
 function TimelineItemView({
@@ -768,15 +839,23 @@ function TranscriptTurn({
         </div>
         {hasRenderableTimeline(message) ? (
           <div className="grid gap-1">
-            {timeline.map((item, index) => (
-              <TimelineItemView
-                key={item.id}
-                item={item}
-                message={message}
-                isLast={index === timeline.length - 1}
-                onToggleThinking={(itemId) => onToggleThinking(message.id, itemId)}
-              />
-            ))}
+            {groupTimelineSegments(timeline).map((seg, index, arr) =>
+              seg.type === "tools" ? (
+                <ToolsSummary
+                  key={`tools-${index}`}
+                  tools={seg.tools}
+                  streaming={message.streaming && index === arr.length - 1}
+                />
+              ) : (
+                <TimelineItemView
+                  key={seg.item.id}
+                  item={seg.item}
+                  message={message}
+                  isLast={index === arr.length - 1}
+                  onToggleThinking={(itemId) => onToggleThinking(message.id, itemId)}
+                />
+              )
+            )}
           </div>
         ) : message.streaming ? (
           <ThinkingStrip />

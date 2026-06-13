@@ -7,7 +7,6 @@ use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
 use tokio::sync::RwLock;
 
-pub use claude_code_rs::api::ChatMessage;
 use super::config::AiConfig;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -172,6 +171,7 @@ impl AgentOrchestrator {
         self.sessions.read().await.get(session_id).cloned()
     }
 
+    #[allow(dead_code)]
     pub async fn list_sessions(&self) -> Vec<AgentSession> {
         self.sessions.read().await.values().cloned().collect()
     }
@@ -185,40 +185,204 @@ async fn run_agent_task(
     app_handle: AppHandle,
     session_id: String,
 ) -> anyhow::Result<String> {
-    let client = claude_code_rs::ApiClient::new(config.to_claude_settings(work_dir));
+    let client = claude_code_rs::ApiClient::new(config.to_claude_settings(work_dir.clone()));
     let system = format!(
-        "You are a specialized {}. {}\n\nYou have access to these tools: {}. Return only the final result. Do NOT ask the user questions.",
-        agent.name,
-        agent.description,
-        agent.tools.join(", ")
+        "You are a specialized {}. {}\n\nReturn only your final analysis. Be thorough but concise. Do NOT ask questions — produce output.",
+        agent.name, agent.description
     );
 
-    let messages = vec![
+    let tool_defs = agent_tool_defs(&agent.tools);
+    let mut messages = vec![
         claude_code_rs::api::ChatMessage::system(&system),
         claude_code_rs::api::ChatMessage::user(&prompt),
     ];
 
-    let tool_defs: Vec<claude_code_rs::api::ToolDefinition> = agent.tools.iter().map(|t| {
-        claude_code_rs::api::ToolDefinition::new(t.clone(), String::new(), json!({}))
-    }).collect();
+    // Tool loop: up to 4 turns
+    for _turn in 0..4 {
+        let response = client.chat(messages.clone(), Some(tool_defs.clone())).await
+            .map_err(|e| anyhow::anyhow!("agent API error: {e}"))?;
 
-    match client.chat(messages, Some(tool_defs)).await {
-        Ok(response) => {
-            let content = response.choices.first().and_then(|c| c.message.content.clone()).unwrap_or_default();
+        let choice = response.choices.first()
+            .ok_or_else(|| anyhow::anyhow!("no response from agent"))?;
+
+        let finish = choice.finish_reason.as_deref().unwrap_or("stop");
+
+        if finish == "stop" {
+            let content = choice.message.content.clone().unwrap_or_default();
             let _ = app_handle.emit("chat:agent_complete", &serde_json::json!({
-                "session_id": session_id,
-                "result": content
+                "session_id": &session_id, "result": &content
             }));
-            Ok(content)
+            return Ok(content);
         }
-        Err(e) => {
-            let _ = app_handle.emit("chat:agent_error", &serde_json::json!({
-                "session_id": session_id,
-                "error": e.to_string()
-            }));
-            Err(anyhow::anyhow!("agent failed: {e}"))
+
+        // Tool calls: execute and feed results
+        if let Some(ref tool_calls) = choice.message.tool_calls {
+            if tool_calls.is_empty() {
+                let content = choice.message.content.clone().unwrap_or_default();
+                let _ = app_handle.emit("chat:agent_complete", &serde_json::json!({
+                    "session_id": &session_id, "result": &content
+                }));
+                return Ok(content);
+            }
+
+            messages.push(choice.message.clone());
+
+            for tc in tool_calls {
+                let result = execute_agent_tool(&tc.function.name, &tc.function.arguments, &work_dir).await;
+                messages.push(claude_code_rs::api::ChatMessage::tool(&tc.id, result));
+            }
+            continue;
+        }
+
+        let content = choice.message.content.clone().unwrap_or_default();
+        let _ = app_handle.emit("chat:agent_complete", &serde_json::json!({
+            "session_id": &session_id, "result": &content
+        }));
+        return Ok(content);
+    }
+
+    Err(anyhow::anyhow!("agent exceeded max tool-calling turns"))
+}
+
+fn agent_tool_defs(tools: &[String]) -> Vec<claude_code_rs::api::ToolDefinition> {
+    tools.iter().map(|name| {
+        let (desc, params) = agent_tool_schema(name);
+        claude_code_rs::api::ToolDefinition::new(name.clone(), desc, params)
+    }).collect()
+}
+
+fn agent_tool_schema(name: &str) -> (String, serde_json::Value) {
+    use serde_json::json;
+    match name {
+        "file_read" | "read_file" => (
+            "Read a file from the workspace".into(),
+            json!({ "type": "object", "properties": { "path": { "type": "string" } }, "required": ["path"] }),
+        ),
+        "file_write" | "write_file" => (
+            "Write content to a file".into(),
+            json!({ "type": "object", "properties": { "path": { "type": "string" }, "content": { "type": "string" } }, "required": ["path", "content"] }),
+        ),
+        "file_edit" => (
+            "Edit a file by replacing one exact string with another".into(),
+            json!({ "type": "object", "properties": { "path": { "type": "string" }, "old_content": { "type": "string" }, "new_content": { "type": "string" } }, "required": ["path", "old_content", "new_content"] }),
+        ),
+        "list_files" => (
+            "List workspace files".into(),
+            json!({ "type": "object", "properties": {} }),
+        ),
+        "search_files" => (
+            "Search for text pattern in workspace files".into(),
+            json!({ "type": "object", "properties": { "pattern": { "type": "string" }, "path": { "type": "string" } }, "required": ["pattern"] }),
+        ),
+        "execute_command" => (
+            "Run a shell command".into(),
+            json!({ "type": "object", "properties": { "command": { "type": "string" }, "cwd": { "type": "string" } }, "required": ["command"] }),
+        ),
+        "git_operations" => (
+            "Run git commands (status, log, diff, branch only for code reviewer agents)".into(),
+            json!({ "type": "object", "properties": { "operation": { "type": "string" } }, "required": ["operation"] }),
+        ),
+        "web_search" => (
+            "Search the web".into(),
+            json!({ "type": "object", "properties": { "query": { "type": "string" } }, "required": ["query"] }),
+        ),
+        "fetch_url" => (
+            "Fetch a URL as markdown".into(),
+            json!({ "type": "object", "properties": { "url": { "type": "string" } }, "required": ["url"] }),
+        ),
+        _ => (format!("Execute {name}"), json!({ "type": "object", "properties": {} })),
+    }
+}
+
+async fn execute_agent_tool(name: &str, arguments: &str, work_dir: &std::path::Path) -> String {
+    let args: serde_json::Value = serde_json::from_str(arguments).unwrap_or_default();
+    let skip = |e: std::io::Error| format!("Error: {e}");
+
+    match name {
+        "file_read" | "read_file" => {
+            let path = args["path"].as_str().unwrap_or("");
+            let full = work_dir.join(path);
+            std::fs::read_to_string(&full).unwrap_or_else(skip)
+        }
+        "list_files" => list_files_recursive(work_dir, 3),
+        "search_files" => {
+            let pattern = args["pattern"].as_str().unwrap_or("");
+            let path = args["path"].as_str().unwrap_or(".");
+            search_workspace(work_dir, pattern, path).unwrap_or_else(skip)
+        }
+        "execute_command" => {
+            let cmd = args["command"].as_str().unwrap_or("");
+            let cwd = args["cwd"].as_str().unwrap_or(".");
+            let output = tokio::process::Command::new("sh")
+                .arg("-c")
+                .arg(cmd)
+                .current_dir(work_dir.join(cwd))
+                .output().await;
+            match output {
+                Ok(o) => format!("{}\n{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr)),
+                Err(e) => format!("Command failed: {e}"),
+            }
+        }
+        "git_operations" => {
+            let op = args["operation"].as_str().unwrap_or("status");
+            let output = tokio::process::Command::new("git")
+                .args([op, "--no-pager"]).current_dir(work_dir)
+                .output().await;
+            match output {
+                Ok(o) => String::from_utf8_lossy(&o.stdout).into_owned(),
+                Err(e) => format!("git failed: {e}"),
+            }
+        }
+        "web_search" => {
+            format!("[web_search not available in agent mode] Use file_read/list_files instead.")
+        }
+        "fetch_url" => {
+            let url = args["url"].as_str().unwrap_or("");
+            match reqwest::get(url).await {
+                Ok(resp) => resp.text().await.unwrap_or_else(|e| format!("read error: {e}")),
+                Err(e) => format!("fetch error: {e}"),
+            }
+        }
+        _ => format!("Unknown tool: {name}")
+    }
+}
+
+fn list_files_recursive(dir: &std::path::Path, max_depth: usize) -> String {
+    let mut out = String::new();
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let relative = path.strip_prefix(dir).unwrap_or(&path);
+            out.push_str(&format!("{}\n", relative.display()));
+            if path.is_dir() && max_depth > 0 {
+                out.push_str(&list_files_recursive(&path, max_depth - 1));
+            }
         }
     }
+    out
+}
+
+fn search_workspace(dir: &std::path::Path, pattern: &str, subpath: &str) -> Result<String, std::io::Error> {
+    let mut out = String::new();
+    let search_dir = dir.join(subpath);
+    if search_dir.is_dir() {
+        for entry in std::fs::read_dir(&search_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_file() {
+                if let Ok(content) = std::fs::read_to_string(&path) {
+                    for (i, line) in content.lines().enumerate() {
+                        if line.contains(pattern) {
+                            let rel = path.strip_prefix(dir).unwrap_or(&path);
+                            out.push_str(&format!("{}:{}: {}\n", rel.display(), i + 1, line));
+                            if out.len() > 4000 { return Ok(out); }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(out)
 }
 
 // ── Tool Executors for agent management ──

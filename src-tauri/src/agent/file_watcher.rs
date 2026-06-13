@@ -80,13 +80,29 @@ pub fn scan_tree(work_dir: &PathBuf) -> anyhow::Result<FileTreeItem> {
 }
 
 pub fn read_workspace_file(work_dir: &PathBuf, path: &str) -> anyhow::Result<String> {
-    let full_path = work_dir.join(path);
-    let full_path = full_path.canonicalize()?;
-    let root = work_dir.canonicalize()?;
-    if !full_path.starts_with(root) || !full_path.is_file() {
-        anyhow::bail!("file is outside workspace or not a file");
+    let full_path = normalize_path(&work_dir.join(path));
+    let root = normalize_path(work_dir);
+    if !full_path.starts_with(&root) {
+        anyhow::bail!("path is outside workspace: {path}");
     }
-    Ok(std::fs::read_to_string(full_path)?)
+    if !full_path.is_file() {
+        anyhow::bail!("file not found: {path}");
+    }
+    let bytes = std::fs::read(&full_path)?;
+    String::from_utf8(bytes)
+        .map_err(|_| anyhow::anyhow!("file is binary and cannot be read as text: {path}"))
+}
+
+fn normalize_path(path: &PathBuf) -> PathBuf {
+    let mut out: Vec<std::path::Component> = Vec::new();
+    for c in path.components() {
+        match c {
+            std::path::Component::ParentDir => { out.pop(); }
+            std::path::Component::CurDir => {}
+            other => out.push(other),
+        }
+    }
+    out.iter().collect()
 }
 
 fn scan_path(root: &PathBuf, path: &PathBuf, name: String) -> anyhow::Result<FileTreeItem> {

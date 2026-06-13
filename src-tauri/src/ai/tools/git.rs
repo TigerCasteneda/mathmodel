@@ -2,14 +2,10 @@ use async_trait::async_trait;
 use claude_code_rs::mcp::ToolExecutor;
 use serde_json::{json, Value};
 use std::path::PathBuf;
-use std::sync::Arc;
 use tokio::process::Command;
-
-use crate::ai::workspace::WorkspaceProvider;
 
 pub struct GitExecutor {
     pub work_dir: PathBuf,
-    pub workspace: Arc<dyn WorkspaceProvider>,
 }
 
 #[async_trait]

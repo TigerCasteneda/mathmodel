@@ -447,12 +447,21 @@ pub async fn ai_chat(
         Err(_) => String::from("(file tree unavailable)"),
     };
 
+    // Append active skill fragment if set
+    let skill_fragment = skills.active_skill_fragment().await;
+    let base_prompt = system_prompt(
+        runtime.workspace_label(),
+        runtime.permission_label(),
+        &tree_text,
+    );
+    let system_text = if let Some(ref frag) = skill_fragment {
+        format!("{base_prompt}\n\n## Active Skill Guidance\n{frag}\nApply the above skill guidance when responding.")
+    } else {
+        base_prompt
+    };
+
     let mut context_messages = vec![ContextMessage {
-        message: ChatMessage::system(system_prompt(
-            runtime.workspace_label(),
-            runtime.permission_label(),
-            &tree_text,
-        )),
+        message: ChatMessage::system(&system_text),
         timestamp: chrono::Utc::now().timestamp(),
     }];
     context_messages.extend(sessions.history_with_timestamps(&conversation_id)?);

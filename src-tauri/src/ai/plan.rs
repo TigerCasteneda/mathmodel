@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use async_trait::async_trait;
 use claude_code_rs::mcp::ToolExecutor;
 use serde::{Deserialize, Serialize};

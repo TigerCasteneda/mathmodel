@@ -1,5 +1,6 @@
 @import 'tailwindcss';
 @import 'tw-animate-css';
+@import 'katex/dist/katex.min.css';
 
 @custom-variant dark (&:is(.dark *));
 
@@ -287,4 +288,24 @@
     opacity: 1;
     transform: translateY(-2px);
   }
+}
+
+/* MathLive equation editor — match Claude Orange dark theme */
+.cc-mathfield-host math-field {
+  display: block;
+  width: 100%;
+  min-height: 2.5rem;
+  font-size: 1.15rem;
+  color: #e8e8e8;
+  background: transparent;
+  border: none;
+  --caret-color: #d4a574;
+  --selection-background-color: rgba(100, 181, 246, 0.25);
+  --contains-highlight-background-color: rgba(100, 181, 246, 0.12);
+  --primary: #64b5f6;
+  --smart-fence-color: #d4a574;
+}
+
+.cc-mathfield-host math-field::part(menu-toggle) {
+  display: none;
 }

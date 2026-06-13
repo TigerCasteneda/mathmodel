@@ -3,6 +3,8 @@
 import { useEffect, useState } from "react"
 import { CheckCircle2, Circle, Clock, Loader2, ListTodo } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { listTasks } from "@/lib/tauri-api"
+
 interface TaskItem {
   id: string
   subject: string
@@ -122,10 +124,4 @@ export function TaskPanel({
       )}
     </div>
   )
-}
-
-async function listTasks(): Promise<TaskItem[]> {
-  // Use task_store via Tauri command — placeholder until backend command exists
-  // For now, return empty (task_list tool handles this via AI calls)
-  return []
 }

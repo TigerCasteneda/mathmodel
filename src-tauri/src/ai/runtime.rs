@@ -346,6 +346,7 @@ pub struct ModelerAiRuntime {
     enabled_deferred_tools: Arc<RwLock<HashSet<String>>>,
     permission_mode: PermissionMode,
     permission_store: PermissionStore,
+    #[allow(dead_code)]
     question_store: QuestionStore,
     app_handle: AppHandle,
     conversation_id: String,
@@ -509,6 +510,7 @@ impl ModelerAiRuntime {
         self.workspace_label
     }
 
+    #[allow(dead_code)]
     pub fn question_store(&self) -> &QuestionStore {
         &self.question_store
     }
@@ -853,7 +855,6 @@ async fn register_workspace_tools(
             ),
             Arc::new(GitExecutor {
                 work_dir: work_dir.clone(),
-                workspace: workspace.clone(),
             }),
         )
         .await;
@@ -1214,13 +1215,18 @@ struct FileReadExecutor {
 impl ToolExecutor for FileReadExecutor {
     async fn execute(&self, input: Value) -> anyhow::Result<Value> {
         let path = tool_path_arg(&input)?;
-        let content = self.workspace.read_file(path).await?;
-        Ok(json!({
-            "success": true,
-            "workspace": self.workspace.label(),
-            "path": path,
-            "content": content
-        }))
+        match self.workspace.read_file(path).await {
+            Ok(content) => Ok(json!({
+                "success": true,
+                "workspace": self.workspace.label(),
+                "path": path,
+                "content": content,
+            })),
+            Err(e) => Ok(json!({
+                "success": false,
+                "error": format!("Cannot read '{path}': {e}. Use list_files to see available files."),
+            })),
+        }
     }
 }
 
@@ -1719,16 +1725,26 @@ impl ToolExecutor for SkillInvokeExecutor {
         let skill_name = input["skill"].as_str()
             .ok_or_else(|| anyhow::anyhow!("skill name required"))?;
         let _task = input["input"].as_str().unwrap_or("");
-        match self.skills.list_all().await.iter().find(|s| s.name == skill_name || s.name.ends_with(&format!(":{}", skill_name))) {
+        match self.skills.set_active_skill(skill_name).await {
             Some(skill) => Ok(json!({
-                "skill": skill.name,
+                "activated": skill.name,
                 "description": skill.description,
                 "category": skill.category,
                 "tools_used": skill.tools_used,
-                "system_prompt_fragment": skill.system_prompt_fragment,
-                "note": "Apply the system_prompt_fragment guidance for this task."
+                "effect": "System prompt augmented with skill guidance on next turn."
             })),
-            None => Ok(json!({ "error": "unknown skill", "available": self.skills.list_all().await.iter().map(|s| &s.name).collect::<Vec<_>>() })),
+            None => {
+                // Try matching by suffix
+                let available: Vec<_> = self.skills.list_all().await;
+                match available.iter().find(|s| s.name.ends_with(&format!(":{skill_name}"))) {
+                    Some(skill) => Ok(json!({
+                        "activated": skill.name,
+                        "description": skill.description,
+                        "effect": "System prompt augmented with skill guidance on next turn."
+                    })),
+                    None => Ok(json!({ "error": "unknown skill", "available": available.iter().map(|s| &s.name).collect::<Vec<_>>() })),
+                }
+            }
         }
     }
 }

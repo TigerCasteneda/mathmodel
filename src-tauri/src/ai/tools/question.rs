@@ -30,12 +30,6 @@ pub struct QuestionEvent {
     pub expires_at_ms: i64,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-pub struct QuestionAnswer {
-    pub request_id: String,
-    pub answers: Value, // { "question text": { "answer": "selected option", ... } }
-}
-
 #[derive(Clone)]
 pub struct QuestionStore {
     pending: Arc<Mutex<HashMap<String, oneshot::Sender<String>>>>,

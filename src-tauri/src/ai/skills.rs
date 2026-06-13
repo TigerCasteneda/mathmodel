@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -18,14 +20,16 @@ pub struct SkillDefinition {
 #[derive(Debug, Clone)]
 pub struct SkillRegistry {
     skills: Arc<RwLock<HashMap<String, SkillDefinition>>>,
+    active_skill: Arc<RwLock<Option<SkillDefinition>>>,
     skills_dir: PathBuf,
 }
 
 impl SkillRegistry {
     pub fn new(data_dir: PathBuf) -> Self {
         let skills_dir = data_dir.join("skills");
-        let mut registry = Self {
+        let registry = Self {
             skills: Arc::new(RwLock::new(HashMap::new())),
+            active_skill: Arc::new(RwLock::new(None)),
             skills_dir,
         };
         // Register built-in skills synchronously
@@ -64,11 +68,25 @@ impl SkillRegistry {
             .collect()
     }
 
+    pub async fn set_active_skill(&self, name: &str) -> Option<SkillDefinition> {
+        let skill = self.get(name).await?;
+        self.active_skill.write().await.replace(skill.clone());
+        Some(skill)
+    }
+
+    pub async fn active_skill_fragment(&self) -> Option<String> {
+        self.active_skill.read().await.as_ref().map(|s| s.system_prompt_fragment.clone())
+    }
+
+    pub async fn clear_active_skill(&self) {
+        self.active_skill.write().await.take();
+    }
+
     async fn load_user_skills(&self) {
         if !self.skills_dir.exists() {
             return;
         }
-        let Ok(entries) = tokio::fs::read_dir(&self.skills_dir).await else {
+        let Ok(_entries) = tokio::fs::read_dir(&self.skills_dir).await else {
             return;
         };
         // For now load from json files

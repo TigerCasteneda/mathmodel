@@ -1,7 +1,7 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
-import { BookOpen, FilePlus2, Link2, Loader2, MessageSquare, PanelRightClose, RefreshCw, Save } from "lucide-react"
+import { useEffect, useMemo, useRef, useState } from "react"
+import { BookOpen, FilePlus2, Link2, Loader2, MessageSquare, PanelRightClose, RefreshCw, Save, Sigma } from "lucide-react"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import remarkMath from "remark-math"
@@ -18,6 +18,7 @@ import {
   type ProjectCapability,
 } from "@/lib/api"
 import { ArenaChat } from "@/components/arena/arena-chat"
+import { EquationEditor } from "@/components/arena/equation-editor"
 
 type ArenaCardType = "formula" | "finding" | "assumption" | "decision"
 
@@ -88,6 +89,8 @@ export function ArenaPanel({
   const [status, setStatus] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [equationOpen, setEquationOpen] = useState(false)
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
 
   const canWrite = capabilities.includes("files.write")
   const selected = useMemo(
@@ -163,6 +166,26 @@ export function ArenaPanel({
     }
   }
 
+  // Insert LaTeX from the equation editor at the textarea caret (or append).
+  const insertEquation = (latex: string, eqDisplay: "block" | "inline") => {
+    const snippet = eqDisplay === "block" ? `\n$$\n${latex}\n$$\n` : `$${latex}$`
+    const textarea = textareaRef.current
+    if (!textarea) {
+      setDraft((prev) => prev + snippet)
+      return
+    }
+    const start = textarea.selectionStart ?? draft.length
+    const end = textarea.selectionEnd ?? draft.length
+    const next = draft.slice(0, start) + snippet + draft.slice(end)
+    setDraft(next)
+    // Restore caret just after the inserted snippet on next tick.
+    requestAnimationFrame(() => {
+      const caret = start + snippet.length
+      textarea.focus()
+      textarea.setSelectionRange(caret, caret)
+    })
+  }
+
   return (
     <section className="grid h-full min-h-0 grid-cols-[260px_minmax(0,1fr)_260px] bg-[#0d0d0d] text-[#e8e8e8]">
       <aside className="flex min-h-0 flex-col border-r border-[#373737] bg-[#151515]">
@@ -225,6 +248,17 @@ export function ArenaPanel({
               </button>
             ))}
           </div>
+          {mode === "edit" && canWrite && selected && (
+            <Button
+              variant="ghost"
+              onClick={() => setEquationOpen(true)}
+              title="Insert equation"
+              className="h-7 gap-1.5 border border-[#373737] px-2 text-xs text-[#9fd0ff] hover:border-[#64b5f6] hover:bg-[#232323]"
+            >
+              <Sigma className="h-3.5 w-3.5" />
+              Equation
+            </Button>
+          )}
           <Button
             onClick={saveCard}
             disabled={!selected || !canWrite || saving || draft === selected.content}
@@ -240,6 +274,7 @@ export function ArenaPanel({
           {selected ? (
             mode === "edit" ? (
               <Textarea
+                ref={textareaRef}
                 value={draft}
                 readOnly={!canWrite}
                 onChange={(event) => setDraft(event.target.value)}
@@ -315,6 +350,12 @@ export function ArenaPanel({
           </div>
         )}
       </aside>
+
+      <EquationEditor
+        open={equationOpen}
+        onOpenChange={setEquationOpen}
+        onInsert={insertEquation}
+      />
     </section>
   )
 }

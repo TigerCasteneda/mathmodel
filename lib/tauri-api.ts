@@ -524,6 +524,13 @@ export function onAgentComplete(callback: (event: { session_id: string; result: 
   return () => { p.then((fn) => fn()) }
 }
 
+// ─── Tasks ──
+
+export async function listTasks(): Promise<any[]> {
+  if (!isTauri()) return []
+  return invoke<any[]>("list_tasks", { conversationId: "default" })
+}
+
 // ─── Sessions ────────────────────────────────────────
 
 export interface SessionInfo {

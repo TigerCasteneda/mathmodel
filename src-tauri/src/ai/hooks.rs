@@ -1,5 +1,6 @@
+#![allow(dead_code)]
+
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -14,6 +15,7 @@ pub enum HookPoint {
 }
 
 impl HookPoint {
+    #[allow(dead_code)]
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "pre_tool_use" => Some(Self::PreToolUse),
@@ -84,6 +86,7 @@ impl HookManager {
         }
     }
 
+    #[allow(dead_code)]
     pub async fn add_hook(&self, hook: Hook) {
         let mut hooks = self.hooks.write().await;
         hooks.push(hook);
