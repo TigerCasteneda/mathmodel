@@ -73,6 +73,8 @@ function buildGhostPrompt(
   let prompt = ""
 
   prompt += "Continue writing the following essay naturally. "
+  prompt += "Write only ONE short continuation — at most one or two sentences — "
+  prompt += "as an inline hint, not a full paragraph or essay. "
   prompt += "Match the style, tone, and detail level. "
   prompt += "Do NOT repeat existing content. "
   prompt += "Write in the same language as the text below.\n\n"

@@ -17,6 +17,13 @@ import { EditorSelection, type TransactionSpec } from "@codemirror/state"
 const GHOST_CSS =
   "color:rgba(255,255,255,0.28);font-style:italic;pointer-events:none;white-space:pre-wrap;"
 
+// Cap the suggestion so it stays a short hint ("一段"), not a whole essay.
+// Once streaming output passes this, we abort and trim to a clean boundary.
+const MAX_GHOST_CHARS = 280
+
+// How long to wait after the user stops typing before requesting a ghost.
+const GHOST_DEBOUNCE_MS = 1500
+
 class GhostWidget extends WidgetType {
   constructor(readonly text: string) {
     super()
@@ -52,6 +59,25 @@ export interface GhostState {
 
 export const EMPTY_GHOST: GhostState = { text: "", anchor: -1, loading: false }
 
+// Trim an over-long suggestion back to the last clean sentence boundary, so a
+// capped stream ends mid-thought as little as possible.
+function trimToHint(text: string): string {
+  const capped = text.slice(0, MAX_GHOST_CHARS)
+  const lastBoundary = Math.max(
+    capped.lastIndexOf("."),
+    capped.lastIndexOf("。"),
+    capped.lastIndexOf("\n"),
+    capped.lastIndexOf("！"),
+    capped.lastIndexOf("？"),
+    capped.lastIndexOf("!"),
+    capped.lastIndexOf("?"),
+  )
+  // Only trim at a boundary if it keeps a worthwhile amount of text.
+  return lastBoundary > MAX_GHOST_CHARS * 0.5
+    ? capped.slice(0, lastBoundary + 1)
+    : capped
+}
+
 export type GhostFetcher = (
   prefix: string,
   suffix: string,
@@ -69,7 +95,6 @@ class GhostTextPlugin implements PluginValue {
   private debounceTimer: ReturnType<typeof setTimeout> | null = null
   private abortController: AbortController | null = null
   private fetcher: GhostFetcher | null = null
-  private loaded = false
 
   get currentGhost(): GhostState {
     return this.ghost
@@ -78,10 +103,10 @@ class GhostTextPlugin implements PluginValue {
   /** Call from outside to configure the AI fetcher */
   configure(fetcher: GhostFetcher) {
     this.fetcher = fetcher
-    if (!this.loaded && this.view) {
-      this.loaded = true
-      this.scheduleAfterTyping()
-    }
+    // Do NOT trigger a request here. On open the document is near-empty (and
+    // still settling from collaborative sync), so an immediate "continue the
+    // essay" prompt makes the model generate a whole essay from nothing. Wait
+    // for the user to actually type — update() drives all scheduling.
   }
 
   constructor(view: EditorView) {
@@ -90,11 +115,26 @@ class GhostTextPlugin implements PluginValue {
   }
 
   update(update: ViewUpdate) {
-    if (update.docChanged) {
-      // dispatch() not allowed during update — defer to next frame
-      requestAnimationFrame(() => this.dismissGhost())
-      this.debounceTimer = setTimeout(() => this.scheduleAfterTyping(), 1500)
-    }
+    if (!update.docChanged) return
+
+    // Only react to genuine local user input. Remote collaborative sync (yjs)
+    // and our own empty refresh dispatches also fire docChanged; reacting to
+    // those would trigger ghost requests on open and feed back on every token.
+    const isLocalUserEdit = update.transactions.some(
+      (tr) => tr.isUserEvent("input") || tr.isUserEvent("delete"),
+    )
+    if (!isLocalUserEdit) return
+
+    // A user edit invalidates any pending suggestion. Clear the previous timer
+    // so rapid typing collapses to a single request instead of stacking one
+    // per keystroke.
+    if (this.debounceTimer) clearTimeout(this.debounceTimer)
+    // dispatch() not allowed during update — defer to next frame
+    requestAnimationFrame(() => this.dismissGhost())
+    this.debounceTimer = setTimeout(
+      () => this.scheduleAfterTyping(),
+      GHOST_DEBOUNCE_MS,
+    )
   }
 
   private scheduleAfterTyping() {
@@ -103,19 +143,18 @@ class GhostTextPlugin implements PluginValue {
     const pos = state.selection.main.head
     const doc = state.doc
 
-    // Don't suggest in the middle of text — cursor must be at end
-    if (pos < doc.length) {
-      // Check if cursor is at end of a line (could be mid-paragraph)
-      // Allow ghost at any position for flexibility
-    }
+    const prefix = doc.sliceString(Math.max(0, pos - 500), pos)
+    const suffix = doc.sliceString(pos, Math.min(doc.length, pos + 200))
+
+    // Need enough leading text for a meaningful continuation. On a near-empty
+    // doc "continue the essay" has nothing to anchor on and the model invents
+    // an entire essay — exactly the runaway we want to avoid.
+    if (prefix.trim().length < 8) return
 
     // Cancel previous
     this.abortController?.abort()
     this.abortController = new AbortController()
     const signal = this.abortController.signal
-
-    const prefix = doc.sliceString(Math.max(0, pos - 500), pos)
-    const suffix = doc.sliceString(pos, Math.min(doc.length, pos + 200))
 
     this.ghost = { text: "", anchor: pos, loading: true }
     this.refreshDecorations()
@@ -126,12 +165,20 @@ class GhostTextPlugin implements PluginValue {
       signal,
       (token: string) => {
         if (signal.aborted) return
+        const nextText = this.ghost.text + token
         this.ghost = {
           ...this.ghost,
-          text: this.ghost.text + token,
+          text: nextText,
           loading: false,
         }
         this.refreshDecorations()
+        // Keep the suggestion to a short hint: once we have enough, stop the
+        // stream rather than letting the model write an entire essay inline.
+        if (nextText.length >= MAX_GHOST_CHARS) {
+          this.abortController?.abort()
+          this.ghost = { ...this.ghost, text: trimToHint(nextText), loading: false }
+          this.refreshDecorations()
+        }
       },
       () => {
         if (signal.aborted) return

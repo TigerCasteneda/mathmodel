@@ -852,16 +852,63 @@ fn firecrawl_search_body(
     } else {
         json!([{ "type": "markdown" }])
     };
-    json!({
+    let mut body = json!({
         "query": query,
         "limit": limit,
-        "includeDomains": profile.include_domains,
-        "excludeDomains": profile.exclude_domains,
         "scrapeOptions": {
             "formats": formats,
             "onlyMainContent": true
         }
-    })
+    });
+
+    // Firecrawl's native category targeting is what actually surfaces academic
+    // / arxiv results — far more reliable than a domain allow-list.
+    if let Some(categories) = firecrawl_categories(kind) {
+        body["categories"] = categories;
+    }
+
+    // Firecrawl REJECTS a request that specifies BOTH includeDomains and
+    // excludeDomains, and rejects bare TLD suffixes like ".edu". Send at most
+    // one sanitized list: a tight allow-list for repo/dataset kinds, otherwise
+    // a junk-site deny-list. (Local post-filtering still applies the full
+    // academic profile, including the ".edu"/".gov" suffixes the API can't take.)
+    match kind {
+        ResearchSearchKind::Code | ResearchSearchKind::Dataset => {
+            let include = sanitize_firecrawl_domains(&profile.include_domains);
+            if !include.is_empty() {
+                body["includeDomains"] = json!(include);
+            }
+        }
+        _ => {
+            let exclude = sanitize_firecrawl_domains(&profile.exclude_domains);
+            if !exclude.is_empty() {
+                body["excludeDomains"] = json!(exclude);
+            }
+        }
+    }
+
+    body
+}
+
+/// Firecrawl `categories` targeting for kinds that map to a built-in source.
+/// Paper → research + pdf is the academic-paper (arxiv) path.
+fn firecrawl_categories(kind: &ResearchSearchKind) -> Option<Value> {
+    match kind {
+        ResearchSearchKind::Paper => Some(json!(["research", "pdf"])),
+        _ => None,
+    }
+}
+
+/// Keep only entries Firecrawl's `searchDomainSchema` accepts: a valid bare
+/// hostname with no protocol/path and no leading dot. Drops suffix patterns
+/// like ".edu"/".gov" that are only meaningful to our local domain matcher.
+fn sanitize_firecrawl_domains(domains: &[&str]) -> Vec<String> {
+    domains
+        .iter()
+        .map(|domain| domain.trim())
+        .filter(|domain| !domain.is_empty() && !domain.starts_with('.') && domain.contains('.'))
+        .map(ToOwned::to_owned)
+        .collect()
 }
 
 async fn firecrawl_search_request(api_key: &str, body: Value) -> anyhow::Result<String> {
@@ -1664,14 +1711,29 @@ mod tests {
     }
 
     #[test]
-    fn firecrawl_search_body_carries_academic_domain_controls() {
-        let body = firecrawl_search_body("traffic gnn", &ResearchSearchKind::Paper, 8, false);
+    fn firecrawl_search_body_never_sends_both_domain_lists() {
+        // Firecrawl rejects a request carrying BOTH includeDomains and
+        // excludeDomains. Paper/Web use a deny-list; Code/Dataset an allow-list.
+        let paper = firecrawl_search_body("traffic gnn", &ResearchSearchKind::Paper, 8, false);
+        assert!(paper.get("includeDomains").is_none());
+        let paper_exclude = paper["excludeDomains"].as_array().unwrap();
+        assert!(paper_exclude.iter().any(|value| value == "youtube.com"));
+        // Paper uses Firecrawl's native academic category targeting.
+        let categories = paper["categories"].as_array().unwrap();
+        assert!(categories.iter().any(|value| value == "research"));
 
-        let include_domains = body["includeDomains"].as_array().unwrap();
-        let exclude_domains = body["excludeDomains"].as_array().unwrap();
+        let code = firecrawl_search_body("traffic gnn github", &ResearchSearchKind::Code, 8, false);
+        assert!(code.get("excludeDomains").is_none());
+        let code_include = code["includeDomains"].as_array().unwrap();
+        assert!(code_include.iter().any(|value| value == "github.com"));
+    }
 
-        assert!(include_domains.iter().any(|value| value == "arxiv.org"));
-        assert!(exclude_domains.iter().any(|value| value == "youtube.com"));
+    #[test]
+    fn sanitize_firecrawl_domains_drops_bare_tld_suffixes() {
+        // ".edu"/".gov" are valid for our local matcher but rejected by
+        // Firecrawl's hostname schema — they must be stripped before sending.
+        let cleaned = sanitize_firecrawl_domains(&["arxiv.org", ".edu", ".gov", "doi.org"]);
+        assert_eq!(cleaned, vec!["arxiv.org".to_string(), "doi.org".to_string()]);
     }
 
     #[test]

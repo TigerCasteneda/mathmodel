@@ -39,6 +39,7 @@ import {
   ArenaChatWebSocket,
   type ChatWsEvent,
 } from "@/lib/arena-chat-ws"
+import { useAuth } from "@/hooks/use-auth"
 
 // ── helpers ──
 
@@ -322,7 +323,10 @@ export function ArenaChat({
   const [sending, setSending] = useState(false)
   const [showScrollBtn, setShowScrollBtn] = useState(false)
   const [uploading, setUploading] = useState(false)
+  const [uploadError, setUploadError] = useState<string | null>(null)
   const [echoIds] = useState(() => new Set<string>())
+  const { user } = useAuth()
+  const currentUserId = user?.id || ""
 
   const scrollRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -373,19 +377,17 @@ export function ArenaChat({
         if (!event.message) return
         const msg = event.message
         setMessages((prev) => {
-          const exists = prev.some(
-            (m) =>
-              m.id === msg.id ||
-              (msg.echo_id && echoIds.has(msg.echo_id)),
-          )
-          if (exists) {
-            // Replace optimistic message
-            return prev.map((m) =>
-              (msg.echo_id && echoIds.has(msg.echo_id)) ||
-              m.id === msg.id
-                ? msg
-                : m,
-            )
+          // Match the optimistic placeholder by its echo_id, or an existing
+          // row by real id. Both predicates are PER-MESSAGE — a global "does
+          // any echo match" check would rewrite every row to this same msg,
+          // producing duplicate React keys.
+          const matches = (m: ChatMessage) =>
+            m.id === msg.id ||
+            (msg.echo_id != null && m.echo_id === msg.echo_id)
+
+          if (prev.some(matches)) {
+            // Replace the matched optimistic/duplicate row in place.
+            return prev.map((m) => (matches(m) ? msg : m))
           }
           return [...prev, msg]
         })
@@ -401,7 +403,7 @@ export function ArenaChat({
         break
       }
     }
-  }, [echoIds, isNearBottom, scrollToBottom])
+  }, [isNearBottom, scrollToBottom])
 
   // ── start/stop monitoring scroll ──
   useEffect(() => {
@@ -558,8 +560,9 @@ export function ArenaChat({
         )
         echoIds.delete(echoId)
       }, 10_000)
-    } catch {
-      // upload failed
+    } catch (err) {
+      setUploadError(err instanceof Error ? err.message : "Upload failed")
+      setTimeout(() => setUploadError(null), 4000)
     } finally {
       setUploading(false)
       if (fileInputRef.current) fileInputRef.current.value = ""
@@ -630,7 +633,15 @@ export function ArenaChat({
                   <ChatBubble
                     key={msg.id}
                     message={msg}
-                    isMine={msg.status === "sending" || msg.echo_id != null}
+                    // "Mine" means I authored it: either it still carries an
+                    // echo_id I created locally (optimistic row or its own
+                    // echo), or its user_id matches me. The server broadcasts
+                    // echo_id to ALL clients, so echo_id alone is not enough —
+                    // it must be one *I* generated (tracked in echoIds).
+                    isMine={
+                      (msg.echo_id != null && echoIds.has(msg.echo_id)) ||
+                      (currentUserId !== "" && msg.user_id === currentUserId)
+                    }
                     projectId={projectId}
                     onReply={setReplyingTo}
                   />
@@ -656,6 +667,14 @@ export function ArenaChat({
 
       {/* Footer */}
       <div className="border-t border-[#373737] bg-[#151515] p-2 shrink-0">
+        {/* Upload error */}
+        {uploadError && (
+          <div className="mb-1.5 flex items-center gap-1.5 rounded-md border border-[#f44336]/40 bg-[#2d1b1b] px-2 py-1 text-xs text-[#f44336]">
+            <AlertCircle className="h-3 w-3 shrink-0" />
+            {uploadError}
+          </div>
+        )}
+
         {/* Reply indicator */}
         {replyingTo && (
           <div className="mb-1.5">
@@ -676,7 +695,7 @@ export function ArenaChat({
             type="file"
             className="hidden"
             onChange={handleFileChange}
-            accept="image/*,application/pdf,.tex,.md,.txt,.csv,.json,.zip"
+            accept="image/*,application/pdf,.tex,.md,.txt,.csv,.json,.zip,.py,.ts,.tsx,.js,.jsx,.rs,.go,.java,.c,.cpp,.h,.sh,.yaml,.yml,.toml,.ipynb"
           />
           <button
             type="button"
