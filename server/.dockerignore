@@ -1,0 +1,13 @@
+# Build artifacts — rebuilt inside the image
+target/
+target-smoke/
+
+# Local persistent data — must NOT leak into the image; use a volume instead
+data/
+
+# Secrets
+.env
+.env.*
+
+# Misc
+*.db

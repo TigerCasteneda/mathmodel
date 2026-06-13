@@ -1,0 +1,43 @@
+# modeler-server deployment — VPS + Docker Compose
+#
+# Usage:
+#   cp deploy/.env.example deploy/.env   # then edit JWT_SECRET
+#   docker compose -f deploy/docker-compose.yml --env-file deploy/.env up -d --build
+#
+# Prereqs on the host:
+#   - Docker + Docker Compose v2
+#   - The compute image built once on the host:
+#       docker build -t modeler-python:latest server/src/compute/
+
+services:
+  server:
+    build:
+      # Build context is server/ so the Dockerfile's COPY paths resolve.
+      context: ../server
+      dockerfile: Dockerfile
+    image: modeler-server:latest
+    container_name: modeler-server
+    restart: unless-stopped
+    ports:
+      # host:container — exposed as plain HTTP (no TLS this round).
+      - "${HOST_PORT:-3001}:3001"
+    environment:
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in deploy/.env}
+      DATABASE_URL: sqlite:/app/data/modeler.db?mode=rwc
+      DATA_DIR: /app/data
+      PORT: "3001"
+      RUST_LOG: ${RUST_LOG:-info}
+    volumes:
+      # Persistent SQLite DB + uploaded project files. Survives container recreation.
+      - modeler-data:/app/data
+      # compute (code execution) drives the host Docker daemon via bollard.
+      # The server container needs the host docker socket + the docker CLI/lib.
+      - /var/run/docker.sock:/var/run/docker.sock
+    # SECURITY: mounting docker.sock grants the server (and thus executed user
+    # code) effective root on the host. Keep this server on a trusted network
+    # and rely on the compute executor's own resource limits + ephemeral
+    # containers. Do not expose compute to untrusted users without sandboxing.
+
+volumes:
+  modeler-data:
+    driver: local
