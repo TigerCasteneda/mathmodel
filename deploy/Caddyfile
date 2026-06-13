@@ -1,0 +1,12 @@
+# Caddy reverse proxy for modeler-server — automatic HTTPS.
+# Replace api.example.com with your real domain (must have an A record → VPS IP).
+# See docs/deployment-tls.md for the full guide.
+
+api.example.com {
+    encode zstd gzip
+
+    # reverse_proxy transparently forwards WebSocket Upgrade/Connection headers,
+    # so /sync (CRDT collab) and /projects/*/screen/ws (screen share) work over
+    # wss:// with no extra configuration.
+    reverse_proxy server:3001
+}

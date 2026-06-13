@@ -1,5 +1,8 @@
 # modeler-server deployment — VPS + Docker Compose
 #
+# This base file serves plain HTTP on 3001 (no TLS). For automatic HTTPS via
+# Caddy, layer deploy/docker-compose.tls.yml on top — see docs/deployment-tls.md.
+#
 # Usage:
 #   cp deploy/.env.example deploy/.env   # then edit JWT_SECRET
 #   docker compose -f deploy/docker-compose.yml --env-file deploy/.env up -d --build

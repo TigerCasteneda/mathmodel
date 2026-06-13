@@ -1,0 +1,31 @@
+# TLS override — layer on top of deploy/docker-compose.yml to add Caddy + HTTPS.
+#
+#   docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.tls.yml \
+#     --env-file deploy/.env up -d --build
+#
+# Edit deploy/Caddyfile with your real domain first. See docs/deployment-tls.md.
+
+services:
+  server:
+    # Stop publishing 3001 to the host: only Caddy reaches the server over the
+    # internal compose network. (Requires Compose v2.24+ for !reset; on older
+    # versions, set "127.0.0.1:3001:3001" in the base file instead.)
+    ports: !reset []
+
+  caddy:
+    image: caddy:2
+    container_name: modeler-caddy
+    restart: unless-stopped
+    depends_on:
+      - server
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data        # persisted Let's Encrypt certs — must survive restarts
+      - caddy-config:/config
+
+volumes:
+  caddy-data:
+  caddy-config:
