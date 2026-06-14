@@ -30,6 +30,11 @@ export interface FileChangeEvent {
   content: string
 }
 
+export interface FileBinaryChangeEvent {
+  type: "file_binary_change"
+  path: string
+}
+
 export interface FileTreeEvent {
   type: "file_tree"
   tree: FileTreeItem
@@ -49,6 +54,7 @@ export interface WorkDirEvent {
 export type AgentEvent =
   | AgentErrorEvent
   | FileChangeEvent
+  | FileBinaryChangeEvent
   | FileTreeEvent
   | FileContentEvent
   | WorkDirEvent
@@ -347,6 +353,10 @@ export function onAgentError(callback: (message: string) => void): () => void {
 
 export function onFileChange(callback: (path: string, content: string) => void): () => void {
   return listenEvent<FileChangeEvent>("file-change", (e) => callback(e.path, e.content))
+}
+
+export function onFileBinaryChange(callback: (path: string) => void): () => void {
+  return listenEvent<FileBinaryChangeEvent>("file-binary-change", (e) => callback(e.path))
 }
 
 export function onFileTree(callback: (tree: FileTreeItem) => void): () => void {

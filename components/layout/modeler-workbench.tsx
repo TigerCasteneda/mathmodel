@@ -21,6 +21,7 @@ import {
   renameSession,
   searchSessions,
   unarchiveSession,
+  onFileChange,
   researchAnalyzeUrl,
   researchExtractAndSave,
   researchSearchNative,
@@ -76,6 +77,7 @@ type Tab = {
   remoteUpdatedAt?: number
   readOnly?: boolean
   localExternalConflict?: boolean
+  externalChanged?: boolean
   saveStatus?: "idle" | "saving" | "saved" | "error" | "conflict"
 }
 type WorkspaceMode = "host" | "guest"
@@ -1785,15 +1787,45 @@ export function ModelerWorkbench({ projectId }: { projectId: string }) {
     }
   }
 
+  // Live-react to external filesystem changes (e.g. a file edited in VSCode
+  // while open here). The watcher fires one event per changed path; we match
+  // it to any open tab and reconcile like a code editor would:
+  //   - collaborative tab (remoteFileId) → Yjs owns the buffer, only flag it
+  //   - plain tab, no unsaved edits      → adopt the new content live
+  //   - plain tab with unsaved edits      → flag "changed on disk", offer Reload
+  // Self-writes echo back with identical content, so they're a no-op.
   useEffect(() => {
     if (workspaceMode !== "host") return
-    setTabs((prev) => prev.map((tab) => {
-      if (tab.kind !== "file" || !tab.remoteFileId) return tab
-      const localContent = tauriAgent.fileContents[tab.id]
-      if (localContent == null || localContent === tab.content) return tab
-      return { ...tab, localExternalConflict: true, saveStatus: "conflict" }
-    }))
-  }, [tauriAgent.fileContents, workspaceMode])
+    const unsubscribe = onFileChange((rawPath, content) => {
+      const changedKey = normalizePathKey(rawPath)
+      setTabs((prev) => prev.map((tab) => {
+        if (tab.kind !== "file") return tab
+        if (normalizePathKey(tab.id) !== changedKey) return tab
+        if (content === tab.content) return tab
+        if (tab.remoteFileId) {
+          return { ...tab, localExternalConflict: true, saveStatus: "conflict" }
+        }
+        if (tab.dirty) {
+          return { ...tab, externalChanged: true }
+        }
+        return { ...tab, content, externalChanged: false }
+      }))
+    })
+    return unsubscribe
+  }, [workspaceMode])
+
+  // Discard local edits and reload the on-disk version for the active tab.
+  const reloadActiveFile = async () => {
+    const fileTab = tabs.find((tab) => tab.id === activeTab && tab.kind === "file")
+    if (!fileTab) return
+    const content = await tauriAgent.openFile(fileTab.id)
+    if (content == null) return
+    setTabs((prev) => prev.map((tab) => (
+      tab.id === fileTab.id
+        ? { ...tab, content, dirty: false, externalChanged: false, saveStatus: "idle" }
+        : tab
+    )))
+  }
 
   const saveActiveFile = async () => {
     const fileTab = tabs.find((tab) => tab.id === activeTab && tab.kind === "file")
@@ -1824,7 +1856,7 @@ export function ModelerWorkbench({ projectId }: { projectId: string }) {
 
       await tauriAgent.writeFile(fileTab.id, fileTab.content ?? "")
       setTabs((prev) => prev.map((tab) => (
-        tab.id === fileTab.id ? { ...tab, dirty: false, saveStatus: "saved" } : tab
+        tab.id === fileTab.id ? { ...tab, dirty: false, externalChanged: false, saveStatus: "saved" } : tab
       )))
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
@@ -2327,6 +2359,18 @@ export function ModelerWorkbench({ projectId }: { projectId: string }) {
               {active.saveStatus === "conflict" && (
                 <div className="border-b border-[#5f3f24] bg-[#2d241a] px-3 py-2 text-xs text-[#ebc396]">
                   Remote file changed after you opened it. Refresh the remote tree and reopen the file before saving.
+                </div>
+              )}
+              {active.externalChanged && (
+                <div className="flex items-center justify-between gap-3 border-b border-[#5f3f24] bg-[#2d241a] px-3 py-2 text-xs text-[#ebc396]">
+                  <span>This file changed on disk and you have unsaved edits. Reload discards your edits and loads the on-disk version.</span>
+                  <button
+                    type="button"
+                    onClick={reloadActiveFile}
+                    className="shrink-0 rounded border border-[#d4a574] px-2 py-0.5 text-[#ebc396] transition-colors hover:bg-[#3a2e1f] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[#d4a574]"
+                  >
+                    Reload
+                  </button>
                 </div>
               )}
               {active.saveStatus === "error" && (

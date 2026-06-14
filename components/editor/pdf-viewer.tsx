@@ -5,7 +5,7 @@ import dynamic from "next/dynamic"
 import { Loader2, AlertCircle, FileText, Maximize2, ChevronLeft, ChevronRight, Printer } from "lucide-react"
 import type { PDFDocumentProxy } from "pdfjs-dist"
 import type { PdfDocumentRendererHandle } from "@/components/editor/pdf-document-renderer"
-import { readFileBase64 } from "@/lib/tauri-api"
+import { readFileBase64, onFileBinaryChange } from "@/lib/tauri-api"
 
 const PdfDocumentRenderer = dynamic(
   () => import("@/components/editor/pdf-document-renderer"),
@@ -33,6 +33,15 @@ function base64ToBytes(value: string): Uint8Array {
   return bytes
 }
 
+// The watcher emits workspace-relative paths ("paper/out.pdf") while the viewer
+// may hold a fuller path; treat them as the same file if either ends with the
+// other, after normalizing separators.
+function pathsMatch(a: string, b: string) {
+  const na = a.replace(/\\/g, "/")
+  const nb = b.replace(/\\/g, "/")
+  return na === nb || na.endsWith(`/${nb}`) || nb.endsWith(`/${na}`)
+}
+
 export default function PdfViewer({ filePath }: PdfViewerProps) {
   const [pdfBytes, setPdfBytes] = useState<Uint8Array | null>(null)
   const [pdfDataUrl, setPdfDataUrl] = useState<string | null>(null)
@@ -42,29 +51,38 @@ export default function PdfViewer({ filePath }: PdfViewerProps) {
   const [error, setError] = useState<string | null>(null)
   const pdfRendererRef = useRef<PdfDocumentRendererHandle>(null)
 
-  useEffect(() => {
-    let cancelled = false
-    async function load() {
-      setLoading(true)
-      setError(null)
-      setPdfBytes(null)
-      setPdfDataUrl(null)
-      setNumPages(0)
-      try {
-        const b64 = await readFileBase64(filePath)
-        if (cancelled) return
-        setPdfBytes(base64ToBytes(b64))
-        setPdfDataUrl(`data:application/pdf;base64,${b64}`)
-        setLoading(false)
-      } catch (e) {
-        if (cancelled) return
-        setError(String(e))
-        setLoading(false)
-      }
+  const loadPdf = useCallback(async (signal?: { cancelled: boolean }) => {
+    setLoading(true)
+    setError(null)
+    setPdfBytes(null)
+    setPdfDataUrl(null)
+    setNumPages(0)
+    try {
+      const b64 = await readFileBase64(filePath)
+      if (signal?.cancelled) return
+      setPdfBytes(base64ToBytes(b64))
+      setPdfDataUrl(`data:application/pdf;base64,${b64}`)
+    } catch (e) {
+      if (signal?.cancelled) return
+      setError(String(e))
+    } finally {
+      if (!signal?.cancelled) setLoading(false)
     }
-    load()
-    return () => { cancelled = true }
   }, [filePath])
+
+  useEffect(() => {
+    const signal = { cancelled: false }
+    void loadPdf(signal)
+    return () => { signal.cancelled = true }
+  }, [loadPdf])
+
+  // Reload when this PDF is rewritten on disk (e.g. an external LaTeX recompile).
+  useEffect(() => {
+    const unsubscribe = onFileBinaryChange((changedPath) => {
+      if (pathsMatch(filePath, changedPath)) void loadPdf()
+    })
+    return unsubscribe
+  }, [filePath, loadPdf])
 
   const openExternal = () => {
     if (pdfDataUrl) {
@@ -127,20 +145,7 @@ export default function PdfViewer({ filePath }: PdfViewerProps) {
     setCurrentPage(pageNumber)
   }, [])
 
-  const retry = () => {
-    setError(null)
-    setLoading(true)
-    setPdfBytes(null)
-    setPdfDataUrl(null)
-    setNumPages(0)
-    readFileBase64(filePath)
-      .then((b64) => {
-        setPdfBytes(base64ToBytes(b64))
-        setPdfDataUrl(`data:application/pdf;base64,${b64}`)
-      })
-      .catch((e) => setError(String(e)))
-      .finally(() => setLoading(false))
-  }
+  const retry = () => { void loadPdf() }
 
   const handleLoadSuccess = ({ numPages }: PDFDocumentProxy) => {
     setNumPages(numPages)

@@ -28,6 +28,13 @@ fn start_workspace_watcher(state: &AgentState, work_dir: PathBuf) -> Result<(), 
                         content,
                     },
                 );
+            } else {
+                // No text content → a binary file (or unreadable). Notify viewers
+                // by path so open PDF/image previews can re-fetch their bytes.
+                let _ = app_handle.emit(
+                    "file-binary-change",
+                    AgentEvent::FileBinaryChange { path: event.path },
+                );
             }
             if let Ok(tree) = file_watcher::scan_tree(&watcher_dir) {
                 let _ = app_handle.emit("file-tree", AgentEvent::FileTree { tree });

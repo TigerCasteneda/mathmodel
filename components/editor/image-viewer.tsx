@@ -1,8 +1,8 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import { AlertCircle, FileImage, Loader2, Maximize2 } from "lucide-react"
-import { readFileBase64 } from "@/lib/tauri-api"
+import { onFileBinaryChange, readFileBase64 } from "@/lib/tauri-api"
 
 type ImageViewerProps = {
   filePath: string
@@ -15,44 +15,56 @@ function imageMimeType(filePath: string) {
   return "image/*"
 }
 
+// The watcher emits workspace-relative paths ("img/plot.png") while the viewer
+// may hold a fuller path; treat them as the same file if either ends with the
+// other, after normalizing separators.
+function pathsMatch(a: string, b: string) {
+  const na = a.replace(/\\/g, "/")
+  const nb = b.replace(/\\/g, "/")
+  return na === nb || na.endsWith(`/${nb}`) || nb.endsWith(`/${na}`)
+}
+
 export default function ImageViewer({ filePath }: ImageViewerProps) {
   const [dataUrl, setDataUrl] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const mimeType = useMemo(() => imageMimeType(filePath), [filePath])
 
-  useEffect(() => {
-    let cancelled = false
-
-    async function load() {
-      setLoading(true)
-      setError(null)
-      setDataUrl(null)
-      try {
-        const b64 = await readFileBase64(filePath)
-        if (!cancelled) setDataUrl(`data:${mimeType};base64,${b64}`)
-      } catch (e) {
-        if (!cancelled) setError(String(e))
-      } finally {
-        if (!cancelled) setLoading(false)
-      }
-    }
-
-    load()
-    return () => {
-      cancelled = true
+  const load = useCallback(async () => {
+    setLoading(true)
+    setError(null)
+    setDataUrl(null)
+    try {
+      const b64 = await readFileBase64(filePath)
+      setDataUrl(`data:${mimeType};base64,${b64}`)
+    } catch (e) {
+      setError(String(e))
+    } finally {
+      setLoading(false)
     }
   }, [filePath, mimeType])
 
-  const retry = () => {
+  useEffect(() => {
+    let cancelled = false
     setLoading(true)
     setError(null)
     setDataUrl(null)
     readFileBase64(filePath)
-      .then((b64) => setDataUrl(`data:${mimeType};base64,${b64}`))
-      .catch((e) => setError(String(e)))
-      .finally(() => setLoading(false))
-  }
+      .then((b64) => { if (!cancelled) setDataUrl(`data:${mimeType};base64,${b64}`) })
+      .catch((e) => { if (!cancelled) setError(String(e)) })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [filePath, mimeType])
+
+  // Reload when this image is rewritten on disk by an external tool.
+  useEffect(() => {
+    const unsubscribe = onFileBinaryChange((changedPath) => {
+      if (pathsMatch(filePath, changedPath)) void load()
+    })
+    return unsubscribe
+  }, [filePath, load])
+
+  const retry = () => { void load() }
 
   return (
     <div className="flex h-full flex-col bg-[#0d0d0d]">

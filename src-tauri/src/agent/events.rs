@@ -10,6 +10,11 @@ pub enum AgentEvent {
     AgentError { message: String },
     #[serde(rename = "file_change")]
     FileChange { path: String, content: String },
+    /// A binary (non-UTF-8) file changed on disk. Carries no content — viewers
+    /// re-fetch the bytes themselves. Lets PDF/image previews refresh after an
+    /// external recompile (e.g. LaTeX → PDF) instead of showing a stale render.
+    #[serde(rename = "file_binary_change")]
+    FileBinaryChange { path: String },
     #[serde(rename = "file_tree")]
     FileTree { tree: FileTreeItem },
     #[serde(rename = "file_content")]
