@@ -21,6 +21,7 @@ import {
   Terminal,
   UserRound,
   Wrench,
+  X,
 } from "lucide-react"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
@@ -47,6 +48,7 @@ import {
   appendThinkingTimeline,
   applyStreamEvent,
   assistantTimelineFromContent,
+  finalizeActiveAssistant,
   hasRenderableTimeline,
   updateActiveAssistant,
   upsertToolTimeline,
@@ -339,7 +341,8 @@ function CopyButton({ value }: { value: string }) {
   return (
     <button
       type="button"
-      className="inline-flex items-center gap-1 rounded px-1 py-0.5 text-[10px] text-[#787878] hover:bg-[#2a2a2a] hover:text-[#e8e8e8] transition-colors"
+      aria-label="Copy to clipboard"
+      className="inline-flex cursor-pointer items-center gap-1 rounded px-1 py-0.5 text-[10px] text-[#787878] hover:bg-[#2a2a2a] hover:text-[#e8e8e8] transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[#d4a574]"
       onClick={(e) => { e.stopPropagation(); handleCopy() }}
     >
       <Copy className="h-3 w-3" />
@@ -374,7 +377,8 @@ function FetchedPageCard({ output }: { output: string }) {
             href={url}
             target="_blank"
             rel="noopener noreferrer"
-            className="inline-flex items-center gap-1 rounded px-1 py-0.5 text-[10px] text-[#787878] hover:bg-[#2a2a2a] hover:text-[#e8e8e8] transition-colors"
+            aria-label="Open URL in new tab"
+            className="inline-flex cursor-pointer items-center gap-1 rounded px-1 py-0.5 text-[10px] text-[#787878] hover:bg-[#2a2a2a] hover:text-[#e8e8e8] transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[#d4a574]"
             onClick={(e) => e.stopPropagation()}
           >
             <ExternalLink className="h-3 w-3" />
@@ -454,7 +458,8 @@ function WebSearchResults({ output }: { output: string }) {
                     href={url}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="inline-flex items-center gap-1 rounded px-1 py-0.5 text-[10px] text-[#787878] hover:bg-[#2a2a2a] hover:text-[#e8e8e8] transition-colors"
+                    aria-label="Open result in new tab"
+                    className="inline-flex cursor-pointer items-center gap-1 rounded px-1 py-0.5 text-[10px] text-[#787878] hover:bg-[#2a2a2a] hover:text-[#e8e8e8] transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[#d4a574]"
                     onClick={(e) => e.stopPropagation()}
                   >
                     <ExternalLink className="h-3 w-3" />
@@ -1084,6 +1089,11 @@ export function ChatPanel({
       setMessages((prev) => appendAssistantError(prev, "Chat request failed."))
     } finally {
       setSending(false)
+      // The call has resolved, so the backend has finished streaming. Force the
+      // trailing assistant message out of its streaming state in case the final
+      // done:true event was dropped — otherwise its text stays in the raw
+      // pre-wrap path and only renders as markdown after re-entering the panel.
+      setMessages((prev) => finalizeActiveAssistant(prev))
     }
   }
 
@@ -1217,7 +1227,11 @@ export function ChatPanel({
           <Wrench className="h-3 w-3" />
           {operations.length}
         </button>
-        <span className="flex items-center gap-1.5 rounded-full border border-[#373737] bg-[#1a1a1a] px-2 py-1 text-[11px] text-[#b4b4b4]">
+        <span
+          role="status"
+          aria-live="polite"
+          className="flex items-center gap-1.5 rounded-full border border-[#373737] bg-[#1a1a1a] px-2 py-1 text-[11px] text-[#b4b4b4]"
+        >
           <span className={cn("h-1.5 w-1.5 rounded-full", sending ? "cc-live-dot bg-[#64b5f6]" : "bg-[#4caf50]")} />
           {sending ? "Streaming" : workspaceMode === "guest" ? "Guest Remote" : "Host Local"}
         </span>
@@ -1282,9 +1296,10 @@ export function ChatPanel({
             <button
               type="button"
               onClick={() => setShowOpHistory(false)}
-              className="text-xs text-[#787878] hover:text-[#e8e8e8]"
+              aria-label="Close operation history"
+              className="cursor-pointer rounded text-[#787878] hover:text-[#e8e8e8] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[#d4a574]"
             >
-              ✕
+              <X className="h-3.5 w-3.5" />
             </button>
           </div>
           {operations.length === 0 ? (

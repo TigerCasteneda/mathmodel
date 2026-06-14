@@ -55,9 +55,17 @@ fn default_capabilities(role: &str) -> Vec<String> {
     }
 }
 
-fn validate_role(role: &str) -> Result<String, AppError> {
+/// Roles that may be *granted* to another member, via an invite or a role
+/// change. Ownership is singular (tracked by `projects.owner_id`) and cannot be
+/// handed out — otherwise an invite or promotion could mint a second member
+/// with `role='owner'` and full `members.manage`/`invites.manage`, who could
+/// then remove the real owner. Project creation is the only path to `owner`.
+fn validate_assignable_role(role: &str) -> Result<String, AppError> {
     match role {
-        "owner" | "editor" | "viewer" => Ok(role.to_string()),
+        "editor" | "viewer" => Ok(role.to_string()),
+        "owner" => Err(AppError::BadRequest(
+            "ownership cannot be granted (transfer is not supported)".into(),
+        )),
         _ => Err(AppError::BadRequest("invalid member role".into())),
     }
 }
@@ -361,7 +369,11 @@ async fn update_member(
     }
 
     let role = match req.role {
-        Some(role) => validate_role(&role)?,
+        // Re-affirming an existing owner's role is a no-op (e.g. the owner
+        // toggling their own capabilities). Only *granting* owner to someone
+        // who isn't already one is forbidden — ownership is not transferable.
+        Some(role) if role == "owner" && current_role == "owner" => current_role,
+        Some(role) => validate_assignable_role(&role)?,
         None => current_role,
     };
     let capabilities = normalize_capabilities(&role, req.capabilities)?;
@@ -403,7 +415,7 @@ async fn create_invite(
     let code = Uuid::new_v4().to_string().replace('-', "")[..8].to_string();
     let now = Utc::now().timestamp();
     let expires_at = req.expires_in_hours.map(|h| now + h * 3600);
-    let role = validate_role(req.role.as_deref().unwrap_or("editor"))?;
+    let role = validate_assignable_role(req.role.as_deref().unwrap_or("editor"))?;
     let capabilities = normalize_capabilities(&role, req.capabilities)?;
     let capabilities_json = serde_json::to_string(&capabilities)
         .map_err(|e| AppError::Internal(format!("capabilities encode: {e}")))?;

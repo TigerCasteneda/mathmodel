@@ -58,3 +58,38 @@ test("request failure is not duplicated after an assistant error event", async (
 
   assert.deepEqual(next, messages)
 })
+
+test("finalizeActiveAssistant clears a dangling streaming flag", async () => {
+  const { finalizeActiveAssistant } = await loadTimelineModule()
+
+  const messages = [
+    { id: "user-1", role: "user", content: "hello" },
+    {
+      id: "assistant-1",
+      role: "assistant",
+      content: "# Title\n\nbody",
+      streaming: true,
+      timeline: [{ id: "text-1", type: "text", content: "# Title\n\nbody" }],
+    },
+  ]
+
+  const next = finalizeActiveAssistant(messages)
+
+  assert.equal(next[1].streaming, false)
+  // Other fields are preserved untouched.
+  assert.equal(next[1].content, "# Title\n\nbody")
+  assert.deepEqual(next[1].timeline, messages[1].timeline)
+})
+
+test("finalizeActiveAssistant is a no-op when nothing is streaming", async () => {
+  const { finalizeActiveAssistant } = await loadTimelineModule()
+
+  const messages = [
+    { id: "user-1", role: "user", content: "hello" },
+    { id: "assistant-1", role: "assistant", content: "done", streaming: false, timeline: [] },
+  ]
+
+  const next = finalizeActiveAssistant(messages)
+
+  assert.equal(next, messages)
+})

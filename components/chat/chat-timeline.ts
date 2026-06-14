@@ -173,6 +173,16 @@ export function applyStreamEvent(
   })
 }
 
+// Force-clears the streaming flag on the trailing assistant message.
+// Called when the backend chat call resolves, guaranteeing the message
+// leaves the raw "streaming" render path even if the terminal done:true
+// stream event was dropped or arrived out of order.
+export function finalizeActiveAssistant(prev: Message[]): Message[] {
+  const last = prev[prev.length - 1]
+  if (!last || last.role !== "assistant" || !last.streaming) return prev
+  return [...prev.slice(0, -1), { ...last, streaming: false }]
+}
+
 export function appendAssistantError(prev: Message[], message: string): Message[] {
   const last = prev[prev.length - 1]
   if (hasAssistantError(last)) return prev

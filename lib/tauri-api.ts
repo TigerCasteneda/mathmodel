@@ -233,6 +233,8 @@ export async function stopGeneration(conversationId = "default"): Promise<void> 
 
 export type ResearchSearchKind = "auto" | "web" | "paper" | "dataset" | "code" | "docs"
 
+export type ResearchScraper = "firecrawl" | "tavily"
+
 export interface NativeResearchSearchItem {
   title: string
   url: string
@@ -277,12 +279,14 @@ export async function researchSearchNative(
   query: string,
   kind: ResearchSearchKind,
   maxResults = 8,
+  scraper: ResearchScraper = "firecrawl",
 ): Promise<NativeResearchSearchResponse> {
   if (!isTauri()) return { query, kind, results: [] }
   return invoke<NativeResearchSearchResponse>("research_search_native", {
     query,
     kind,
     maxResults,
+    scraper,
   })
 }
 

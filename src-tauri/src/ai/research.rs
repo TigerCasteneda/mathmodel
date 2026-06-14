@@ -18,6 +18,16 @@ pub enum ResearchSearchKind {
     Docs,
 }
 
+/// Which scraper backs a research search. Docs always use Context7 regardless;
+/// this only chooses the provider for web/paper/dataset/code kinds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ResearchScraper {
+    #[default]
+    Firecrawl,
+    Tavily,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResearchSearchItem {
     pub title: String,
@@ -127,9 +137,11 @@ pub async fn research_search_native(
     query: String,
     kind: ResearchSearchKind,
     max_results: Option<u64>,
+    scraper: Option<ResearchScraper>,
     config_state: State<'_, AiConfigState>,
 ) -> Result<ResearchSearchResponse, String> {
     let config = config_state.get()?;
+    let scraper = scraper.unwrap_or_default();
     let limit = max_results.unwrap_or(8).clamp(1, 20);
     let mut warning = None;
     let tasks = if matches!(&kind, ResearchSearchKind::Auto) {
@@ -162,7 +174,14 @@ pub async fn research_search_native(
         let outcome = match match &task.kind {
             ResearchSearchKind::Docs => search_context7(&config, &task.query, task_limit).await,
             ResearchSearchKind::Auto => unreachable!("auto is never a provider task"),
-            _ => search_firecrawl(&config, &task.query, &task.kind, task_limit).await,
+            _ => match scraper {
+                ResearchScraper::Tavily => {
+                    search_tavily_for_research(&config, &task.query, &task.kind, task_limit).await
+                }
+                ResearchScraper::Firecrawl => {
+                    search_firecrawl(&config, &task.query, &task.kind, task_limit).await
+                }
+            },
         } {
             Ok(provider_result) => ProviderTaskOutcome::Success {
                 results: provider_result.items,
@@ -838,6 +857,81 @@ async fn search_firecrawl(
             .collect(),
         warning,
     })
+}
+
+/// Tavily-backed research provider. Tavily returns general web results, so we
+/// apply the same academic source allow/deny profile that Firecrawl uses to
+/// keep the result quality consistent across scrapers.
+async fn search_tavily_for_research(
+    config: &AiConfig,
+    query: &str,
+    kind: &ResearchSearchKind,
+    limit: u64,
+) -> anyhow::Result<ProviderSearchResult> {
+    let api_key = config
+        .tavily_api_key
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| anyhow::anyhow!("Tavily API key is not configured."))?;
+
+    let response = reqwest::Client::builder()
+        .timeout(PROVIDER_HTTP_TIMEOUT)
+        .build()?
+        .post("https://api.tavily.com/search")
+        .json(&json!({
+            "api_key": api_key,
+            "query": query,
+            // Request extra results because the academic filter discards many.
+            "max_results": (limit * 3).clamp(10, 20),
+            "search_depth": "advanced",
+        }))
+        .send()
+        .await?;
+    let status = response.status();
+    let body = response.text().await?;
+    if !status.is_success() {
+        anyhow::bail!("Tavily search failed ({status}): {body}");
+    }
+    let parsed: Value = serde_json::from_str(&body)?;
+    let values = parsed["results"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+
+    Ok(ProviderSearchResult {
+        items: values
+            .into_iter()
+            .map(|value| tavily_item(value, kind))
+            .filter(|item| is_allowed_academic_source(&item.url, kind))
+            .take(limit as usize)
+            .collect(),
+        warning: None,
+    })
+}
+
+fn tavily_item(value: Value, kind: &ResearchSearchKind) -> ResearchSearchItem {
+    let title = string_field(&value, "title").unwrap_or_else(|| "Untitled".to_string());
+    let url = string_field(&value, "url").unwrap_or_default();
+    let content = string_field(&value, "content")
+        .or_else(|| string_field(&value, "raw_content"))
+        .unwrap_or_default();
+    ResearchSearchItem {
+        title,
+        url,
+        content,
+        provider: "tavily".to_string(),
+        source: "tavily_search".to_string(),
+        category: category_for_kind(kind).to_string(),
+        authors: None,
+        publish_year: None,
+        keywords: None,
+        relevance_score: value["score"].as_f64().unwrap_or(0.0),
+        raw_json: value,
+        planned_kind: None,
+        planned_query: None,
+        reason: None,
+        rank: None,
+    }
 }
 
 fn firecrawl_search_body(
@@ -1734,6 +1828,24 @@ mod tests {
         // Firecrawl's hostname schema — they must be stripped before sending.
         let cleaned = sanitize_firecrawl_domains(&["arxiv.org", ".edu", ".gov", "doi.org"]);
         assert_eq!(cleaned, vec!["arxiv.org".to_string(), "doi.org".to_string()]);
+    }
+
+    #[test]
+    fn tavily_item_maps_fields_and_tags_provider() {
+        let value = json!({
+            "title": "Traffic GNN",
+            "url": "https://arxiv.org/abs/2401.00001",
+            "content": "abstract text",
+            "score": 0.87
+        });
+        let item = tavily_item(value, &ResearchSearchKind::Paper);
+        assert_eq!(item.title, "Traffic GNN");
+        assert_eq!(item.url, "https://arxiv.org/abs/2401.00001");
+        assert_eq!(item.content, "abstract text");
+        assert_eq!(item.provider, "tavily");
+        assert_eq!(item.source, "tavily_search");
+        assert_eq!(item.category, "literature");
+        assert_eq!(item.relevance_score, 0.87);
     }
 
     #[test]

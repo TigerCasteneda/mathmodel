@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react"
 import { useRouter } from "next/navigation"
-import { AlertCircle, Archive, BookOpen, CheckCircle2, ChevronDown, ChevronRight, Copy, Database, FileCode, FileImage, FileText, Folder, FolderOpen, Globe2, Library, Link, Loader2, LogOut, MessageSquare, Network, MonitorUp, MonitorX, PencilLine, RefreshCw, RotateCcw, Save, Search, Settings, SidebarIcon, Trash2 } from "lucide-react"
+import { AlertCircle, Archive, BookOpen, Check, CheckCircle2, ChevronDown, ChevronRight, Copy, Database, FileCode, FileImage, FileText, Folder, FolderOpen, Globe2, Library, Link, Loader2, LogOut, MessageSquare, Network, MonitorUp, MonitorX, PencilLine, RefreshCw, RotateCcw, Save, Search, Settings, SidebarIcon, Trash2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { ScrollArea } from "@/components/ui/scroll-area"
@@ -29,6 +29,7 @@ import {
   type FileTreeItem,
   type NativeResearchSearchItem,
   type ResearchSearchKind,
+  type ResearchScraper,
   type SessionInfo,
 } from "@/lib/tauri-api"
 import { useTauriAgent } from "@/hooks/use-tauri-agent"
@@ -316,6 +317,49 @@ const RESEARCH_KINDS: Array<{ value: ResearchSearchKind; label: string; icon: ty
   { value: "docs", label: "Docs", icon: Library },
 ]
 
+const SCRAPER_OPTIONS: Array<{ value: ResearchScraper; label: string }> = [
+  { value: "firecrawl", label: "Firecrawl" },
+  { value: "tavily", label: "Tavily" },
+]
+
+// Copy a source URL to the clipboard so users can paste it into a browser
+// themselves — the in-app result cards are not directly clickable links.
+function CopyUrlButton({ url, size = "sm" }: { url: string; size?: "sm" | "xs" }) {
+  const [copied, setCopied] = useState(false)
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(url)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1600)
+    } catch {
+      /* Clipboard can be unavailable in some webviews; fail silently. */
+    }
+  }
+  const compact = size === "xs"
+  return (
+    <button
+      type="button"
+      onClick={copy}
+      aria-label={copied ? "URL copied" : "Copy source URL"}
+      title={url}
+      className={cn(
+        "inline-flex cursor-pointer items-center gap-1 rounded border transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[#d4a574]",
+        compact ? "px-1.5 py-0.5 text-[10px]" : "px-2 py-1 text-[11px]",
+        copied
+          ? "border-[#9bd6b5]/40 text-[#9bd6b5]"
+          : "border-[#373737] text-[#b4b4b4] hover:border-[#d4a574]/60 hover:text-[#ebc396]",
+      )}
+    >
+      {copied ? (
+        <Check className={compact ? "h-2.5 w-2.5" : "h-3 w-3"} />
+      ) : (
+        <Copy className={compact ? "h-2.5 w-2.5" : "h-3 w-3"} />
+      )}
+      {copied ? "Copied" : "Copy URL"}
+    </button>
+  )
+}
+
 function errorText(error: unknown, fallback: string) {
   if (error instanceof Error) return error.message
   if (typeof error === "string" && error.trim()) return error
@@ -335,6 +379,7 @@ function ResearchSearchPanel({
   const [query, setQuery] = useState("")
   const [urlInput, setUrlInput] = useState("")
   const [kind, setKind] = useState<ResearchSearchKind>("auto")
+  const [scraper, setScraper] = useState<ResearchScraper>("firecrawl")
   const [results, setResults] = useState<NativeResearchSearchItem[]>([])
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [loading, setLoading] = useState(false)
@@ -376,7 +421,7 @@ function ResearchSearchPanel({
       }, 1200))
     }
     try {
-      const response = await researchSearchNative(trimmedQuery, kind, 8)
+      const response = await researchSearchNative(trimmedQuery, kind, 8, scraper)
       if (researchSearchIdRef.current !== requestId) return
       setResults(response.results)
       setSelected(new Set(response.results.map((_, index) => index)))
@@ -508,6 +553,39 @@ function ResearchSearchPanel({
                 </button>
               )
             })}
+            {/* Scraper picker — Docs always routes through Context7, so the
+                Firecrawl/Tavily choice only applies to the other kinds. */}
+            <div
+              role="radiogroup"
+              aria-label="Search provider"
+              className="ml-auto flex items-center gap-1 rounded-md border border-[#373737] bg-[#1a1a1a] p-0.5"
+            >
+              {SCRAPER_OPTIONS.map((option) => {
+                const active = scraper === option.value
+                const disabled = kind === "docs"
+                return (
+                  <button
+                    key={option.value}
+                    type="button"
+                    role="radio"
+                    aria-checked={active}
+                    aria-label={`Use ${option.label} scraper`}
+                    title={disabled ? "Docs always use Context7" : `Search with ${option.label}`}
+                    disabled={disabled}
+                    onClick={() => setScraper(option.value)}
+                    className={cn(
+                      "flex h-7 cursor-pointer items-center rounded px-2.5 text-xs transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[#d4a574]",
+                      active && !disabled
+                        ? "bg-[#2d241a] text-[#ebc396]"
+                        : "text-[#b4b4b4] hover:text-[#e8e8e8]",
+                      disabled && "cursor-not-allowed opacity-40",
+                    )}
+                  >
+                    {option.label}
+                  </button>
+                )
+              })}
+            </div>
           </div>
           <div className="flex gap-2">
             <div className="relative flex-1">
@@ -550,8 +628,8 @@ function ResearchSearchPanel({
       </div>
 
       <ScrollArea className="min-h-0 flex-1">
-        <div className="mx-auto grid max-w-5xl gap-4 p-4 lg:grid-cols-[1fr_320px]">
-          <div className="space-y-3">
+        <div className="mx-auto grid max-w-5xl gap-4 p-4 lg:grid-cols-[minmax(0,1fr)_320px]">
+          <div className="min-w-0 space-y-3">
             {loading ? (
               <div className="rounded-md border border-[#373737] bg-[#1a1a1a] p-5 text-sm text-[#b4b4b4]">
                 {loadingStage === "planning" ? "Planning research search..." : loadingStage === "searching" ? "Searching sources..." : "Ranking results..."}
@@ -586,14 +664,15 @@ function ResearchSearchPanel({
                       )}
                       <span className="text-[10px] uppercase text-[#787878]">{result.category}</span>
                     </div>
-                    <h3 className="text-sm font-medium text-[#e8e8e8]">{result.title || "Untitled"}</h3>
+                    <h3 className="break-words text-sm font-medium text-[#e8e8e8]">{result.title || "Untitled"}</h3>
                     {result.url && <div className="mt-1 truncate text-xs text-[#787878]">{result.url}</div>}
                     {result.reason && <p className="mt-1 text-[11px] leading-4 text-[#ebc396]">{result.reason}</p>}
                     {result.planned_query && result.planned_query !== query.trim() && (
                       <div className="mt-1 truncate text-[11px] text-[#787878]">Task: {result.planned_query}</div>
                     )}
                     <p className="mt-2 line-clamp-4 text-xs leading-5 text-[#b4b4b4]">{result.content}</p>
-                    <div className="mt-2 flex justify-end">
+                    <div className="mt-2 flex items-center justify-end gap-2">
+                      {result.url && <CopyUrlButton url={result.url} />}
                       <button
                         type="button"
                         onClick={() => sendResultToArena(result)}
@@ -643,7 +722,8 @@ function ResearchSearchPanel({
                     <div className="text-[10px] uppercase text-[#d4a574]">{item.category}</div>
                     <h4 className="mt-1 line-clamp-2 text-xs font-medium text-[#e8e8e8]">{item.title || "Untitled"}</h4>
                     {item.summary && <p className="mt-1 line-clamp-2 text-[11px] leading-4 text-[#787878]">{item.summary}</p>}
-                    <div className="mt-1.5 flex justify-end">
+                    <div className="mt-1.5 flex items-center justify-end gap-1.5">
+                      {item.url && <CopyUrlButton url={item.url} size="xs" />}
                       <button
                         type="button"
                         onClick={() => sendItemToArena(item)}
@@ -678,6 +758,9 @@ const DEEPSEEK_MODELS = [
 ]
 
 const ROLE_OPTIONS: ProjectRole[] = ["owner", "editor", "viewer"]
+// Ownership is singular and non-transferable on the server, so it's never an
+// assignable choice in invite/promote dropdowns — only "editor"/"viewer" are.
+const ASSIGNABLE_ROLE_OPTIONS: ProjectRole[] = ["editor", "viewer"]
 
 function capabilityLabel(capability: ProjectCapability) {
   return capability.replace(".", " ")
@@ -806,7 +889,7 @@ function MembersPanel({
               onChange={(event) => setInviteRole(event.target.value as ProjectRole)}
               className="rounded-md border border-[#373737] bg-[#232323] px-2 py-1 text-xs text-[#b4b4b4]"
             >
-              {ROLE_OPTIONS.map((role) => <option key={role} value={role}>{role}</option>)}
+              {ASSIGNABLE_ROLE_OPTIONS.map((role) => <option key={role} value={role}>{role}</option>)}
             </select>
             <Button onClick={createInvite} size="sm" className="h-7 bg-[#d4a574] text-[#111111] hover:bg-[#ebc396]">
               Create invite
@@ -883,11 +966,15 @@ function MembersPanel({
                 </div>
                 <select
                   value={member.role}
-                  disabled={!canManageMembers || member.user_id === currentUserId}
+                  disabled={!canManageMembers || member.user_id === currentUserId || member.role === "owner"}
                   onChange={(event) => updateMember(member, event.target.value as ProjectRole)}
                   className="rounded-md border border-[#373737] bg-[#232323] px-2 py-1 text-xs text-[#b4b4b4] disabled:opacity-60"
                 >
-                  {ROLE_OPTIONS.map((role) => <option key={role} value={role}>{role}</option>)}
+                  {/* Owners render a locked "owner" option (ownership is not
+                      transferable); everyone else can only be editor/viewer. */}
+                  {(member.role === "owner" ? ROLE_OPTIONS : ASSIGNABLE_ROLE_OPTIONS).map((role) => (
+                    <option key={role} value={role}>{role}</option>
+                  ))}
                 </select>
                 {canManageMembers && member.user_id !== currentUserId && (
                   <Button onClick={() => removeMember(member)} size="icon" variant="ghost" className="h-7 w-7" title="Remove member">
@@ -1102,6 +1189,10 @@ export function ModelerWorkbench({ projectId }: { projectId: string }) {
   const [remoteStatus, setRemoteStatus] = useState<"idle" | "loading" | "error">("idle")
   const [syncing, setSyncing] = useState(false)
   const [syncStats, setSyncStats] = useState<SyncStats | null>(null)
+  // Surfaces failures from conflict-resolution actions (keep/overwrite/diff),
+  // which hit the network and would otherwise throw unhandled promise
+  // rejections ("Failed to fetch") with no user-visible feedback.
+  const [conflictError, setConflictError] = useState<string | null>(null)
   const [pendingAutoSync, setPendingAutoSync] = useState(false)
   const [autoSyncEnabled, setAutoSyncEnabled] = useState(false)
   const [hostFolderMissing, setHostFolderMissing] = useState(false)
@@ -1482,7 +1573,11 @@ export function ModelerWorkbench({ projectId }: { projectId: string }) {
   }
 
   useEffect(() => {
-    if (workspaceMode === "guest") void refreshRemoteTree()
+    // The remote tree is needed in BOTH modes now: guest renders it directly,
+    // and host grafts the cloud-only Paper/Research zones onto the local tree
+    // (see `hostTree`) so saved references/papers are visible while working
+    // against the local folder.
+    void refreshRemoteTree()
   }, [workspaceMode, projectId])
 
   useEffect(() => {
@@ -1598,21 +1693,44 @@ export function ModelerWorkbench({ projectId }: { projectId: string }) {
     await refreshSessions()
   }
 
-  const tree = workspaceMode === "guest" ? remoteTree || sampleTree : tauriAgent.fileTree || sampleTree
+  // In host mode the file tree is the local folder, which only carries code.
+  // The Paper/Research zones live cloud-only (created server-side, populated by
+  // research saves), so we graft those remote top-level folders onto the local
+  // tree — otherwise a host never sees their own saved references/papers.
+  const hostTree = useMemo(() => {
+    const local = tauriAgent.fileTree
+    if (!local) return null
+    const cloudZones = (remoteTree?.children ?? []).filter(
+      (node) => node.type === "folder" && (node.zone === "research" || node.zone === "paper"),
+    )
+    if (cloudZones.length === 0) return local
+    // Don't duplicate a zone the local folder already happens to contain.
+    const localNames = new Set((local.children ?? []).map((child) => child.name))
+    const grafted = cloudZones.filter((node) => !localNames.has(node.name))
+    return { ...local, children: [...(local.children ?? []), ...grafted] }
+  }, [tauriAgent.fileTree, remoteTree])
+
+  const tree = workspaceMode === "guest" ? remoteTree || sampleTree : hostTree || sampleTree
   const active = tabs.find((tab) => tab.id === activeTab) || tabs[0]
   const activeFilePath = active?.kind === "file" ? active.id : undefined
 
   const openFile = async (file: FileTreeItem) => {
     const pathKey = normalizePathKey(file.path)
-    const hostManifestEntry = workspaceMode === "host" ? loadSyncManifest(projectId)[pathKey] : undefined
-    const remoteContent = workspaceMode === "guest" && file.id
+    // A grafted cloud zone (Paper/Research) carries a remote id even in host
+    // mode; it lives only in the cloud, so it must be read/written remotely.
+    const isCloudNode = Boolean(file.id) && (file.zone === "research" || file.zone === "paper")
+    const remoteMode = workspaceMode === "guest" || isCloudNode
+    const hostManifestEntry = workspaceMode === "host" && !isCloudNode
+      ? loadSyncManifest(projectId)[pathKey]
+      : undefined
+    const remoteContent = remoteMode && file.id
       ? await getProjectFileContent(projectId, file.id)
       : null
     const lang = fileLanguage(file)
     // Binary previews load bytes on their own.
     const content = lang === "pdf" || lang === "image"
       ? ""
-      : workspaceMode === "guest"
+      : remoteMode
         ? remoteContent?.content ?? null
         : await tauriAgent.openFile(file.path)
     const next: Tab = {
@@ -1622,7 +1740,7 @@ export function ModelerWorkbench({ projectId }: { projectId: string }) {
       language: lang,
       content: content ?? sampleContent,
       dirty: false,
-      remoteFileId: workspaceMode === "guest" ? file.id : hostManifestEntry?.fileId,
+      remoteFileId: remoteMode ? file.id : hostManifestEntry?.fileId,
       remoteUpdatedAt: remoteContent?.updated_at ?? hostManifestEntry?.remoteUpdatedAt ?? file.updated_at,
       saveStatus: "idle",
     }
@@ -1726,78 +1844,93 @@ export function ModelerWorkbench({ projectId }: { projectId: string }) {
   }
 
   const keepRemoteConflict = async (conflict: SyncConflict) => {
-    const remoteContent = await getProjectFileContent(projectId, conflict.fileId)
-    const remoteHash = hashContent(remoteContent.content)
-    const localContent = conflict.localDeleted ? null : await tauriAgent.openFile(conflict.path)
-    const manifest = loadSyncManifest(projectId)
-    manifest[conflict.path] = {
-      fileId: conflict.fileId,
-      remoteUpdatedAt: remoteContent.updated_at,
-      localHash: localContent == null ? "__deleted__" : hashContent(localContent),
-      remoteHash,
-      localDeleted: localContent == null,
+    setConflictError(null)
+    try {
+      const remoteContent = await getProjectFileContent(projectId, conflict.fileId)
+      const remoteHash = hashContent(remoteContent.content)
+      const localContent = conflict.localDeleted ? null : await tauriAgent.openFile(conflict.path)
+      const manifest = loadSyncManifest(projectId)
+      manifest[conflict.path] = {
+        fileId: conflict.fileId,
+        remoteUpdatedAt: remoteContent.updated_at,
+        localHash: localContent == null ? "__deleted__" : hashContent(localContent),
+        remoteHash,
+        localDeleted: localContent == null,
+      }
+      saveSyncManifest(projectId, manifest)
+      removeSyncConflict(conflict)
+      await refreshRemoteTree()
+    } catch (error) {
+      setConflictError(errorText(error, `Could not keep remote for ${conflict.path}.`))
     }
-    saveSyncManifest(projectId, manifest)
-    removeSyncConflict(conflict)
-    await refreshRemoteTree()
   }
 
   const overwriteRemoteConflict = async (conflict: SyncConflict) => {
-    const localContent = await tauriAgent.openFile(conflict.path)
-    const manifest = loadSyncManifest(projectId)
+    setConflictError(null)
+    try {
+      const localContent = await tauriAgent.openFile(conflict.path)
+      const manifest = loadSyncManifest(projectId)
 
-    if (localContent == null) {
-      await deleteProjectFile(projectId, conflict.fileId)
-      delete manifest[conflict.path]
+      if (localContent == null) {
+        await deleteProjectFile(projectId, conflict.fileId)
+        delete manifest[conflict.path]
+        saveSyncManifest(projectId, manifest)
+        removeSyncConflict(conflict)
+        setSyncStats((prev) => prev ? { ...prev, deleted: prev.deleted + 1 } : prev)
+        await refreshRemoteTree()
+        return
+      }
+
+      const remoteContent = await getProjectFileContent(projectId, conflict.fileId)
+      const saved = await updateProjectFileContent(projectId, conflict.fileId, localContent, remoteContent.updated_at)
+      const localHash = hashContent(localContent)
+      manifest[conflict.path] = {
+        fileId: conflict.fileId,
+        remoteUpdatedAt: saved.updated_at,
+        localHash,
+        remoteHash: localHash,
+        localDeleted: false,
+      }
       saveSyncManifest(projectId, manifest)
       removeSyncConflict(conflict)
-      setSyncStats((prev) => prev ? { ...prev, deleted: prev.deleted + 1 } : prev)
+      setSyncStats((prev) => prev ? { ...prev, updated: prev.updated + 1 } : prev)
       await refreshRemoteTree()
-      return
+    } catch (error) {
+      setConflictError(errorText(error, `Could not overwrite remote for ${conflict.path}.`))
     }
-
-    const remoteContent = await getProjectFileContent(projectId, conflict.fileId)
-    const saved = await updateProjectFileContent(projectId, conflict.fileId, localContent, remoteContent.updated_at)
-    const localHash = hashContent(localContent)
-    manifest[conflict.path] = {
-      fileId: conflict.fileId,
-      remoteUpdatedAt: saved.updated_at,
-      localHash,
-      remoteHash: localHash,
-      localDeleted: false,
-    }
-    saveSyncManifest(projectId, manifest)
-    removeSyncConflict(conflict)
-    setSyncStats((prev) => prev ? { ...prev, updated: prev.updated + 1 } : prev)
-    await refreshRemoteTree()
   }
 
   const openDiffConflict = async (conflict: SyncConflict) => {
-    const remoteContent = await getProjectFileContent(projectId, conflict.fileId)
-    const localContent = conflict.localDeleted ? null : await tauriAgent.openFile(conflict.path)
-    const name = conflict.path.split("/").pop() || conflict.path
-    const nextTab: Tab = {
-      id: `diff:${conflict.fileId}:${remoteContent.updated_at}`,
-      title: `${name} diff`,
-      kind: "diff",
-      language: fileLanguage({ name, path: conflict.path, type: "file" }),
-      diff: {
-        left: localContent ?? "",
-        right: remoteContent.content,
-        leftTitle: conflict.localDeleted ? "Local deleted" : "Local",
-        rightTitle: "Remote",
-      },
-      dirty: false,
-      remoteFileId: conflict.fileId,
-      remoteUpdatedAt: remoteContent.updated_at,
-      readOnly: true,
-      saveStatus: "idle",
-    }
+    setConflictError(null)
+    try {
+      const remoteContent = await getProjectFileContent(projectId, conflict.fileId)
+      const localContent = conflict.localDeleted ? null : await tauriAgent.openFile(conflict.path)
+      const name = conflict.path.split("/").pop() || conflict.path
+      const nextTab: Tab = {
+        id: `diff:${conflict.fileId}:${remoteContent.updated_at}`,
+        title: `${name} diff`,
+        kind: "diff",
+        language: fileLanguage({ name, path: conflict.path, type: "file" }),
+        diff: {
+          left: localContent ?? "",
+          right: remoteContent.content,
+          leftTitle: conflict.localDeleted ? "Local deleted" : "Local",
+          rightTitle: "Remote",
+        },
+        dirty: false,
+        remoteFileId: conflict.fileId,
+        remoteUpdatedAt: remoteContent.updated_at,
+        readOnly: true,
+        saveStatus: "idle",
+      }
 
-    setTabs((prev) => {
-      return [...prev.filter((tab) => tab.id !== nextTab.id), nextTab]
-    })
-    setActiveTab(nextTab.id)
+      setTabs((prev) => {
+        return [...prev.filter((tab) => tab.id !== nextTab.id), nextTab]
+      })
+      setActiveTab(nextTab.id)
+    } catch (error) {
+      setConflictError(errorText(error, `Could not open diff for ${conflict.path}.`))
+    }
   }
 
   const sidebarTitle = useMemo(() => {
@@ -1918,6 +2051,11 @@ export function ModelerWorkbench({ projectId }: { projectId: string }) {
                     {syncStats.conflicts.length > 0 && (
                       <div className="space-y-1 rounded-md border border-[#5f3f24] bg-[#1f1a14] p-2">
                         <p className="text-[11px] font-medium text-[#ebc396]">Conflicts need a decision</p>
+                        {conflictError && (
+                          <p role="alert" className="rounded border border-[#5f2424] bg-[#2d1a1a] px-1.5 py-1 text-[10px] leading-4 text-[#ffb4a8]">
+                            {conflictError}
+                          </p>
+                        )}
                         {syncStats.conflicts.map((conflict) => (
                           <div key={`${conflict.fileId}:${conflict.path}`} className="space-y-1 border-t border-[#373737] pt-1 first:border-t-0 first:pt-0">
                             <p className="truncate font-mono text-[10px] text-[#b4b4b4]">{conflict.path}</p>
