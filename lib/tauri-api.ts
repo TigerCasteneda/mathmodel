@@ -202,6 +202,18 @@ export async function openFolder(): Promise<string | null> {
   return invoke<string | null>("open_folder")
 }
 
+export interface LatexCompileResult {
+  success: boolean
+  pdf_path: string | null
+  log: string
+}
+
+// Compile a workspace .tex file to PDF via latexmk (Host Local mode only).
+export async function compileLatex(path: string): Promise<LatexCompileResult> {
+  if (!isTauri()) throw new Error("Not running in Tauri")
+  return invoke<LatexCompileResult>("compile_latex", { path })
+}
+
 export interface AiChatOptions {
   workspaceMode?: "host" | "guest"
   permissionMode?: AiPermissionMode

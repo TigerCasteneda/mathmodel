@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react"
 import { useRouter } from "next/navigation"
-import { AlertCircle, Archive, BookOpen, Check, CheckCircle2, ChevronDown, ChevronRight, Copy, Database, FileCode, FileImage, FileText, Folder, FolderOpen, Globe2, Library, Link, Loader2, LogOut, MessageSquare, Network, MonitorUp, MonitorX, PencilLine, RefreshCw, RotateCcw, Save, Search, Settings, SidebarIcon, Trash2 } from "lucide-react"
+import { AlertCircle, Archive, BookOpen, Check, CheckCircle2, ChevronDown, ChevronRight, Copy, Database, FileCode, FileImage, FileText, Folder, FolderOpen, Globe2, Library, Link, Loader2, LogOut, MessageSquare, Network, MonitorUp, MonitorX, PencilLine, Play, RefreshCw, RotateCcw, Save, Search, Settings, SidebarIcon, Trash2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { ScrollArea } from "@/components/ui/scroll-area"
@@ -15,6 +15,7 @@ import PdfViewer from "@/components/editor/pdf-viewer"
 import { cn } from "@/lib/utils"
 import {
   archiveSession,
+  compileLatex,
   deleteSession,
   getAiConfigStatus,
   listSessions,
@@ -1195,6 +1196,10 @@ export function ModelerWorkbench({ projectId }: { projectId: string }) {
   // which hit the network and would otherwise throw unhandled promise
   // rejections ("Failed to fetch") with no user-visible feedback.
   const [conflictError, setConflictError] = useState<string | null>(null)
+  // LaTeX compile feedback, keyed by the .tex tab id so each tab tracks its own
+  // run state and last error independently.
+  const [latexCompiling, setLatexCompiling] = useState<string | null>(null)
+  const [latexError, setLatexError] = useState<{ path: string; log: string } | null>(null)
   const [pendingAutoSync, setPendingAutoSync] = useState(false)
   const [autoSyncEnabled, setAutoSyncEnabled] = useState(false)
   const [hostFolderMissing, setHostFolderMissing] = useState(false)
@@ -1814,6 +1819,35 @@ export function ModelerWorkbench({ projectId }: { projectId: string }) {
     return unsubscribe
   }, [workspaceMode])
 
+  // Compile a .tex tab to PDF. Saves any unsaved edits first (latexmk reads the
+  // file from disk), then opens/refreshes the produced PDF. The file watcher's
+  // file-binary-change event refreshes an already-open preview on its own.
+  const compileLatexTab = async (tab: Tab) => {
+    if (workspaceMode !== "host" || tab.kind !== "file" || latexCompiling) return
+    if (tab.dirty) await saveActiveFile()
+    setLatexCompiling(tab.id)
+    setLatexError(null)
+    try {
+      const result = await compileLatex(tab.id)
+      if (!result.success) {
+        setLatexError({ path: tab.id, log: result.log || "Compilation failed." })
+        return
+      }
+      await tauriAgent.refreshFileTree()
+      if (result.pdf_path) {
+        await openFile({
+          name: result.pdf_path.split("/").pop() || "output.pdf",
+          path: result.pdf_path,
+          type: "file",
+        })
+      }
+    } catch (error) {
+      setLatexError({ path: tab.id, log: errorText(error, "LaTeX compile failed.") })
+    } finally {
+      setLatexCompiling(null)
+    }
+  }
+
   // Discard local edits and reload the on-disk version for the active tab.
   const reloadActiveFile = async () => {
     const fileTab = tabs.find((tab) => tab.id === activeTab && tab.kind === "file")
@@ -2294,12 +2328,27 @@ export function ModelerWorkbench({ projectId }: { projectId: string }) {
               </span>
             </button>
           ))}
+          {active?.kind === "file" && active.language === "latex" && workspaceMode === "host" && (
+            <button
+              onClick={() => compileLatexTab(active)}
+              disabled={latexCompiling === active.id}
+              title="Compile LaTeX to PDF (latexmk)"
+              aria-label="Compile LaTeX to PDF"
+              className={cn(
+                "ml-auto mr-1.5 flex h-7 items-center gap-1.5 rounded-md border border-[#4caf50]/40 bg-[#4caf50]/15 px-2 text-xs text-[#9bd6b5] transition-colors hover:bg-[#4caf50]/25 hover:text-[#b6e6c6] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[#4caf50] disabled:opacity-60",
+              )}
+            >
+              {latexCompiling === active.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5 fill-current" />}
+              {latexCompiling === active.id ? "Compiling" : "Compile"}
+            </button>
+          )}
           {active?.kind === "file" && (
             <button
               onClick={saveActiveFile}
               disabled={Boolean(active.remoteFileId) || active.readOnly || active.saveStatus === "saving" || (workspaceMode === "guest" && !canWriteFiles)}
               className={cn(
-                "ml-auto mr-2 flex h-7 items-center gap-1.5 rounded-md border px-2 text-xs transition-colors",
+                "mr-2 flex h-7 items-center gap-1.5 rounded-md border px-2 text-xs transition-colors",
+                active.language === "latex" && workspaceMode === "host" ? "" : "ml-auto",
                 active.dirty
                   ? "border-[#d4a574] bg-[#2d241a] text-[#ebc396]"
                   : "border-[#373737] bg-[#232323] text-[#787878]",
@@ -2371,6 +2420,22 @@ export function ModelerWorkbench({ projectId }: { projectId: string }) {
                   >
                     Reload
                   </button>
+                </div>
+              )}
+              {latexError && active.kind === "file" && latexError.path === active.id && (
+                <div className="border-b border-[#5f2424] bg-[#2d1a1a] px-3 py-2 text-xs text-[#ffb4a8]">
+                  <div className="mb-1 flex items-center justify-between gap-3">
+                    <span className="font-medium">LaTeX compile failed</span>
+                    <button
+                      type="button"
+                      onClick={() => setLatexError(null)}
+                      aria-label="Dismiss compile error"
+                      className="shrink-0 rounded px-1 text-[#ffb4a8] hover:bg-[#3d2424] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[#5f2424]"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                  <pre className="max-h-40 overflow-auto whitespace-pre-wrap font-mono text-[10px] leading-4 text-[#e0a59c]">{latexError.log}</pre>
                 </div>
               )}
               {active.saveStatus === "error" && (

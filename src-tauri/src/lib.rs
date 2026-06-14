@@ -72,6 +72,7 @@ pub fn run() {
             agent::commands::create_file,
             agent::commands::change_work_dir,
             agent::commands::open_folder,
+            agent::commands::compile_latex,
             ai::chat::set_ai_config,
             ai::chat::get_ai_config_status,
             ai::chat::set_ai_model,

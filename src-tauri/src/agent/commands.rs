@@ -202,6 +202,77 @@ pub async fn open_folder(state: State<'_, AgentState>) -> Result<Option<String>,
     Ok(folder)
 }
 
+#[derive(serde::Serialize)]
+pub struct LatexCompileResult {
+    pub success: bool,
+    /// Workspace-relative path of the produced PDF, if compilation succeeded.
+    pub pdf_path: Option<String>,
+    /// Tail of the compiler log — enough to surface the first error without
+    /// flooding the UI with the full multi-pass latexmk output.
+    pub log: String,
+}
+
+/// Compile a `.tex` file to PDF with latexmk. Runs in the file's own directory
+/// so `\input`/`\includegraphics` relative paths resolve, and emits the PDF
+/// next to the source. The file watcher then fires `file-binary-change`, so an
+/// open PDF preview refreshes on its own. Host Local only (needs the local
+/// TeX toolchain); guests have no host shell.
+#[tauri::command]
+pub async fn compile_latex(
+    path: String,
+    state: State<'_, AgentState>,
+) -> Result<LatexCompileResult, String> {
+    let work_dir = state.work_dir.lock().map_err(|e| e.to_string())?.clone();
+    let resolved = validate_and_resolve_path(&work_dir, &path)?;
+    if resolved.extension().and_then(|e| e.to_str()) != Some("tex") {
+        return Err("not a .tex file".into());
+    }
+    if !resolved.is_file() {
+        return Err("file not found".into());
+    }
+
+    let dir = resolved
+        .parent()
+        .ok_or_else(|| "file has no parent directory".to_string())?
+        .to_path_buf();
+    let file_name = resolved
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| "invalid file name".to_string())?
+        .to_string();
+
+    // latexmk drives the needed pdflatex/biber passes itself. nonstopmode keeps
+    // it from blocking on an error prompt; we report failures via exit status.
+    let mut cmd = tokio::process::Command::new("latexmk");
+    cmd.arg("-pdf")
+        .arg("-interaction=nonstopmode")
+        .arg("-halt-on-error")
+        .arg(&file_name)
+        .current_dir(&dir);
+
+    let output = tokio::time::timeout(std::time::Duration::from_secs(180), cmd.output())
+        .await
+        .map_err(|_| "latex compile timed out after 180s".to_string())?
+        .map_err(|e| format!("failed to launch latexmk (is TeX Live installed and on PATH?): {e}"))?;
+
+    let mut log = String::from_utf8_lossy(&output.stdout).into_owned();
+    log.push_str(&String::from_utf8_lossy(&output.stderr));
+    // Keep only the tail — latexmk output is long and the error is near the end.
+    let tail: String = log.lines().rev().take(40).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n");
+
+    let success = output.status.success();
+    let pdf_path = if success {
+        let pdf = resolved.with_extension("pdf");
+        pdf.strip_prefix(&work_dir)
+            .ok()
+            .map(|rel| rel.to_string_lossy().replace('\\', "/"))
+    } else {
+        None
+    };
+
+    Ok(LatexCompileResult { success, pdf_path, log: tail })
+}
+
 #[cfg(test)]
 mod tests {
     use super::validate_and_resolve_path;
