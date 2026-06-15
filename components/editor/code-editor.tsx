@@ -1,7 +1,7 @@
 "use client"
 
 import dynamic from "next/dynamic"
-import { useEffect, useRef } from "react"
+import { useCallback, useEffect, useRef } from "react"
 import type * as Y from "yjs"
 import { YjsWebsocketProvider } from "@/lib/yjs-provider"
 
@@ -65,8 +65,47 @@ function CollaborativeCodeEditor({
     editorRef.current?.updateOptions({ readOnly: readOnly || collaborative.readOnly })
   }, [readOnly, collaborative.readOnly])
 
+  // Bind Yjs once the editor has mounted. The dynamic import is async, so a
+  // remount or StrictMode double-invoke can fire teardown before the import
+  // resolves — `cancelled` prevents a late bind, and `cancelBindRef` lets the
+  // cleanup abort a still-pending import. Without this, a binding gets built
+  // after destroy and Yjs warns "Tried to remove event handler that doesn't
+  // exist" when its stale observer is detached.
+  const cancelBindRef = useRef<(() => void) | null>(null)
+  const bindYjs = useCallback((editor: any) => {
+    editorRef.current = editor
+    editor.updateOptions({ readOnly: readOnly || collaborative.readOnly })
+
+    let cancelled = false
+    cancelBindRef.current = () => { cancelled = true }
+    void Promise.all([import("yjs"), import("y-monaco")]).then(([Yjs, yMonaco]) => {
+      if (cancelled) return
+      const model = editor.getModel()
+      if (!model) return
+      const doc = new Yjs.Doc()
+      const text = doc.getText("content")
+      const provider = new YjsWebsocketProvider(doc, collaborative.fileId)
+      const binding = new yMonaco.MonacoBinding(text, model, new Set([editor]), null)
+
+      docRef.current = doc
+      textRef.current = text
+      providerRef.current = provider
+      bindingRef.current = binding
+
+      const emitChange = () => {
+        const content = text.toString()
+        onChange?.(content)
+        collaborative.onDocumentChange?.(content)
+      }
+      text.observe(emitChange)
+      emitChange()
+    })
+  }, [collaborative.fileId])
+
   useEffect(() => {
     return () => {
+      cancelBindRef.current?.()
+      cancelBindRef.current = null
       try { bindingRef.current?.destroy() } catch { /* noop */ }
       try { providerRef.current?.destroy() } catch { /* noop */ }
       try { docRef.current?.destroy() } catch { /* noop */ }
@@ -85,29 +124,7 @@ function CollaborativeCodeEditor({
       theme="vs-dark"
       defaultValue={value}
       onMount={(editor) => {
-        editorRef.current = editor
-        editor.updateOptions({ readOnly: readOnly || collaborative.readOnly })
-        void Promise.all([import("yjs"), import("y-monaco")]).then(([Yjs, yMonaco]) => {
-          const model = editor.getModel()
-          if (!model) return
-          const doc = new Yjs.Doc()
-          const text = doc.getText("content")
-          const provider = new YjsWebsocketProvider(doc, collaborative.fileId)
-          const binding = new yMonaco.MonacoBinding(text, model, new Set([editor]), null)
-
-          docRef.current = doc
-          textRef.current = text
-          providerRef.current = provider
-          bindingRef.current = binding
-
-          const emitChange = () => {
-            const content = text.toString()
-            onChange?.(content)
-            collaborative.onDocumentChange?.(content)
-          }
-          text.observe(emitChange)
-          emitChange()
-        })
+        bindYjs(editor)
       }}
       options={{
         minimap: { enabled: true, scale: 0.8 },
