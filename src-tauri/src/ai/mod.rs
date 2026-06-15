@@ -11,6 +11,7 @@ pub mod plugins;
 pub mod research;
 pub mod runtime;
 pub mod search;
+pub mod sidecar;
 pub mod session;
 pub mod skills;
 pub mod tasks;

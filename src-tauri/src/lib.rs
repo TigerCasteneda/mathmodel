@@ -3,6 +3,7 @@ mod ai;
 
 use agent::state::AgentState;
 use ai::config::AiConfigState;
+use ai::sidecar::SidecarState;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -44,6 +45,38 @@ pub fn run() {
             app.manage(agent_orchestrator);
             app.manage(ai::chat::StopFlags::default());
             app.manage(ai::history::OperationHistoryStore::new(app_data.clone()));
+
+            // ── Sidecar state (lazy start on first research search) ──
+            let sidecar_dir = app
+                .path()
+                .resource_dir()
+                .unwrap_or_else(|_| PathBuf::from("."))
+                .join("sidecar");
+            let sidecar_dir = if sidecar_dir.join("run.py").exists() {
+                sidecar_dir
+            } else {
+                // Dev fallback: sidecar lives next to src-tauri source
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("sidecar")
+            };
+            let sidecar_state = SidecarState::new(sidecar_dir);
+
+            let config_for_sidecar = app
+                .state::<AiConfigState>()
+                .get()
+                .unwrap_or_default();
+            if config_for_sidecar.sidecar_enabled {
+                let default_python = if cfg!(windows) { "py -3" } else { "python3" };
+                let python = config_for_sidecar
+                    .sidecar_python_path
+                    .as_deref()
+                    .unwrap_or(default_python);
+                let sidecar_ref = &sidecar_state;
+                let _ = tauri::async_runtime::block_on(async {
+                    sidecar_ref.ensure_started(python).await
+                })
+                .inspect_err(|e| tracing::warn!("Sidecar unavailable: {e:#}"));
+            }
+            app.manage(sidecar_state);
 
             // ── Embedded server startup ──
             let handle = app.handle().clone();

@@ -12,6 +12,14 @@ pub struct AiConfig {
     pub context7_api_key: Option<String>,
     pub tavily_api_key: Option<String>,
     pub searxng_url: String,
+    #[serde(default = "default_sidecar_enabled")]
+    pub sidecar_enabled: bool,
+    #[serde(default)]
+    pub sidecar_python_path: Option<String>,
+}
+
+fn default_sidecar_enabled() -> bool {
+    true
 }
 
 impl Default for AiConfig {
@@ -24,6 +32,8 @@ impl Default for AiConfig {
             context7_api_key: None,
             tavily_api_key: None,
             searxng_url: "http://localhost:8080".to_string(),
+            sidecar_enabled: true,
+            sidecar_python_path: None,
         }
     }
 }
@@ -93,6 +103,7 @@ pub struct AiConfigStatus {
     pub context7_configured: bool,
     pub tavily_configured: bool,
     pub searxng_url: String,
+    pub sidecar_enabled: bool,
 }
 
 impl From<AiConfig> for AiConfigStatus {
@@ -117,6 +128,7 @@ impl From<AiConfig> for AiConfigStatus {
                 .as_ref()
                 .is_some_and(|value| !value.trim().is_empty()),
             searxng_url: config.searxng_url,
+            sidecar_enabled: config.sidecar_enabled,
         }
     }
 }
@@ -145,6 +157,8 @@ mod tests {
                 context7_api_key: Some("ctx-key".to_string()),
                 tavily_api_key: Some("tvly-key".to_string()),
                 searxng_url: "http://localhost:9999".to_string(),
+                sidecar_enabled: true,
+                sidecar_python_path: None,
             })
             .unwrap();
 
@@ -155,6 +169,7 @@ mod tests {
         assert_eq!(reloaded.context7_api_key.as_deref(), Some("ctx-key"));
         assert_eq!(reloaded.tavily_api_key.as_deref(), Some("tvly-key"));
         assert_eq!(reloaded.searxng_url, "http://localhost:9999");
+        assert!(reloaded.sidecar_enabled);
     }
 
     #[test]
@@ -171,5 +186,6 @@ mod tests {
         assert!(status.firecrawl_configured);
         assert!(status.context7_configured);
         assert!(status.tavily_configured);
+        assert!(status.sidecar_enabled);
     }
 }

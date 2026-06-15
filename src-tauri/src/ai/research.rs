@@ -1,4 +1,5 @@
 use super::config::{AiConfig, AiConfigState};
+use super::sidecar::SidecarState;
 use claude_code_rs::{ApiClient, ChatMessage};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -139,6 +140,7 @@ pub async fn research_search_native(
     max_results: Option<u64>,
     scraper: Option<ResearchScraper>,
     config_state: State<'_, AiConfigState>,
+    sidecar_state: State<'_, SidecarState>,
 ) -> Result<ResearchSearchResponse, String> {
     let config = config_state.get()?;
     let scraper = scraper.unwrap_or_default();
@@ -174,6 +176,24 @@ pub async fn research_search_native(
         let outcome = match match &task.kind {
             ResearchSearchKind::Docs => search_context7(&config, &task.query, task_limit).await,
             ResearchSearchKind::Auto => unreachable!("auto is never a provider task"),
+            ResearchSearchKind::Paper | ResearchSearchKind::Dataset => {
+                let sidecar_result = if config.sidecar_enabled {
+                    search_sidecar(&sidecar_state, &task.query, &task.kind, task_limit).await.ok()
+                } else {
+                    None
+                };
+                match sidecar_result {
+                    Some(result) if !result.items.is_empty() => Ok(result),
+                    _ => match scraper {
+                        ResearchScraper::Tavily => {
+                            search_tavily_for_research(&config, &task.query, &task.kind, task_limit).await
+                        }
+                        ResearchScraper::Firecrawl => {
+                            search_firecrawl(&config, &task.query, &task.kind, task_limit).await
+                        }
+                    },
+                }
+            }
             _ => match scraper {
                 ResearchScraper::Tavily => {
                     search_tavily_for_research(&config, &task.query, &task.kind, task_limit).await
@@ -1162,6 +1182,72 @@ async fn search_context7(
         });
     }
     Ok(ProviderSearchResult { items, warning })
+}
+
+async fn search_sidecar(
+    sidecar: &SidecarState,
+    query: &str,
+    kind: &ResearchSearchKind,
+    limit: u64,
+) -> anyhow::Result<ProviderSearchResult> {
+    let port = sidecar
+        .port()
+        .await
+        .ok_or_else(|| anyhow::anyhow!("Sidecar not running"))?;
+
+    let endpoint = match kind {
+        ResearchSearchKind::Paper => "/search/papers",
+        ResearchSearchKind::Dataset => "/search/datasets",
+        _ => anyhow::bail!("Sidecar does not handle {:?} kind", kind),
+    };
+
+    let url = format!("http://127.0.0.1:{port}{endpoint}");
+    let response = reqwest::Client::builder()
+        .timeout(Duration::from_secs(25))
+        .build()?
+        .post(&url)
+        .json(&json!({ "query": query, "limit": limit }))
+        .send()
+        .await?;
+
+    let status = response.status();
+    let body = response.text().await?;
+    if !status.is_success() {
+        anyhow::bail!("Sidecar request failed ({status}): {body}");
+    }
+
+    let parsed: Value = serde_json::from_str(&body)?;
+    let raw_items = parsed["items"].as_array().cloned().unwrap_or_default();
+    let warning = parsed["warning"].as_str().map(ToOwned::to_owned);
+
+    let items = raw_items
+        .into_iter()
+        .map(|value| sidecar_item(value, kind))
+        .take(limit as usize)
+        .collect();
+
+    Ok(ProviderSearchResult { items, warning })
+}
+
+fn sidecar_item(value: Value, kind: &ResearchSearchKind) -> ResearchSearchItem {
+    ResearchSearchItem {
+        title: string_field(&value, "title").unwrap_or_else(|| "Untitled".to_string()),
+        url: string_field(&value, "url").unwrap_or_default(),
+        content: string_field(&value, "content").unwrap_or_default(),
+        provider: string_field(&value, "provider").unwrap_or_else(|| "sidecar".to_string()),
+        source: "sidecar_academic".to_string(),
+        category: string_field(&value, "category")
+            .unwrap_or_else(|| category_for_kind(kind).to_string()),
+        authors: string_field(&value, "authors"),
+        publish_year: value.get("publish_year").and_then(|v| v.as_i64()).map(|v| v as i32),
+        keywords: string_field(&value, "keywords"),
+        relevance_score: value["relevance_score"].as_f64().unwrap_or(0.0),
+        raw_json: value,
+        planned_kind: None,
+        planned_query: None,
+        reason: None,
+        rank: None,
+    }
 }
 
 async fn fetch_context7_docs(

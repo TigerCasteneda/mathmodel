@@ -341,6 +341,8 @@ pub fn set_ai_config(config: AiConfig, state: State<'_, AiConfigState>) -> Resul
         } else {
             config.searxng_url
         },
+        sidecar_enabled: config.sidecar_enabled,
+        sidecar_python_path: config.sidecar_python_path.or(current.sidecar_python_path),
     })
 }
 
