@@ -178,7 +178,18 @@ pub async fn research_search_native(
             ResearchSearchKind::Auto => unreachable!("auto is never a provider task"),
             ResearchSearchKind::Paper | ResearchSearchKind::Dataset => {
                 let sidecar_result = if config.sidecar_enabled {
-                    search_sidecar(&sidecar_state, &task.query, &task.kind, task_limit).await.ok()
+                    match search_sidecar(&sidecar_state, &config, &task.query, &task.kind, task_limit).await {
+                        Ok(result) => Some(result),
+                        Err(error) => {
+                            tracing::warn!(
+                                "Sidecar search failed for {:?} task \"{}\": {error:#}; falling back to {:?}",
+                                task.kind,
+                                task.query,
+                                scraper
+                            );
+                            None
+                        }
+                    }
                 } else {
                     None
                 };
@@ -1186,14 +1197,16 @@ async fn search_context7(
 
 async fn search_sidecar(
     sidecar: &SidecarState,
+    config: &AiConfig,
     query: &str,
     kind: &ResearchSearchKind,
     limit: u64,
 ) -> anyhow::Result<ProviderSearchResult> {
-    let port = sidecar
-        .port()
-        .await
-        .ok_or_else(|| anyhow::anyhow!("Sidecar not running"))?;
+    // Lazily (re)start the sidecar if it is not already running. This lets the
+    // first search after installing Python deps bring it up, even when the
+    // launch-time start failed.
+    let python = SidecarState::resolve_python_command(config.sidecar_python_path.as_deref());
+    let port = sidecar.ensure_started(&python).await?;
 
     let endpoint = match kind {
         ResearchSearchKind::Paper => "/search/papers",

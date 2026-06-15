@@ -13,6 +13,15 @@ pub struct ServerPort(pub u16);
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Initialize tracing so warn/info logs (sidecar startup, server, etc.) are
+    // visible in the dev console. RUST_LOG overrides the default level.
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .try_init();
+
     tauri::Builder::default()
         .setup(|app| {
             let work_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
@@ -65,14 +74,12 @@ pub fn run() {
                 .get()
                 .unwrap_or_default();
             if config_for_sidecar.sidecar_enabled {
-                let default_python = if cfg!(windows) { "py -3" } else { "python3" };
-                let python = config_for_sidecar
-                    .sidecar_python_path
-                    .as_deref()
-                    .unwrap_or(default_python);
+                let python = SidecarState::resolve_python_command(
+                    config_for_sidecar.sidecar_python_path.as_deref(),
+                );
                 let sidecar_ref = &sidecar_state;
                 let _ = tauri::async_runtime::block_on(async {
-                    sidecar_ref.ensure_started(python).await
+                    sidecar_ref.ensure_started(&python).await
                 })
                 .inspect_err(|e| tracing::warn!("Sidecar unavailable: {e:#}"));
             }
@@ -136,9 +143,23 @@ pub fn run() {
             list_plugins,
             toggle_plugin,
             get_server_port,
+            get_sidecar_status,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while running tauri application")
+        .run(|app_handle, event| {
+            if let tauri::RunEvent::Exit = event {
+                let sidecar = app_handle.state::<SidecarState>();
+                tauri::async_runtime::block_on(async { sidecar.stop().await });
+            }
+        });
+}
+
+/// Reports whether the research sidecar is currently running and healthy, so
+/// the Settings UI can show academic-search availability.
+#[tauri::command]
+async fn get_sidecar_status(sidecar: State<'_, SidecarState>) -> Result<bool, String> {
+    Ok(sidecar.is_available().await)
 }
 
 #[tauri::command]

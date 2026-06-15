@@ -18,6 +18,7 @@ import {
   compileLatex,
   deleteSession,
   getAiConfigStatus,
+  getSidecarStatus,
   listSessions,
   renameSession,
   searchSessions,
@@ -1026,6 +1027,7 @@ function SettingsPanel({
   onProjectRefresh: () => Promise<void>
 }) {
   const [status, setStatus] = useState<AiConfigStatus | null>(null)
+  const [sidecarRunning, setSidecarRunning] = useState<boolean | null>(null)
   const [apiKey, setApiKey] = useState("")
   const [firecrawlKey, setFirecrawlKey] = useState("")
   const [context7Key, setContext7Key] = useState("")
@@ -1039,6 +1041,7 @@ function SettingsPanel({
       setModel(value.model)
       setSearxngUrl(value.searxng_url || "http://localhost:8080")
     }).catch(() => {})
+    getSidecarStatus().then(setSidecarRunning).catch(() => setSidecarRunning(false))
   }, [])
 
   const save = async () => {
@@ -1148,6 +1151,29 @@ function SettingsPanel({
             />
             <p className="text-xs leading-5 text-[#787878]">
               Research Search uses Firecrawl and Context7. Tavily powers the /search AI search page. SearXNG is only used by chat.
+            </p>
+          </div>
+
+          <div className="space-y-2 border-t border-[#373737] pt-3">
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-medium text-[#b4b4b4]">Academic Search Engine</label>
+              {sidecarRunning === null ? (
+                <span className="text-xs text-[#787878]">Checking…</span>
+              ) : sidecarRunning ? (
+                <span className="flex items-center gap-1.5 text-xs text-[#9bd6b5]">
+                  <span className="h-1.5 w-1.5 rounded-full bg-[#9bd6b5]" />
+                  Running
+                </span>
+              ) : (
+                <span className="flex items-center gap-1.5 text-xs text-[#d49a9a]">
+                  <span className="h-1.5 w-1.5 rounded-full bg-[#d49a9a]" />
+                  {status?.sidecar_enabled === false ? "Disabled" : "Not running"}
+                </span>
+              )}
+            </div>
+            <p className="text-xs leading-5 text-[#787878]">
+              Paper and dataset searches query arXiv, Semantic Scholar, OpenAlex, Zenodo, and Kaggle directly via a Python sidecar. Requires Python with{" "}
+              <code className="text-[#b4b4b4]">fastapi uvicorn httpx</code> installed. Falls back to Firecrawl/Tavily when unavailable.
             </p>
           </div>
         </div>

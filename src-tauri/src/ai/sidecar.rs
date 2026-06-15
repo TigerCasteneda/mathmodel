@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -78,16 +78,20 @@ impl SidecarState {
             .args(&args)
             .current_dir(&self.sidecar_dir)
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
             .kill_on_drop(true)
-            .spawn()?;
+            .spawn()
+            .map_err(|e| {
+                anyhow::anyhow!("Failed to spawn `{program}` (configured python: \"{python_path}\"): {e}")
+            })?;
 
         let stdout = child
             .stdout
             .take()
             .ok_or_else(|| anyhow::anyhow!("Failed to capture sidecar stdout"))?;
+        let stderr = child.stderr.take();
 
-        let port = tokio::time::timeout(STARTUP_TIMEOUT, async {
+        let port = match tokio::time::timeout(STARTUP_TIMEOUT, async {
             let mut reader = BufReader::new(stdout).lines();
             while let Ok(Some(line)) = reader.next_line().await {
                 if let Some(port_str) = line.strip_prefix("SIDECAR_PORT=") {
@@ -99,7 +103,19 @@ impl SidecarState {
             anyhow::bail!("Sidecar exited without printing port")
         })
         .await
-        .map_err(|_| anyhow::anyhow!("Sidecar startup timed out ({}s)", STARTUP_TIMEOUT.as_secs()))??;
+        {
+            Ok(Ok(port)) => port,
+            Ok(Err(e)) => {
+                let detail = Self::drain_stderr(stderr).await;
+                anyhow::bail!("{e}{detail}");
+            }
+            Err(_) => {
+                anyhow::bail!(
+                    "Sidecar startup timed out ({}s)",
+                    STARTUP_TIMEOUT.as_secs()
+                );
+            }
+        };
 
         *child_guard = Some(child);
 
@@ -117,6 +133,33 @@ impl SidecarState {
         Ok(port)
     }
 
+    /// Read whatever the sidecar wrote to stderr (best-effort, short timeout) so
+    /// startup failures like missing dependencies surface in the error message.
+    async fn drain_stderr(stderr: Option<tokio::process::ChildStderr>) -> String {
+        let Some(stderr) = stderr else {
+            return String::new();
+        };
+        let collected = tokio::time::timeout(Duration::from_millis(500), async {
+            let mut reader = BufReader::new(stderr).lines();
+            let mut lines = Vec::new();
+            while let Ok(Some(line)) = reader.next_line().await {
+                lines.push(line);
+                if lines.len() >= 20 {
+                    break;
+                }
+            }
+            lines.join("\n")
+        })
+        .await
+        .unwrap_or_default();
+
+        if collected.trim().is_empty() {
+            String::new()
+        } else {
+            format!(" — stderr: {}", collected.trim())
+        }
+    }
+
     async fn health_check(port: u16) -> bool {
         let url = format!("http://127.0.0.1:{port}/health");
         let Ok(response) = reqwest::Client::builder()
@@ -132,8 +175,21 @@ impl SidecarState {
         response.status().is_success()
     }
 
-    pub fn sidecar_dir(&self) -> &Path {
-        &self.sidecar_dir
+    /// Resolve the effective python command to launch the sidecar with, given an
+    /// optional user-configured path. Falls back to the platform default
+    /// (`py -3` on Windows, `python3` elsewhere).
+    pub fn resolve_python_command(configured: Option<&str>) -> String {
+        let trimmed = configured.map(str::trim).filter(|value| !value.is_empty());
+        match trimmed {
+            Some(value) => value.to_string(),
+            None => {
+                if cfg!(windows) {
+                    "py -3".to_string()
+                } else {
+                    "python3".to_string()
+                }
+            }
+        }
     }
 
     /// Parse a python command string like "py -3.14" or "python3" into (program, args).

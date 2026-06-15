@@ -67,6 +67,8 @@ export interface AiConfig {
   context7_api_key?: string | null
   tavily_api_key?: string | null
   searxng_url: string
+  sidecar_enabled?: boolean
+  sidecar_python_path?: string | null
 }
 
 export interface AiConfigStatus {
@@ -77,6 +79,7 @@ export interface AiConfigStatus {
   context7_configured: boolean
   tavily_configured: boolean
   searxng_url: string
+  sidecar_enabled: boolean
 }
 
 export interface ChatStreamEvent {
@@ -187,9 +190,20 @@ export async function getAiConfigStatus(): Promise<AiConfigStatus> {
       context7_configured: false,
       tavily_configured: false,
       searxng_url: "http://localhost:8080",
+      sidecar_enabled: true,
     }
   }
   return invoke<AiConfigStatus>("get_ai_config_status")
+}
+
+/** Whether the research sidecar process is currently running and healthy. */
+export async function getSidecarStatus(): Promise<boolean> {
+  if (!isTauri()) return false
+  try {
+    return await invoke<boolean>("get_sidecar_status")
+  } catch {
+    return false
+  }
 }
 
 export async function setAiModel(model: string): Promise<AiConfigStatus | null> {
