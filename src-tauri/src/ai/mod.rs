@@ -9,6 +9,7 @@ pub mod permissions;
 pub mod plan;
 pub mod plugins;
 pub mod research;
+pub mod research_agent;
 pub mod runtime;
 pub mod search;
 pub mod sidecar;

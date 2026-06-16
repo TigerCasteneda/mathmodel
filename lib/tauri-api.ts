@@ -507,6 +507,85 @@ export async function aiSearch(query: string, requestId: string): Promise<void> 
   return invoke("ai_search", { query, requestId })
 }
 
+// ─── Agentic research ──
+
+export interface AgentThinkingEvent {
+  request_id: string
+  content: string
+}
+
+export interface AgentToolEvent {
+  request_id: string
+  id: string
+  name: string
+  arguments: Record<string, unknown>
+  status: "running" | "success" | "error"
+  summary: string
+}
+
+export interface AgentSource {
+  citation: number
+  title: string
+  url: string
+  content: string
+  provider: string
+  category: string
+}
+
+export interface AgentResultsEvent {
+  request_id: string
+  results: AgentSource[]
+}
+
+export interface AgentStreamEvent {
+  request_id: string
+  seq: number
+  content: string
+  done: boolean
+}
+
+export interface AgentErrorEvent {
+  request_id: string
+  message: string
+}
+
+export interface AgentDoneEvent {
+  request_id: string
+}
+
+export function onResearchAgentThinking(callback: (event: AgentThinkingEvent) => void): () => void {
+  return listenEvent<AgentThinkingEvent>("research_agent:thinking", callback)
+}
+
+export function onResearchAgentTool(callback: (event: AgentToolEvent) => void): () => void {
+  return listenEvent<AgentToolEvent>("research_agent:tool", callback)
+}
+
+export function onResearchAgentResults(callback: (event: AgentResultsEvent) => void): () => void {
+  return listenEvent<AgentResultsEvent>("research_agent:results", callback)
+}
+
+export function onResearchAgentStream(callback: (event: AgentStreamEvent) => void): () => void {
+  return listenEvent<AgentStreamEvent>("research_agent:stream", callback)
+}
+
+export function onResearchAgentError(callback: (event: AgentErrorEvent) => void): () => void {
+  return listenEvent<AgentErrorEvent>("research_agent:error", callback)
+}
+
+export function onResearchAgentDone(callback: (event: AgentDoneEvent) => void): () => void {
+  return listenEvent<AgentDoneEvent>("research_agent:done", callback)
+}
+
+export async function researchAgentRun(
+  query: string,
+  requestId: string,
+  scraper: ResearchScraper = "firecrawl",
+): Promise<void> {
+  if (!isTauri()) return
+  return invoke("research_agent_run", { query, requestId, scraper })
+}
+
 export async function resolvePermissionRequest(requestId: string, allow: boolean): Promise<void> {
   if (!isTauri()) return
   return invoke("resolve_permission_request", { requestId, allow })

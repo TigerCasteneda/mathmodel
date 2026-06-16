@@ -1195,6 +1195,42 @@ async fn search_context7(
     Ok(ProviderSearchResult { items, warning })
 }
 
+/// Single-query provider routing for the agentic researcher: route one
+/// query+kind through the sidecar first, falling back to the configured
+/// web scraper. No AI planning or ranking — the agent LLM drives those.
+pub async fn research_search_for_agent(
+    config: &AiConfig,
+    sidecar: &SidecarState,
+    scraper: ResearchScraper,
+    query: &str,
+    kind: &ResearchSearchKind,
+    limit: u64,
+) -> anyhow::Result<Vec<ResearchSearchItem>> {
+    let sidecar_kind = matches!(
+        kind,
+        ResearchSearchKind::Paper | ResearchSearchKind::Dataset | ResearchSearchKind::Code
+    );
+    if config.sidecar_enabled && sidecar_kind {
+        match search_sidecar(sidecar, config, query, kind, limit).await {
+            Ok(result) if !result.items.is_empty() => return Ok(result.items),
+            Ok(_) => {}
+            Err(error) => {
+                tracing::warn!("Agent sidecar search failed for {:?}: {error:#}", kind);
+            }
+        }
+    }
+
+    if matches!(kind, ResearchSearchKind::Docs) {
+        return Ok(search_context7(config, query, limit).await?.items);
+    }
+
+    let result = match scraper {
+        ResearchScraper::Tavily => search_tavily_for_research(config, query, kind, limit).await?,
+        ResearchScraper::Firecrawl => search_firecrawl(config, query, kind, limit).await?,
+    };
+    Ok(result.items)
+}
+
 async fn search_sidecar(
     sidecar: &SidecarState,
     config: &AiConfig,

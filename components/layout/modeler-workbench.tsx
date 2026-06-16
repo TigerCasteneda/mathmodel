@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react"
 import { useRouter } from "next/navigation"
-import { AlertCircle, Archive, BookOpen, Check, CheckCircle2, ChevronDown, ChevronRight, Copy, Database, FileCode, FileImage, FileText, Folder, FolderOpen, Globe2, Library, Link, Loader2, LogOut, MessageSquare, Network, MonitorUp, MonitorX, PencilLine, Play, RefreshCw, RotateCcw, Save, Search, Settings, SidebarIcon, Trash2 } from "lucide-react"
+import { AlertCircle, Archive, BookOpen, Check, CheckCircle2, ChevronDown, ChevronRight, Copy, Database, FileCode, FileImage, FileText, Folder, FolderOpen, Globe2, Library, Link, Loader2, LogOut, MessageSquare, Network, MonitorUp, MonitorX, PencilLine, Play, RefreshCw, RotateCcw, Save, Search, Settings, SidebarIcon, Sparkles, Trash2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { ScrollArea } from "@/components/ui/scroll-area"
@@ -29,6 +29,7 @@ import {
   researchSearchNative,
   setAiConfig,
   type AiConfigStatus,
+  type AgentSource,
   type FileTreeItem,
   type NativeResearchSearchItem,
   type ResearchSearchKind,
@@ -64,6 +65,7 @@ import {
   type ResearchItem,
 } from "@/lib/api"
 import { researchItemToArenaInput, searchResultToArenaInput } from "@/lib/research-to-arena"
+import { AgentResearchView } from "@/components/research/agent-research-view"
 import { useAuth } from "@/hooks/use-auth"
 
 type Activity = "explorer" | "arena" | "knowledge" | "research" | "chat" | "settings"
@@ -392,6 +394,7 @@ function ResearchSearchPanel({
   const [saving, setSaving] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
   const [arenaSendingUrl, setArenaSendingUrl] = useState<string | null>(null)
+  const [mode, setMode] = useState<"classic" | "agent">("classic")
   const researchSearchIdRef = useRef<string | null>(null)
   const urlAnalyzeIdRef = useRef<string | null>(null)
 
@@ -501,6 +504,44 @@ function ResearchSearchPanel({
     }
   }
 
+  // Save sources selected in the agentic research view. Maps AgentSource to
+  // the native search-item shape and reuses the same extract-and-save flow.
+  const saveAgentSources = async (sources: AgentSource[]) => {
+    if (sources.length === 0 || !canSave) return
+    setSaving(true)
+    setMessage(null)
+    try {
+      const mapped: NativeResearchSearchItem[] = sources.map((s) => ({
+        title: s.title,
+        url: s.url,
+        content: s.content,
+        provider: s.provider,
+        source: "agent_research",
+        category: s.category,
+        relevance_score: 1,
+        raw_json: {},
+      }))
+      const response = await researchExtractAndSave({
+        project_id: projectId,
+        results: mapped,
+        kind: "auto",
+        auth_token: getToken(),
+      })
+      const warningText = response.warnings?.length ? ` ${response.warnings.join(" ")}` : ""
+      setMessage(`Saved ${response.saved} item(s) and created ${response.files_created} research file(s).${warningText}`)
+      onKeepOpen()
+      try {
+        setItems(await listResearchItems(projectId))
+      } catch {
+        /* keep saved state visible even if refresh fails */
+      }
+    } catch (error) {
+      setMessage(errorText(error, "Research save failed."))
+    } finally {
+      setSaving(false)
+    }
+  }
+
   // Send a single search result straight to the Arena as a card, without the
   // full Save & Extract flow. Direct field mapping, no AI call.
   const sendResultToArena = async (result: NativeResearchSearchItem) => {
@@ -535,6 +576,53 @@ function ResearchSearchPanel({
   }
 
   return (
+    <div className="flex h-full min-h-0 flex-col bg-[#0d0d0d] text-[#e8e8e8]">
+      {/* Mode toggle: classic ranked list vs. agentic researcher */}
+      <div className="flex items-center gap-1 border-b border-[#373737] bg-[#121212] px-3 py-2">
+        <div className="flex items-center gap-1 rounded-md border border-[#373737] bg-[#1a1a1a] p-0.5">
+          <button
+            onClick={() => setMode("classic")}
+            className={cn(
+              "rounded px-2.5 py-1 text-xs font-medium",
+              mode === "classic" ? "bg-[#2d241a] text-[#ebc396]" : "text-[#b4b4b4] hover:text-[#e8e8e8]",
+            )}
+          >
+            Search
+          </button>
+          <button
+            onClick={() => setMode("agent")}
+            className={cn(
+              "flex items-center gap-1 rounded px-2.5 py-1 text-xs font-medium",
+              mode === "agent" ? "bg-[#2d241a] text-[#ebc396]" : "text-[#b4b4b4] hover:text-[#e8e8e8]",
+            )}
+          >
+            <Sparkles className="h-3 w-3" />
+            Agent
+          </button>
+        </div>
+        {mode === "agent" && (
+          <span className="ml-2 text-[11px] text-[#787878]">
+            Agentic researcher · streams a cited answer from academic sources
+          </span>
+        )}
+      </div>
+
+      {mode === "agent" ? (
+        <div className="min-h-0 flex-1">
+          <AgentResearchView scraper={scraper} onSaveSources={canSave ? saveAgentSources : undefined} />
+        </div>
+      ) : (
+        <ClassicResearchBody />
+      )}
+
+      {message && mode === "agent" && (
+        <div className="border-t border-[#373737] bg-[#121212] px-3 py-2 text-xs text-[#b4b4b4]">{message}</div>
+      )}
+    </div>
+  )
+
+  function ClassicResearchBody() {
+    return (
     <div className="flex h-full min-h-0 flex-col bg-[#0d0d0d] text-[#e8e8e8]">
       <div className="border-b border-[#373737] bg-[#121212] p-3">
         <div className="mx-auto flex max-w-5xl flex-col gap-3">
@@ -752,7 +840,8 @@ function ResearchSearchPanel({
         </div>
       </ScrollArea>
     </div>
-  )
+    )
+  }
 }
 
 const DEEPSEEK_MODELS = [

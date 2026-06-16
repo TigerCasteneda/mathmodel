@@ -121,6 +121,7 @@ pub fn run() {
             ai::research::research_search_native,
             ai::research::research_analyze_url,
             ai::research::research_extract_and_save,
+            ai::research_agent::research_agent_run,
             ai::session::list_sessions,
             ai::session::load_session,
             ai::session::delete_session,
