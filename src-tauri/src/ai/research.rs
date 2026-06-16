@@ -144,7 +144,7 @@ pub async fn research_search_native(
 ) -> Result<ResearchSearchResponse, String> {
     let config = config_state.get()?;
     let scraper = scraper.unwrap_or_default();
-    let limit = max_results.unwrap_or(8).clamp(1, 20);
+    let limit = max_results.unwrap_or(16).clamp(1, 30);
     let mut warning = None;
     let tasks = if matches!(&kind, ResearchSearchKind::Auto) {
         match plan_search_tasks(&config, &query).await {
@@ -176,7 +176,7 @@ pub async fn research_search_native(
         let outcome = match match &task.kind {
             ResearchSearchKind::Docs => search_context7(&config, &task.query, task_limit).await,
             ResearchSearchKind::Auto => unreachable!("auto is never a provider task"),
-            ResearchSearchKind::Paper | ResearchSearchKind::Dataset => {
+            ResearchSearchKind::Paper | ResearchSearchKind::Dataset | ResearchSearchKind::Code => {
                 let sidecar_result = if config.sidecar_enabled {
                     match search_sidecar(&sidecar_state, &config, &task.query, &task.kind, task_limit).await {
                         Ok(result) => Some(result),
@@ -575,7 +575,7 @@ fn per_task_limit(limit: u64, task_count: usize) -> u64 {
         return limit;
     }
     let task_count = task_count as u64;
-    ((limit + task_count - 1) / task_count).clamp(2, 6)
+    ((limit + task_count - 1) / task_count).clamp(4, 10)
 }
 
 fn parse_ai_search_plan(text: &str, fallback_query: &str) -> Vec<SearchTask> {
@@ -1211,6 +1211,7 @@ async fn search_sidecar(
     let endpoint = match kind {
         ResearchSearchKind::Paper => "/search/papers",
         ResearchSearchKind::Dataset => "/search/datasets",
+        ResearchSearchKind::Code => "/search/code",
         _ => anyhow::bail!("Sidecar does not handle {:?} kind", kind),
     };
 

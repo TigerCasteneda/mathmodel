@@ -310,7 +310,7 @@ export interface NativeResearchSaveResponse {
 export async function researchSearchNative(
   query: string,
   kind: ResearchSearchKind,
-  maxResults = 8,
+  maxResults = 16,
   scraper: ResearchScraper = "firecrawl",
 ): Promise<NativeResearchSearchResponse> {
   if (!isTauri()) return { query, kind, results: [] }

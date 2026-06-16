@@ -4,7 +4,7 @@ import traceback
 from fastapi import FastAPI
 
 from app.models import EnrichRequest, SearchRequest, SearchResponse, SearchResultItem
-from app.providers import arxiv, kaggle, openalex, semantic_scholar, stealth, zenodo
+from app.providers import arxiv, github, kaggle, openalex, semantic_scholar, stealth, zenodo
 
 app = FastAPI(title="Modeler Sidecar", version="0.1.0")
 
@@ -29,6 +29,15 @@ async def search_datasets(req: SearchRequest):
     providers = [
         ("zenodo", zenodo.search),
         ("kaggle", kaggle.search),
+        ("github", github.search),
+    ]
+    return await _aggregate_search(providers, req.query, req.limit)
+
+
+@app.post("/search/code", response_model=SearchResponse)
+async def search_code(req: SearchRequest):
+    providers = [
+        ("github", github.search),
     ]
     return await _aggregate_search(providers, req.query, req.limit)
 

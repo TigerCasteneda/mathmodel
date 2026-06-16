@@ -425,7 +425,7 @@ function ResearchSearchPanel({
       }, 1200))
     }
     try {
-      const response = await researchSearchNative(trimmedQuery, kind, 8, scraper)
+      const response = await researchSearchNative(trimmedQuery, kind, 16, scraper)
       if (researchSearchIdRef.current !== requestId) return
       setResults(response.results)
       setSelected(new Set(response.results.map((_, index) => index)))
