@@ -5,7 +5,7 @@
   "identifier": "com.modeler.app",
   "build": {
     "frontendDist": "../out",
-    "devUrl": "http://localhost:3000",
+    "devUrl": "http://localhost:3500",
     "beforeDevCommand": "npm run dev",
     "beforeBuildCommand": "npm run build"
   },
