@@ -6,6 +6,7 @@ pub mod executor;
 pub mod history;
 pub mod hooks;
 pub mod permissions;
+pub mod philosophy;
 pub mod plan;
 pub mod plugins;
 pub mod research;

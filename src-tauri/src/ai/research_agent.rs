@@ -136,7 +136,7 @@ fn agent_tool_defs() -> Vec<claude_code_rs::api::ToolDefinition> {
 }
 
 fn system_prompt() -> String {
-    "You are an expert research assistant for mathematical modeling projects (MCM/ICM style). \
+    let role = "You are an expert research assistant for mathematical modeling projects (MCM/ICM/IMMC style). \
      Your job is to answer the user's research question by actively searching academic sources.\n\n\
      Process:\n\
      1. Break the question into search tasks. Call `search_academic` (and `search_web` when you \
@@ -149,8 +149,12 @@ fn system_prompt() -> String {
      - Only cite numbers that were actually returned to you. Never invent citations.\n\
      - Use headers, lists, and bold for structure. Be concise but complete. End with a short summary \
      and concrete suggestions for the modeling task.\n\n\
-     Do not fabricate sources or data. If the searches don't answer the question, say so."
-        .to_string()
+     When evaluating and selecting sources, favor those that reveal a non-obvious insight, expose a \
+     trade-off, or challenge a common assumption over those that merely match the topic. Flag where the \
+     literature disagrees or where a method is reported to fail — that tension is more useful to the team \
+     than a smooth consensus.\n\n\
+     Do not fabricate sources or data. If the searches don't answer the question, say so.";
+    super::philosophy::with_philosophy(role)
 }
 
 // ── SSE stream parsing (OpenAI-compatible, with tool_calls) ──
