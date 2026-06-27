@@ -8,11 +8,14 @@ import {
   ChevronDown,
   Loader2,
   MessageSquare,
+  Pencil,
   Plus,
   Sparkles,
+  Trash2,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import {
+  deleteSession,
   listSessions,
   loadSession,
   onResearchAgentDone,
@@ -22,6 +25,7 @@ import {
   onResearchAgentStream,
   onResearchAgentThinking,
   onResearchAgentTool,
+  renameSession,
   researchAgentRun,
   type AgentSource,
   type ResearchScraper,
@@ -533,6 +537,50 @@ function ResearchLibrary({
     refresh()
   }, [refresh, refreshKey])
 
+  // Strip the "[Research] " prefix the Rust side uses to mark research sessions.
+  const stripPrefix = (name: string) =>
+    (name || "Untitled").replace(/^\[Research\]\s+/, "")
+
+  // Delete with native confirm. After deletion, force a re-fetch so the
+  // current session in the parent doesn't point at a missing record.
+  const handleDelete = async (s: SessionInfo, e: React.MouseEvent) => {
+    e.stopPropagation()
+    e.preventDefault()
+    if (disabled) return
+    const displayName = stripPrefix(s.name)
+    const ok = window.confirm(
+      `Delete research session "${displayName}"? This removes all ${s.message_count} messages and cannot be undone.`,
+    )
+    if (!ok) return
+    try {
+      await deleteSession(s.id)
+      await refresh()
+    } catch (err) {
+      console.error("ResearchLibrary: deleteSession failed:", err)
+      window.alert(`Failed to delete session: ${err}`)
+    }
+  }
+
+  // Rename via prompt(). Re-add the "[Research] " prefix on save so the
+  // session stays classified as a research session in listSessions().
+  const handleRename = async (s: SessionInfo, e: React.MouseEvent) => {
+    e.stopPropagation()
+    e.preventDefault()
+    if (disabled) return
+    const currentDisplay = stripPrefix(s.name)
+    const next = window.prompt("Rename research session:", currentDisplay)
+    if (next === null) return // cancelled
+    const trimmed = next.trim()
+    if (!trimmed || trimmed === currentDisplay) return
+    try {
+      await renameSession(s.id, `[Research] ${trimmed}`)
+      await refresh()
+    } catch (err) {
+      console.error("ResearchLibrary: renameSession failed:", err)
+      window.alert(`Failed to rename session: ${err}`)
+    }
+  }
+
   return (
     <aside className="flex w-60 shrink-0 flex-col border-r border-[#373737] bg-[#0a0a0a]">
       <div className="flex items-center justify-between border-b border-[#373737] p-3">
@@ -555,28 +603,61 @@ function ResearchLibrary({
             No research yet
           </p>
         ) : (
-          sessions.map((s) => (
-            <button
-              key={s.id}
-              onClick={() => !disabled && onSelect(s.id)}
-              disabled={disabled}
-              className={cn(
-                "flex w-full flex-col gap-0.5 border-b border-[#1a1a1a] px-3 py-2 text-left transition-colors hover:bg-[#1a1a1a] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent",
-                s.id === currentId && "bg-[#1a1a1a]",
-              )}
-            >
-              <div className="flex items-center gap-1.5">
-                <MessageSquare className="h-3 w-3 shrink-0 text-[#d4a574]" />
-                <span className="flex-1 truncate text-xs text-[#e8e8e8]">
-                  {(s.name || "Untitled").replace(/^\[Research\]\s+/, "")}
-                </span>
+          sessions.map((s) => {
+            const isCurrent = s.id === currentId
+            return (
+              <div
+                key={s.id}
+                className={cn(
+                  "group flex w-full flex-col gap-0.5 border-b border-[#1a1a1a] px-3 py-2 text-left transition-colors hover:bg-[#1a1a1a]",
+                  isCurrent && "bg-[#1a1a1a]",
+                  disabled && "opacity-40",
+                )}
+              >
+                <button
+                  onClick={() => !disabled && onSelect(s.id)}
+                  disabled={disabled}
+                  className="flex flex-1 items-center gap-1.5 text-left disabled:cursor-not-allowed"
+                >
+                  <MessageSquare className="h-3 w-3 shrink-0 text-[#d4a574]" />
+                  <span className="flex-1 truncate text-xs text-[#e8e8e8]">
+                    {stripPrefix(s.name)}
+                  </span>
+                </button>
+                <div className="flex items-center justify-between gap-1 pl-[22px]">
+                  <span className="text-[10px] text-[#555]">
+                    {s.message_count} msgs ·{" "}
+                    {new Date(s.created_at * 1000).toLocaleDateString()}
+                  </span>
+                  <div
+                    className={cn(
+                      "flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100",
+                      isCurrent && "opacity-100",
+                    )}
+                  >
+                    <button
+                      onClick={(e) => handleRename(s, e)}
+                      disabled={disabled}
+                      title="Rename session"
+                      aria-label={`Rename ${stripPrefix(s.name)}`}
+                      className="rounded p-0.5 text-[#787878] hover:bg-[#262626] hover:text-[#d4a574] disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      <Pencil className="h-3 w-3" />
+                    </button>
+                    <button
+                      onClick={(e) => handleDelete(s, e)}
+                      disabled={disabled}
+                      title="Delete session"
+                      aria-label={`Delete ${stripPrefix(s.name)}`}
+                      className="rounded p-0.5 text-[#787878] hover:bg-[#262626] hover:text-[#d96b6b] disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      <Trash2 className="h-3 w-3" />
+                    </button>
+                  </div>
+                </div>
               </div>
-              <span className="pl-[22px] text-[10px] text-[#555]">
-                {s.message_count} msgs ·{" "}
-                {new Date(s.created_at * 1000).toLocaleDateString()}
-              </span>
-            </button>
-          ))
+            )
+          })
         )}
       </div>
     </aside>
