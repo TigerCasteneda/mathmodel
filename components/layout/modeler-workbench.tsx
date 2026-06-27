@@ -613,236 +613,227 @@ function ResearchSearchPanel({
           <AgentResearchView scraper={scraper} onSaveSources={canSave ? saveAgentSources : undefined} />
         </div>
       ) : (
-        <ClassicResearchBody />
-      )}
+        <div className="flex h-full min-h-0 flex-col bg-[#0d0d0d] text-[#e8e8e8]">
+          <div className="border-b border-[#373737] bg-[#121212] p-3">
+            <div className="mx-auto flex max-w-5xl flex-col gap-3">
+              <div className="flex flex-wrap items-center gap-2">
+                {RESEARCH_KINDS.map((item) => {
+                  const Icon = item.icon
+                  return (
+                    <button
+                      key={item.value}
+                      onClick={() => setKind(item.value)}
+                      className={cn(
+                        "flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-xs",
+                        kind === item.value
+                          ? "border-[#d4a574] bg-[#2d241a] text-[#ebc396]"
+                          : "border-[#373737] bg-[#1a1a1a] text-[#b4b4b4] hover:border-[#464646]",
+                      )}
+                    >
+                      <Icon className="h-3.5 w-3.5" />
+                      {item.label}
+                    </button>
+                  )
+                })}
+                <div
+                  role="radiogroup"
+                  aria-label="Search provider"
+                  className="ml-auto flex items-center gap-1 rounded-md border border-[#373737] bg-[#1a1a1a] p-0.5"
+                >
+                  {SCRAPER_OPTIONS.map((option) => {
+                    const active = scraper === option.value
+                    const disabled = kind === "docs"
+                    return (
+                      <button
+                        key={option.value}
+                        type="button"
+                        role="radio"
+                        aria-checked={active}
+                        aria-label={`Use ${option.label} scraper`}
+                        title={disabled ? "Docs always use Context7" : `Search with ${option.label}`}
+                        disabled={disabled}
+                        onClick={() => setScraper(option.value)}
+                        className={cn(
+                          "flex h-7 cursor-pointer items-center rounded px-2.5 text-xs transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[#d4a574]",
+                          active && !disabled
+                            ? "bg-[#2d241a] text-[#ebc396]"
+                            : "text-[#b4b4b4] hover:text-[#e8e8e8]",
+                          disabled && "cursor-not-allowed opacity-40",
+                        )}
+                      >
+                        {option.label}
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+              <div className="flex gap-2">
+                <div className="relative flex-1">
+                  <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#787878]" />
+                  <Input
+                    value={query}
+                    onChange={(event) => setQuery(event.target.value)}
+                    onKeyDown={(event) => { if (event.key === "Enter") runSearch() }}
+                    placeholder={kind === "docs" ? "Search library docs, e.g. scipy optimize linprog" : "Search methods, datasets, papers, code, or competition references"}
+                    className="border-[#373737] bg-[#232323] pl-9 text-sm"
+                  />
+                </div>
+                <Button onClick={runSearch} disabled={loading || !query.trim()} className="bg-[#d4a574] text-[#111111] hover:bg-[#ebc396]">
+                  {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
+                </Button>
+              </div>
+              <div className="flex gap-2">
+                <div className="relative flex-1">
+                  <Link className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#787878]" />
+                  <Input
+                    value={urlInput}
+                    onChange={(event) => setUrlInput(event.target.value)}
+                    onKeyDown={(event) => { if (event.key === "Enter") analyzeUrl() }}
+                    placeholder="Paste a paper, arXiv, DOI, GitHub, Gitee, dataset, or PDF URL"
+                    className="border-[#373737] bg-[#232323] pl-9 text-sm"
+                  />
+                </div>
+                <Button onClick={analyzeUrl} disabled={urlAnalyzing || !urlInput.trim()} variant="outline" className="border-[#373737] bg-[#1a1a1a] text-[#b4b4b4] hover:bg-[#232323] hover:text-[#e8e8e8]">
+                  {urlAnalyzing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Link className="mr-2 h-4 w-4" />}
+                  Analyze URL
+                </Button>
+              </div>
+              {message && (
+                <div className="flex items-center gap-2 rounded-md border border-[#373737] bg-[#1a1a1a] px-3 py-2 text-xs text-[#b4b4b4]">
+                  <AlertCircle className="h-3.5 w-3.5 text-[#d4a574]" />
+                  {message}
+                </div>
+              )}
+            </div>
+          </div>
 
+          <ScrollArea className="min-h-0 flex-1">
+            <div className="mx-auto grid max-w-5xl gap-4 p-4 lg:grid-cols-[minmax(0,1fr)_320px]">
+              <div className="min-w-0 space-y-3">
+                {loading ? (
+                  <div className="rounded-md border border-[#373737] bg-[#1a1a1a] p-5 text-sm text-[#b4b4b4]">
+                    {loadingStage === "planning" ? "Planning research search..." : loadingStage === "searching" ? "Searching sources..." : "Ranking results..."}
+                  </div>
+                ) : results.length === 0 ? (
+                  <div className="rounded-md border border-[#373737] bg-[#1a1a1a] p-8 text-center text-sm text-[#787878]">
+                    Search results will appear here. Saving selected results automatically extracts modeling notes and creates Markdown/BibTeX files.
+                  </div>
+                ) : results.map((result, index) => (
+                  <article
+                    key={`${result.provider}-${result.url}-${index}`}
+                    className={cn("rounded-md border bg-[#1a1a1a] p-3 transition-colors", selected.has(index) ? "border-[#d4a574]" : "border-[#373737]")}
+                  >
+                    <div className="flex items-start gap-3">
+                      <button
+                        onClick={() => toggleResult(index)}
+                        className={cn(
+                          "mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded border",
+                          selected.has(index) ? "border-[#d4a574] bg-[#d4a574] text-[#111111]" : "border-[#464646] text-transparent",
+                        )}
+                      >
+                        <CheckCircle2 className="h-3.5 w-3.5" />
+                      </button>
+                      <div className="min-w-0 flex-1">
+                        <div className="mb-1 flex flex-wrap items-center gap-2">
+                          <span className="rounded-full border border-[#373737] px-1.5 py-0.5 text-[10px] uppercase text-[#d4a574]">{result.provider}</span>
+                          {result.planned_kind && (
+                            <span className="rounded-full border border-[#373737] px-1.5 py-0.5 text-[10px] uppercase text-[#9fb7ff]">{result.planned_kind}</span>
+                          )}
+                          {typeof result.rank === "number" && (
+                            <span className="rounded-full border border-[#373737] px-1.5 py-0.5 text-[10px] uppercase text-[#9bd6b5]">#{result.rank}</span>
+                          )}
+                          <span className="text-[10px] uppercase text-[#787878]">{result.category}</span>
+                        </div>
+                        <h3 className="break-words text-sm font-medium text-[#e8e8e8]">{result.title || "Untitled"}</h3>
+                        {result.url && <div className="mt-1 truncate text-xs text-[#787878]">{result.url}</div>}
+                        {result.reason && <p className="mt-1 text-[11px] leading-4 text-[#ebc396]">{result.reason}</p>}
+                        {result.planned_query && result.planned_query !== query.trim() && (
+                          <div className="mt-1 truncate text-[11px] text-[#787878]">Task: {result.planned_query}</div>
+                        )}
+                        <p className="mt-2 line-clamp-4 text-xs leading-5 text-[#b4b4b4]">{result.content}</p>
+                        <div className="mt-2 flex items-center justify-end gap-2">
+                          {result.url && <CopyUrlButton url={result.url} />}
+                          <button
+                            type="button"
+                            onClick={() => sendResultToArena(result)}
+                            disabled={!canSave || arenaSendingUrl === result.url}
+                            title={canSave ? "Send to Arena as a card" : "files.write and ai.write permissions required"}
+                            className={cn(
+                              "inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-[11px] transition-colors",
+                              canSave
+                                ? "border-[#d4a574]/40 text-[#ebc396] hover:border-[#d4a574] hover:bg-[#2d241a]"
+                                : "border-[#373737] text-[#5f5f5f] cursor-not-allowed",
+                            )}
+                          >
+                            {arenaSendingUrl === result.url ? <Loader2 className="h-3 w-3 animate-spin" /> : <Network className="h-3 w-3" />}
+                            Send to Arena
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </article>
+                ))}
+              </div>
+
+              <aside className="space-y-3">
+                <div className="rounded-md border border-[#373737] bg-[#1a1a1a] p-3">
+                  <div className="text-xs font-medium text-[#e8e8e8]">Selected</div>
+                  <div className="mt-1 text-2xl font-semibold text-[#ebc396]">{selectedResults.length}</div>
+                  <p className="mt-2 text-xs leading-5 text-[#787878]">Save runs AI extraction, then creates a Markdown note and BibTeX file in the Research folder.</p>
+                  {!canSave && (
+                    <p className="mt-2 rounded-md border border-[#5f3f24] bg-[#2d241a] px-2 py-1.5 text-xs text-[#ebc396]">files.write and ai.write permissions are required.</p>
+                  )}
+                  <Button onClick={saveSelected} disabled={saving || selectedResults.length === 0 || !canSave} className="mt-3 w-full bg-[#d4a574] text-[#111111] hover:bg-[#ebc396]">
+                    {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
+                    Save & Extract
+                  </Button>
+                </div>
+
+                <div className="rounded-md border border-[#373737] bg-[#1a1a1a] p-3">
+                  <div className="mb-2 flex items-center justify-between">
+                    <div className="text-xs font-medium text-[#e8e8e8]">Recent References</div>
+                    <button onClick={() => listResearchItems(projectId).then(setItems).catch(() => setItems([]))} className="text-[11px] text-[#d4a574]">Refresh</button>
+                  </div>
+                  <div className="space-y-2">
+                    {items.length === 0 ? (
+                      <div className="py-4 text-center text-xs text-[#787878]">No references saved.</div>
+                    ) : items.slice(0, 8).map((item) => (
+                      <article key={item.id} className="rounded border border-[#2a2a2a] bg-[#111111] p-2">
+                        <div className="text-[10px] uppercase text-[#d4a574]">{item.category}</div>
+                        <h4 className="mt-1 line-clamp-2 text-xs font-medium text-[#e8e8e8]">{item.title || "Untitled"}</h4>
+                        {item.summary && <p className="mt-1 line-clamp-2 text-[11px] leading-4 text-[#787878]">{item.summary}</p>}
+                        <div className="mt-1.5 flex items-center justify-end gap-1.5">
+                          {item.url && <CopyUrlButton url={item.url} size="xs" />}
+                          <button
+                            type="button"
+                            onClick={() => sendItemToArena(item)}
+                            disabled={!canSave || arenaSendingUrl === item.id}
+                            title={canSave ? "Send to Arena as a card" : "files.write and ai.write permissions required"}
+                            className={cn(
+                              "inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[10px] transition-colors",
+                              canSave
+                                ? "border-[#d4a574]/40 text-[#ebc396] hover:border-[#d4a574] hover:bg-[#2d241a]"
+                                : "border-[#373737] text-[#5f5f5f] cursor-not-allowed",
+                            )}
+                          >
+                            {arenaSendingUrl === item.id ? <Loader2 className="h-2.5 w-2.5 animate-spin" /> : <Network className="h-2.5 w-2.5" />}
+                            Arena
+                          </button>
+                        </div>
+                      </article>
+                    ))}
+                  </div>
+                </div>
+              </aside>
+            </div>
+          </ScrollArea>
+        </div>
+      )}
       {message && mode === "agent" && (
         <div className="border-t border-[#373737] bg-[#121212] px-3 py-2 text-xs text-[#b4b4b4]">{message}</div>
       )}
     </div>
   )
-
-  function ClassicResearchBody() {
-    return (
-    <div className="flex h-full min-h-0 flex-col bg-[#0d0d0d] text-[#e8e8e8]">
-      <div className="border-b border-[#373737] bg-[#121212] p-3">
-        <div className="mx-auto flex max-w-5xl flex-col gap-3">
-          <div className="flex flex-wrap items-center gap-2">
-            {RESEARCH_KINDS.map((item) => {
-              const Icon = item.icon
-              return (
-                <button
-                  key={item.value}
-                  onClick={() => setKind(item.value)}
-                  className={cn(
-                    "flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-xs",
-                    kind === item.value
-                      ? "border-[#d4a574] bg-[#2d241a] text-[#ebc396]"
-                      : "border-[#373737] bg-[#1a1a1a] text-[#b4b4b4] hover:border-[#464646]",
-                  )}
-                >
-                  <Icon className="h-3.5 w-3.5" />
-                  {item.label}
-                </button>
-              )
-            })}
-            {/* Scraper picker — Docs always routes through Context7, so the
-                Firecrawl/Tavily choice only applies to the other kinds. */}
-            <div
-              role="radiogroup"
-              aria-label="Search provider"
-              className="ml-auto flex items-center gap-1 rounded-md border border-[#373737] bg-[#1a1a1a] p-0.5"
-            >
-              {SCRAPER_OPTIONS.map((option) => {
-                const active = scraper === option.value
-                const disabled = kind === "docs"
-                return (
-                  <button
-                    key={option.value}
-                    type="button"
-                    role="radio"
-                    aria-checked={active}
-                    aria-label={`Use ${option.label} scraper`}
-                    title={disabled ? "Docs always use Context7" : `Search with ${option.label}`}
-                    disabled={disabled}
-                    onClick={() => setScraper(option.value)}
-                    className={cn(
-                      "flex h-7 cursor-pointer items-center rounded px-2.5 text-xs transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[#d4a574]",
-                      active && !disabled
-                        ? "bg-[#2d241a] text-[#ebc396]"
-                        : "text-[#b4b4b4] hover:text-[#e8e8e8]",
-                      disabled && "cursor-not-allowed opacity-40",
-                    )}
-                  >
-                    {option.label}
-                  </button>
-                )
-              })}
-            </div>
-          </div>
-          <div className="flex gap-2">
-            <div className="relative flex-1">
-              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#787878]" />
-              <Input
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-                onKeyDown={(event) => { if (event.key === "Enter") runSearch() }}
-                placeholder={kind === "docs" ? "Search library docs, e.g. scipy optimize linprog" : "Search methods, datasets, papers, code, or competition references"}
-                className="border-[#373737] bg-[#232323] pl-9 text-sm"
-              />
-            </div>
-            <Button onClick={runSearch} disabled={loading || !query.trim()} className="bg-[#d4a574] text-[#111111] hover:bg-[#ebc396]">
-              {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
-            </Button>
-          </div>
-          <div className="flex gap-2">
-            <div className="relative flex-1">
-              <Link className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#787878]" />
-              <Input
-                value={urlInput}
-                onChange={(event) => setUrlInput(event.target.value)}
-                onKeyDown={(event) => { if (event.key === "Enter") analyzeUrl() }}
-                placeholder="Paste a paper, arXiv, DOI, GitHub, Gitee, dataset, or PDF URL"
-                className="border-[#373737] bg-[#232323] pl-9 text-sm"
-              />
-            </div>
-            <Button onClick={analyzeUrl} disabled={urlAnalyzing || !urlInput.trim()} variant="outline" className="border-[#373737] bg-[#1a1a1a] text-[#b4b4b4] hover:bg-[#232323] hover:text-[#e8e8e8]">
-              {urlAnalyzing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Link className="mr-2 h-4 w-4" />}
-              Analyze URL
-            </Button>
-          </div>
-          {message && (
-            <div className="flex items-center gap-2 rounded-md border border-[#373737] bg-[#1a1a1a] px-3 py-2 text-xs text-[#b4b4b4]">
-              <AlertCircle className="h-3.5 w-3.5 text-[#d4a574]" />
-              {message}
-            </div>
-          )}
-        </div>
-      </div>
-
-      <ScrollArea className="min-h-0 flex-1">
-        <div className="mx-auto grid max-w-5xl gap-4 p-4 lg:grid-cols-[minmax(0,1fr)_320px]">
-          <div className="min-w-0 space-y-3">
-            {loading ? (
-              <div className="rounded-md border border-[#373737] bg-[#1a1a1a] p-5 text-sm text-[#b4b4b4]">
-                {loadingStage === "planning" ? "Planning research search..." : loadingStage === "searching" ? "Searching sources..." : "Ranking results..."}
-              </div>
-            ) : results.length === 0 ? (
-              <div className="rounded-md border border-[#373737] bg-[#1a1a1a] p-8 text-center text-sm text-[#787878]">
-                Search results will appear here. Saving selected results automatically extracts modeling notes and creates Markdown/BibTeX files.
-              </div>
-            ) : results.map((result, index) => (
-              <article
-                key={`${result.provider}-${result.url}-${index}`}
-                className={cn("rounded-md border bg-[#1a1a1a] p-3 transition-colors", selected.has(index) ? "border-[#d4a574]" : "border-[#373737]")}
-              >
-                <div className="flex items-start gap-3">
-                  <button
-                    onClick={() => toggleResult(index)}
-                    className={cn(
-                      "mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded border",
-                      selected.has(index) ? "border-[#d4a574] bg-[#d4a574] text-[#111111]" : "border-[#464646] text-transparent",
-                    )}
-                  >
-                    <CheckCircle2 className="h-3.5 w-3.5" />
-                  </button>
-                  <div className="min-w-0 flex-1">
-                    <div className="mb-1 flex flex-wrap items-center gap-2">
-                      <span className="rounded-full border border-[#373737] px-1.5 py-0.5 text-[10px] uppercase text-[#d4a574]">{result.provider}</span>
-                      {result.planned_kind && (
-                        <span className="rounded-full border border-[#373737] px-1.5 py-0.5 text-[10px] uppercase text-[#9fb7ff]">{result.planned_kind}</span>
-                      )}
-                      {typeof result.rank === "number" && (
-                        <span className="rounded-full border border-[#373737] px-1.5 py-0.5 text-[10px] uppercase text-[#9bd6b5]">#{result.rank}</span>
-                      )}
-                      <span className="text-[10px] uppercase text-[#787878]">{result.category}</span>
-                    </div>
-                    <h3 className="break-words text-sm font-medium text-[#e8e8e8]">{result.title || "Untitled"}</h3>
-                    {result.url && <div className="mt-1 truncate text-xs text-[#787878]">{result.url}</div>}
-                    {result.reason && <p className="mt-1 text-[11px] leading-4 text-[#ebc396]">{result.reason}</p>}
-                    {result.planned_query && result.planned_query !== query.trim() && (
-                      <div className="mt-1 truncate text-[11px] text-[#787878]">Task: {result.planned_query}</div>
-                    )}
-                    <p className="mt-2 line-clamp-4 text-xs leading-5 text-[#b4b4b4]">{result.content}</p>
-                    <div className="mt-2 flex items-center justify-end gap-2">
-                      {result.url && <CopyUrlButton url={result.url} />}
-                      <button
-                        type="button"
-                        onClick={() => sendResultToArena(result)}
-                        disabled={!canSave || arenaSendingUrl === result.url}
-                        title={canSave ? "Send to Arena as a card" : "files.write and ai.write permissions required"}
-                        className={cn(
-                          "inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-[11px] transition-colors",
-                          canSave
-                            ? "border-[#d4a574]/40 text-[#ebc396] hover:border-[#d4a574] hover:bg-[#2d241a]"
-                            : "border-[#373737] text-[#5f5f5f] cursor-not-allowed",
-                        )}
-                      >
-                        {arenaSendingUrl === result.url ? <Loader2 className="h-3 w-3 animate-spin" /> : <Network className="h-3 w-3" />}
-                        Send to Arena
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              </article>
-            ))}
-          </div>
-
-          <aside className="space-y-3">
-            <div className="rounded-md border border-[#373737] bg-[#1a1a1a] p-3">
-              <div className="text-xs font-medium text-[#e8e8e8]">Selected</div>
-              <div className="mt-1 text-2xl font-semibold text-[#ebc396]">{selectedResults.length}</div>
-              <p className="mt-2 text-xs leading-5 text-[#787878]">Save runs AI extraction, then creates a Markdown note and BibTeX file in the Research folder.</p>
-              {!canSave && (
-                <p className="mt-2 rounded-md border border-[#5f3f24] bg-[#2d241a] px-2 py-1.5 text-xs text-[#ebc396]">files.write and ai.write permissions are required.</p>
-              )}
-              <Button onClick={saveSelected} disabled={saving || selectedResults.length === 0 || !canSave} className="mt-3 w-full bg-[#d4a574] text-[#111111] hover:bg-[#ebc396]">
-                {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
-                Save & Extract
-              </Button>
-            </div>
-
-            <div className="rounded-md border border-[#373737] bg-[#1a1a1a] p-3">
-              <div className="mb-2 flex items-center justify-between">
-                <div className="text-xs font-medium text-[#e8e8e8]">Recent References</div>
-                <button onClick={() => listResearchItems(projectId).then(setItems).catch(() => setItems([]))} className="text-[11px] text-[#d4a574]">Refresh</button>
-              </div>
-              <div className="space-y-2">
-                {items.length === 0 ? (
-                  <div className="py-4 text-center text-xs text-[#787878]">No references saved.</div>
-                ) : items.slice(0, 8).map((item) => (
-                  <article key={item.id} className="rounded border border-[#2a2a2a] bg-[#111111] p-2">
-                    <div className="text-[10px] uppercase text-[#d4a574]">{item.category}</div>
-                    <h4 className="mt-1 line-clamp-2 text-xs font-medium text-[#e8e8e8]">{item.title || "Untitled"}</h4>
-                    {item.summary && <p className="mt-1 line-clamp-2 text-[11px] leading-4 text-[#787878]">{item.summary}</p>}
-                    <div className="mt-1.5 flex items-center justify-end gap-1.5">
-                      {item.url && <CopyUrlButton url={item.url} size="xs" />}
-                      <button
-                        type="button"
-                        onClick={() => sendItemToArena(item)}
-                        disabled={!canSave || arenaSendingUrl === item.id}
-                        title={canSave ? "Send to Arena as a card" : "files.write and ai.write permissions required"}
-                        className={cn(
-                          "inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[10px] transition-colors",
-                          canSave
-                            ? "border-[#d4a574]/40 text-[#ebc396] hover:border-[#d4a574] hover:bg-[#2d241a]"
-                            : "border-[#373737] text-[#5f5f5f] cursor-not-allowed",
-                        )}
-                      >
-                        {arenaSendingUrl === item.id ? <Loader2 className="h-2.5 w-2.5 animate-spin" /> : <Network className="h-2.5 w-2.5" />}
-                        Arena
-                      </button>
-                    </div>
-                  </article>
-                ))}
-              </div>
-            </div>
-          </aside>
-        </div>
-      </ScrollArea>
-    </div>
-    )
-  }
 }
 
 const DEEPSEEK_MODELS = [
