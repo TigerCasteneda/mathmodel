@@ -242,8 +242,10 @@ pub fn classify_operation(tool_name: &str) -> OperationType {
     match tool_name {
         "file_read" | "read_file" => OperationType::FileRead,
         "file_write" | "write_file" | "file_edit" => OperationType::FileWrite,
-        "web_search" | "web_search_quick" => OperationType::WebSearch,
-        "fetch_url" | "fetch_urls" => OperationType::FetchUrl,
+        "web_search" | "web_search_quick" | "search_academic" | "search_web" => {
+            OperationType::WebSearch
+        }
+        "fetch_url" | "fetch_urls" | "extract_structured" => OperationType::FetchUrl,
         "execute_command" => OperationType::ExecuteCommand,
         _ if tool_name.starts_with("tool_") || tool_name.contains("search") => OperationType::ToolCall,
         _ => OperationType::Unknown,
@@ -305,6 +307,14 @@ mod tests {
         assert_eq!(s.top_tools.len(), 2);
         assert_eq!(s.top_tools[0].tool_name, "file_read");
         assert_eq!(s.top_tools[0].count, 4);
+    }
+
+    #[test]
+    fn extract_structured_classifies_as_fetch_url() {
+        assert_eq!(
+            classify_operation("extract_structured"),
+            OperationType::FetchUrl
+        );
     }
 
     #[test]

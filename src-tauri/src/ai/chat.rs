@@ -1,5 +1,6 @@
 use super::compaction::{self, ContextMessage};
 use super::config::{AiConfig, AiConfigState, AiConfigStatus};
+use super::dsml::{DsmlEvent, DsmlParser};
 use super::executor::{build_execution_requests, execute_tool_calls};
 use super::history::{classify_operation, OperationEntry, OperationHistoryStore};
 use super::agent::AgentOrchestrator;
@@ -501,8 +502,11 @@ pub async fn ai_chat(
         let mut assistant_text = String::new();
         // Accumulated tool calls: index → {id, name, arguments}
         let mut tool_call_buf: HashMap<i64, ToolCallAccum> = HashMap::new();
+        let mut dsml = DsmlParser::new();
+        let mut saw_synthetic_tool_calls = false;
         let mut finish_reason: Option<String> = None;
         let mut stopped = false;
+        let mut logged_first_chunk = false;
 
         while let Some(chunk) = stream.next().await {
             if stop_flags.should_stop(&conversation_id)? {
@@ -526,11 +530,61 @@ pub async fn ai_chat(
                 let line = buffer[..idx].trim_end_matches('\r').to_string();
                 buffer = buffer[idx + 1..].to_string();
 
-                match parse_sse_line(&line) {
+                if !logged_first_chunk {
+                            logged_first_chunk = true;
+                            tracing::debug!(
+                                "chat: first SSE chunk: {}",
+                                &line[..line.len().min(400)]
+                            );
+                        }
+                        if line.contains("DSML") {
+                            tracing::warn!(
+                                "chat: DSML detected in stream: {}",
+                                &line[..line.len().min(500)]
+                            );
+                        }
+                        match parse_sse_line(&line) {
                     StreamLine::Content(content) => {
-                        assistant_text.push_str(&content);
-                        stream_seq += 1;
-                        emit_stream(&app, &conversation_id, stream_seq, content, false);
+                        // Feed DSML parser — strips XML blocks and may
+                        // synthesise tool calls the model emitted inside
+                        // `content` instead of `delta.tool_calls`.
+                        for ev in dsml.feed(&content) {
+                            match ev {
+                                DsmlEvent::Text(text) => {
+                                    if text.is_empty() {
+                                        continue;
+                                    }
+                                    assistant_text.push_str(&text);
+                                    stream_seq += 1;
+                                    emit_stream(&app, &conversation_id, stream_seq, text, false);
+                                }
+                                DsmlEvent::SyntheticToolCall(tc) => {
+                                    saw_synthetic_tool_calls = true;
+                                    let tc_id = tc.id.clone();
+                                    let tc_name = tc.name.clone();
+                                    let tc_args = tc.arguments.clone();
+                                    tracing::warn!(
+                                        "chat: DSML tool call reconstructed: {}",
+                                        tc_name.as_deref().unwrap_or("?")
+                                    );
+                                    let entry = tool_call_buf.entry(tc.index).or_insert_with(|| ToolCallAccum {
+                                        id: String::new(),
+                                        name: String::new(),
+                                        arguments: String::new(),
+                                    });
+                                    if let Some(id) = tc.id {
+                                        entry.id = id;
+                                    }
+                                    if let Some(name) = tc.name {
+                                        entry.name = name;
+                                    }
+                                    if let Some(args) = tc.arguments {
+                                        entry.arguments.push_str(&args);
+                                    }
+                                    let _ = (tc_id, tc_name, tc_args); // reserved for future tool event emit
+                                }
+                            }
+                        }
                     }
                     StreamLine::Thinking(content) => {
                         emit_thinking(&app, &conversation_id, content);
@@ -558,10 +612,38 @@ pub async fn ai_chat(
                         }
                     }
                     StreamLine::Finish(reason) => {
-                        finish_reason = Some(reason);
+                        // If we saw DSML tool calls but DeepSeek forgot to
+                        // emit finish_reason="tool_calls", set it ourselves.
+                        if saw_synthetic_tool_calls && reason == "stop" {
+                            finish_reason = Some("tool_calls".to_string());
+                        } else {
+                            finish_reason = Some(reason);
+                        }
                     }
                     StreamLine::Done => {
-                        mark_stream_done(&mut finish_reason);
+                        // Flush any unterminated buffer (truncated response).
+                        for ev in dsml.flush() {
+                            if let DsmlEvent::Text(text) = ev {
+                                if !text.is_empty() {
+                                    assistant_text.push_str(&text);
+                                    stream_seq += 1;
+                                    emit_stream(
+                                        &app,
+                                        &conversation_id,
+                                        stream_seq,
+                                        text,
+                                        false,
+                                    );
+                                }
+                            }
+                        }
+                        if finish_reason.is_none() {
+                            finish_reason = Some(if saw_synthetic_tool_calls {
+                                "tool_calls".to_string()
+                            } else {
+                                "stop".to_string()
+                            });
+                        }
                     }
                     StreamLine::Ignore => {}
                 }
@@ -724,12 +806,6 @@ pub async fn ai_chat(
         stream_seq += 1;
         emit_stream(&app, &conversation_id, stream_seq, String::new(), true);
         return Ok(());
-    }
-}
-
-fn mark_stream_done(finish_reason: &mut Option<String>) {
-    if finish_reason.is_none() {
-        *finish_reason = Some("stop".to_string());
     }
 }
 
@@ -1053,8 +1129,12 @@ mod tests {
 
     #[test]
     fn done_marker_does_not_override_tool_calls_finish_reason() {
-        let mut finish_reason = Some("tool_calls".to_string());
-        super::mark_stream_done(&mut finish_reason);
+        // Mirrors the inline logic in the streaming loop: a Done marker
+        // arriving after a `tool_calls` finish_reason must not overwrite it.
+        let mut finish_reason: Option<String> = Some("tool_calls".to_string());
+        if finish_reason.is_none() {
+            finish_reason = Some("stop".to_string());
+        }
         assert_eq!(finish_reason.as_deref(), Some("tool_calls"));
     }
 

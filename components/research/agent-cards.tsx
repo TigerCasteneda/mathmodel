@@ -1,6 +1,6 @@
 "use client"
 
-import { BookOpen, Database, ExternalLink, FileCode, Globe2, Loader2, Search } from "lucide-react"
+import { BookOpen, Braces, Database, ExternalLink, FileCode, Globe2, Loader2, Search } from "lucide-react"
 import { type AgentSource } from "@/lib/tauri-api"
 
 type Phase = "initial" | "running" | "complete"
@@ -18,6 +18,7 @@ const TOOL_ICON: Record<string, typeof Search> = {
   search_academic: BookOpen,
   search_web: Globe2,
   fetch_url: ExternalLink,
+  extract_structured: Braces,
 }
 
 function toolLabel(entry: ToolEntry): string {
@@ -30,6 +31,8 @@ function toolLabel(entry: ToolEntry): string {
       return `Web search · ${q}`
     case "fetch_url":
       return `Read ${q}`
+    case "extract_structured":
+      return `Extracted · ${(entry.arguments.url as string) || ""}`
     default:
       return entry.name
   }
@@ -105,6 +108,27 @@ function SourceCard({
           <ExternalLink className="h-3.5 w-3.5" />
         </a>
       </div>
+      {source.structured_data && Object.keys(source.structured_data).length > 0 && (
+        <details className="mt-2 text-xs">
+          <summary className="cursor-pointer text-[#787878] hover:text-[#b4b4b4]">
+            Extracted fields ({Object.keys(source.structured_data).length})
+          </summary>
+          <div className="mt-1 max-h-48 overflow-auto rounded border border-[#2a2a2a] bg-[#111111]/50">
+            <table className="w-full text-left">
+              <tbody>
+                {Object.entries(source.structured_data).map(([k, v]) => (
+                  <tr key={k} className="border-b border-[#2a2a2a]/50 last:border-0">
+                    <td className="px-2 py-1 font-mono text-[#787878]">{k}</td>
+                    <td className="px-2 py-1 break-all text-[#b4b4b4]">
+                      {typeof v === "string" ? v : JSON.stringify(v)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </details>
+      )}
     </div>
   )
 }

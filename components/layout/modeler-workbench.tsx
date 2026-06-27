@@ -324,6 +324,7 @@ const RESEARCH_KINDS: Array<{ value: ResearchSearchKind; label: string; icon: ty
 ]
 
 const SCRAPER_OPTIONS: Array<{ value: ResearchScraper; label: string }> = [
+  { value: "scrapling", label: "Scrapling" },
   { value: "firecrawl", label: "Firecrawl" },
   { value: "tavily", label: "Tavily" },
 ]
@@ -385,7 +386,7 @@ function ResearchSearchPanel({
   const [query, setQuery] = useState("")
   const [urlInput, setUrlInput] = useState("")
   const [kind, setKind] = useState<ResearchSearchKind>("auto")
-  const [scraper, setScraper] = useState<ResearchScraper>("firecrawl")
+  const [scraper, setScraper] = useState<ResearchScraper>("scrapling")
   const [results, setResults] = useState<NativeResearchSearchItem[]>([])
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [loading, setLoading] = useState(false)
@@ -1302,6 +1303,32 @@ export function ModelerWorkbench({ projectId }: { projectId: string }) {
   const [sessions, setSessions] = useState<SessionInfo[]>([])
   const [sessionQuery, setSessionQuery] = useState("")
   const [showArchived, setShowArchived] = useState(false)
+
+  // On mount, populate the session list. Without this the sidebar stays empty
+  // until the user clicks "+ New Chat" (which is the only call site that
+  // triggered refreshSessions() before this PR). Safe under StrictMode —
+  // refreshSessions is idempotent.
+  useEffect(() => {
+    refreshSessions()
+  }, [])
+
+  // Sync tab titles from server-side session names. Sessions auto-title from
+  // the first user message (see session.rs:144-151), but tabs are created with
+  // a placeholder name at switchToChat() time. After refreshSessions populates
+  // `sessions`, propagate the canonical name back into matching chat tabs.
+  // One-way server → tab; user renames flow through rename_session → refreshSessions.
+  useEffect(() => {
+    setTabs((prev) =>
+      prev.map((tab) => {
+        if (tab.kind !== "chat") return tab
+        const session = sessions.find((s) => s.id === tab.id)
+        if (!session) return tab
+        const next = session.name?.trim() || "New Chat"
+        if (tab.title === next) return tab
+        return { ...tab, title: next }
+      }),
+    )
+  }, [sessions])
   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>("host")
   const [remoteTree, setRemoteTree] = useState<FileTreeItem | null>(null)
   const [remoteStatus, setRemoteStatus] = useState<"idle" | "loading" | "error">("idle")
@@ -2325,9 +2352,9 @@ export function ModelerWorkbench({ projectId }: { projectId: string }) {
               </button>
               <div className="py-1">
                 {/* Active sessions */}
-                {sessions.filter((s) => s.status !== "archived").length === 0 ? (
+                {sessions.filter((s) => s.status !== "archived" && !s.name.startsWith("[Research] ")).length === 0 ? (
                   <p className="px-3 py-4 text-center text-xs text-[#787878]">No conversations yet</p>
-                ) : sessions.filter((s) => s.status !== "archived").map((s) => (
+                ) : sessions.filter((s) => s.status !== "archived" && !s.name.startsWith("[Research] ")).map((s) => (
                   <div
                     key={s.id}
                     role="button"
@@ -2368,16 +2395,16 @@ export function ModelerWorkbench({ projectId }: { projectId: string }) {
                   </div>
                 ))}
                 {/* Archived section */}
-                {sessions.some((s) => s.status === "archived") && (
+                {sessions.some((s) => s.status === "archived" && !s.name.startsWith("[Research] ")) && (
                   <>
                     <button
                       onClick={() => setShowArchived((prev) => !prev)}
                       className="mt-2 flex h-7 w-full items-center gap-2 px-3 text-left text-xs text-[#787878] hover:text-[#b4b4b4] transition-colors"
                     >
                       {showArchived ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-                      Archived ({sessions.filter((s) => s.status === "archived").length})
+                      Archived ({sessions.filter((s) => s.status === "archived" && !s.name.startsWith("[Research] ")).length})
                     </button>
-                    {showArchived && sessions.filter((s) => s.status === "archived").map((s) => (
+                    {showArchived && sessions.filter((s) => s.status === "archived" && !s.name.startsWith("[Research] ")).map((s) => (
                       <div
                         key={s.id}
                         role="button"

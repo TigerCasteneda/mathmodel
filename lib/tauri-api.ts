@@ -265,7 +265,7 @@ export async function stopGeneration(conversationId = "default"): Promise<void> 
 
 export type ResearchSearchKind = "auto" | "web" | "paper" | "dataset" | "code" | "docs"
 
-export type ResearchScraper = "firecrawl" | "tavily"
+export type ResearchScraper = "scrapling" | "firecrawl" | "tavily"
 
 export interface NativeResearchSearchItem {
   title: string
@@ -530,11 +530,18 @@ export interface AgentSource {
   content: string
   provider: string
   category: string
+  structured_data?: Record<string, unknown> | null
 }
 
 export interface AgentResultsEvent {
   request_id: string
   results: AgentSource[]
+}
+
+export interface AgentSourceUpdateEvent {
+  request_id: string
+  citation: number
+  structured_data: Record<string, unknown> | null
 }
 
 export interface AgentStreamEvent {
@@ -565,6 +572,12 @@ export function onResearchAgentResults(callback: (event: AgentResultsEvent) => v
   return listenEvent<AgentResultsEvent>("research_agent:results", callback)
 }
 
+export function onResearchAgentSourceUpdate(
+  callback: (event: AgentSourceUpdateEvent) => void,
+): () => void {
+  return listenEvent<AgentSourceUpdateEvent>("research_agent:source_update", callback)
+}
+
 export function onResearchAgentStream(callback: (event: AgentStreamEvent) => void): () => void {
   return listenEvent<AgentStreamEvent>("research_agent:stream", callback)
 }
@@ -580,10 +593,16 @@ export function onResearchAgentDone(callback: (event: AgentDoneEvent) => void): 
 export async function researchAgentRun(
   query: string,
   requestId: string,
+  conversationId: string,
   scraper: ResearchScraper = "firecrawl",
 ): Promise<void> {
   if (!isTauri()) return
-  return invoke("research_agent_run", { query, requestId, scraper })
+  return invoke("research_agent_run", {
+    query,
+    requestId,
+    conversationId,
+    scraper,
+  })
 }
 
 export async function resolvePermissionRequest(requestId: string, allow: boolean): Promise<void> {

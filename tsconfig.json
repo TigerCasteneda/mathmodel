@@ -41,6 +41,7 @@
     "claude-code",
     "peri",
     "claude-code-rust",
-    "chatwoot"
+    "chatwoot",
+    "components/**/*.test.tsx"
   ]
 }

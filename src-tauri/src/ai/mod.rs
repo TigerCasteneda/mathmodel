@@ -2,6 +2,7 @@ pub mod agent;
 pub mod chat;
 pub mod compaction;
 pub mod config;
+pub mod dsml;
 pub mod executor;
 pub mod history;
 pub mod hooks;
