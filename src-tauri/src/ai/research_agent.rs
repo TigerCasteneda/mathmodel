@@ -354,6 +354,7 @@ pub async fn research_agent_run(
     request_id: String,
     conversation_id: String,
     scraper: Option<super::research::ResearchScraper>,
+    user_id: Option<String>,
     app: AppHandle,
     config_state: State<'_, AiConfigState>,
     sidecar_state: State<'_, SidecarState>,
@@ -375,6 +376,10 @@ pub async fn research_agent_run(
         return Err("Query is empty.".to_string());
     }
     let scraper = scraper.unwrap_or_default();
+    // Scope persisted chat history to the authenticated user; falls back to
+    // "unknown" when the frontend omits the id so legacy callers still work
+    // (they just share that one bucket).
+    let session_user_id = user_id.as_deref().unwrap_or("unknown");
 
     // Note: the user message is persisted inside `execute()` (single source of
     // truth for both disk and model context). Loading it back via
@@ -386,11 +391,12 @@ pub async fn research_agent_run(
         config,
         scraper,
         conversation_id: conversation_id.clone(),
+        user_id: session_user_id.to_string(),
     };
 
     match run.execute(trimmed, &sidecar_state, &sessions, &op_history).await {
         Ok(answer) => {
-            if let Err(e) = sessions.push_assistant(&conversation_id, answer) {
+            if let Err(e) = sessions.push_assistant(session_user_id, &conversation_id, answer) {
                 tracing::warn!(
                     "research_agent: push_assistant failed for {conversation_id}: {e}"
                 );
@@ -407,7 +413,11 @@ pub async fn research_agent_run(
             let message = error.to_string();
             // Deviate from chat.rs: persist the error so the session doesn't
             // look orphaned. Only reached AFTER push_user succeeded above.
-            let _ = sessions.push_assistant(&conversation_id, format!("⚠️ {message}"));
+            let _ = sessions.push_assistant(
+                session_user_id,
+                &conversation_id,
+                format!("⚠️ {message}"),
+            );
             emit_error(&run.app, &run.request_id, &message);
             Err(message)
         }
@@ -420,6 +430,7 @@ struct AgentRun {
     config: AiConfig,
     scraper: super::research::ResearchScraper,
     conversation_id: String,
+    user_id: String,
 }
 
 impl AgentRun {
@@ -440,7 +451,11 @@ impl AgentRun {
         // via session.rs `push_chat_message`. Best-effort: a disk error doesn't kill
         // the run, but history will be missing for the model too.
         let stored_query = format!("[Research] {query}");
-        if let Err(e) = sessions.push_user(&self.conversation_id, stored_query) {
+        if let Err(e) = sessions.push_user(
+            &self.user_id,
+            &self.conversation_id,
+            stored_query,
+        ) {
             tracing::warn!(
                 "research_agent: push_user failed for {conv}: {e}",
                 conv = self.conversation_id
@@ -451,7 +466,7 @@ impl AgentRun {
         // The just-pushed user message is included via the history loader, so we
         // don't need to push it again here.
         let mut messages = vec![claude_code_rs::ChatMessage::system(system_prompt())];
-        match load_history_for_model(sessions, &self.conversation_id) {
+        match load_history_for_model(sessions, &self.user_id, &self.conversation_id) {
             Ok(history) => messages.extend(history),
             Err(e) => tracing::warn!(
                 "research_agent: history load failed for {conv}: {e}",
@@ -1054,10 +1069,11 @@ fn emit_error(app: &AppHandle, request_id: &str, message: &str) {
 /// not real answers).
 fn load_history_for_model(
     sessions: &ChatSessionStore,
+    user_id: &str,
     conversation_id: &str,
 ) -> anyhow::Result<Vec<claude_code_rs::ChatMessage>> {
     let history = sessions
-        .history(conversation_id)
+        .history(user_id, conversation_id)
         .map_err(anyhow::Error::msg)?;
     let mut out = Vec::with_capacity(history.len());
     for m in history {
@@ -1164,9 +1180,10 @@ mod tests {
         let sessions = ChatSessionStore::new(base.join("sessions"));
         let op_history = OperationHistoryStore::new(base.join("history"));
         let conv_id = "research-test-conv";
+        let user_id = "research-test-user";
 
         sessions
-            .push_user(conv_id, "[Research] what is X".to_string())
+            .push_user(user_id, conv_id, "[Research] what is X".to_string())
             .unwrap();
         op_history
             .record(OperationEntry {
@@ -1181,22 +1198,24 @@ mod tests {
             })
             .unwrap();
         sessions
-            .push_assistant(conv_id, "answer".to_string())
+            .push_assistant(user_id, conv_id, "answer".to_string())
             .unwrap();
 
-        let listed = sessions.list().unwrap();
+        let listed = sessions.list(user_id).unwrap();
         let s = listed
             .iter()
             .find(|s| s.id == conv_id)
             .expect("session exists");
         assert_eq!(s.name, "[Research] what is X");
-        let loaded = sessions.load(conv_id).unwrap();
+        let loaded = sessions.load(user_id, conv_id).unwrap();
         assert_eq!(loaded.messages.len(), 2);
         assert_eq!(loaded.messages[0].role, "user");
         assert_eq!(loaded.messages[1].role, "assistant");
         let ops = op_history.list(conv_id).unwrap();
         assert_eq!(ops.len(), 1);
         assert_eq!(ops[0].op_type, OperationType::WebSearch);
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
@@ -1240,21 +1259,26 @@ mod tests {
         let base = std::env::temp_dir().join(&unique);
         let sessions = ChatSessionStore::new(base.join("sessions"));
         let conv_id = "research-history-conv";
+        let user_id = "research-history-user";
 
         sessions
-            .push_user(conv_id, "[Research] what is X".to_string())
+            .push_user(user_id, conv_id, "[Research] what is X".to_string())
             .unwrap();
         sessions
-            .push_assistant(conv_id, "answer to X".to_string())
+            .push_assistant(user_id, conv_id, "answer to X".to_string())
             .unwrap();
         sessions
-            .push_user(conv_id, "[Research] follow-up".to_string())
+            .push_user(user_id, conv_id, "[Research] follow-up".to_string())
             .unwrap();
         sessions
-            .push_assistant(conv_id, "⚠️ AI error (502): bad gateway".to_string())
+            .push_assistant(
+                user_id,
+                conv_id,
+                "⚠️ AI error (502): bad gateway".to_string(),
+            )
             .unwrap();
 
-        let loaded = load_history_for_model(&sessions, conv_id).unwrap();
+        let loaded = load_history_for_model(&sessions, user_id, conv_id).unwrap();
         assert_eq!(loaded.len(), 3, "should drop the ⚠️ assistant message");
         assert_eq!(loaded[0].role, "user");
         assert_eq!(loaded[0].content.as_deref(), Some("what is X"));

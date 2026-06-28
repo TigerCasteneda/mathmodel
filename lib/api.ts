@@ -58,6 +58,35 @@ export function getToken() {
   return tokenStore
 }
 
+/**
+ * Decode the payload of a JWT without verifying its signature. Sufficient for
+ * reading the `sub` (user id), `email`, and `user_metadata.display_name`
+ * claims that Supabase-style auth tokens carry. We trust the issuer: the
+ * token was minted by our backend after credential validation, and any
+ * forged token would fail on the next API call regardless of what we read
+ * out of it here.
+ *
+ * Returns null on malformed input (e.g. three-part token split, base64
+ * decode failure, JSON parse failure) so callers can fall through to a
+ * generic profile instead of crashing.
+ */
+export function decodeJwtClaims(token: string | null | undefined): Record<string, unknown> | null {
+  if (!token) return null
+  try {
+    const parts = token.split(".")
+    if (parts.length < 2) return null
+    let payload = parts[1].replace(/-/g, "+").replace(/_/g, "/")
+    const pad = payload.length % 4
+    if (pad) payload += "=".repeat(4 - pad)
+    if (typeof atob !== "function") return null
+    const json = atob(payload)
+    const parsed = JSON.parse(json)
+    return typeof parsed === "object" && parsed !== null ? parsed : null
+  } catch {
+    return null
+  }
+}
+
 async function refreshAccessToken(): Promise<boolean> {
   if (!refreshTokenStore) return false
   try {

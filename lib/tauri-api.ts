@@ -261,6 +261,8 @@ export interface AiChatOptions {
   authToken?: string | null
   serverBase?: string | null
   capabilities?: string[]
+  /** Authenticated user id; scopes persisted chat sessions on disk. */
+  userId?: string | null
 }
 
 export async function aiChat(
@@ -279,6 +281,7 @@ export async function aiChat(
     authToken: options.authToken ?? null,
     serverBase,
     capabilities: options.capabilities ?? null,
+    userId: options.userId ?? null,
   })
 }
 
@@ -650,6 +653,7 @@ export async function researchAgentRun(
   requestId: string,
   conversationId: string,
   scraper: ResearchScraper = "firecrawl",
+  userId: string | null = null,
 ): Promise<void> {
   if (!isTauri()) return
   return invoke("research_agent_run", {
@@ -657,6 +661,7 @@ export async function researchAgentRun(
     requestId,
     conversationId,
     scraper,
+    userId,
   })
 }
 
@@ -762,46 +767,50 @@ export interface SessionMessage {
   tool_call_id?: string | null
 }
 
-export async function listSessions(): Promise<SessionInfo[]> {
+export async function listSessions(userId: string): Promise<SessionInfo[]> {
   if (!isTauri()) return []
-  return invoke<SessionInfo[]>("list_sessions")
+  return invoke<SessionInfo[]>("list_sessions", { userId })
 }
 
-export async function loadSession(conversationId?: string): Promise<Session> {
+export async function loadSession(
+  userId: string,
+  conversationId?: string,
+): Promise<Session> {
   if (!isTauri()) return { id: "default", name: "New Chat", created_at: 0, updated_at: 0, messages: [], status: "active" }
-  return invoke<Session>("load_session", { conversationId: conversationId || null })
+  return invoke<Session>("load_session", { userId, conversationId: conversationId || null })
 }
 
-export async function deleteSession(conversationId: string): Promise<void> {
+export async function deleteSession(userId: string, conversationId: string): Promise<void> {
   if (!isTauri()) return
-  return invoke("delete_session", { conversationId })
+  return invoke("delete_session", { userId, conversationId })
 }
 
-export async function renameSession(conversationId: string, newName: string): Promise<void> {
+export async function renameSession(userId: string, conversationId: string, newName: string): Promise<void> {
   if (!isTauri()) return
-  return invoke("rename_session", { conversationId, newName })
+  return invoke("rename_session", { userId, conversationId, newName })
 }
 
-export async function archiveSession(conversationId: string): Promise<void> {
+export async function archiveSession(userId: string, conversationId: string): Promise<void> {
   if (!isTauri()) return
-  return invoke("archive_session", { conversationId })
+  return invoke("archive_session", { userId, conversationId })
 }
 
-export async function unarchiveSession(conversationId: string): Promise<void> {
+export async function unarchiveSession(userId: string, conversationId: string): Promise<void> {
   if (!isTauri()) return
-  return invoke("unarchive_session", { conversationId })
+  return invoke("unarchive_session", { userId, conversationId })
 }
 
-export async function searchSessions(query: string): Promise<SessionInfo[]> {
+export async function searchSessions(userId: string, query: string): Promise<SessionInfo[]> {
   if (!isTauri()) return []
-  return invoke<SessionInfo[]>("search_sessions", { query })
+  return invoke<SessionInfo[]>("search_sessions", { userId, query })
 }
 
 export async function exportSession(
+  userId: string,
   conversationId: string,
 ): Promise<SessionMessage[]> {
   if (!isTauri()) return []
-  return invoke<SessionMessage[]>("export_session", { conversationId })
+  return invoke<SessionMessage[]>("export_session", { userId, conversationId })
 }
 
 // ─── Operation History ─────────────────────────────────

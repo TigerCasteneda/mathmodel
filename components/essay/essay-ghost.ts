@@ -110,6 +110,7 @@ export function createGhostFetcher(
   fileId: string,
   essayFileName?: string,
   serverBase?: string,
+  userId?: string,
 ): GhostFetcher {
   const conversationId = `${GHOST_CONVERSATION_PREFIX}${fileId}`
   // Cache context per file (loaded once)
@@ -153,6 +154,7 @@ export function createGhostFetcher(
         workspaceMode: "host",
         permissionMode: "auto",
         serverBase: serverBase,
+        userId: userId || null,
       }).catch(() => {
         stopListening()
         onDone()

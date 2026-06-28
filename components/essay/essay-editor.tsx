@@ -33,6 +33,7 @@ import { livePreview } from "@/lib/codemirror/live-preview"
 import { commentsPlugin } from "@/lib/codemirror/comments"
 import type { EssayComment } from "@/lib/codemirror/comments"
 import { ghostTextPlugin, ghostKeymap } from "@/lib/codemirror/ghost-text"
+import { useAuth } from "@/hooks/use-auth"
 import { createGhostFetcher } from "@/components/essay/essay-ghost"
 
 interface EssayEditorProps {
@@ -66,6 +67,7 @@ export function EssayEditor({
   const containerRef = useRef<HTMLDivElement>(null)
   const viewRef = useRef<EditorView | null>(null)
   const undoManagerRef = useRef<Y.UndoManager | null>(null)
+  const { user } = useAuth()
 
   useEffect(() => {
     if (!containerRef.current) return
@@ -168,7 +170,7 @@ export function EssayEditor({
     if (fileId) {
       setTimeout(() => {
         const ghost = g.get(view)
-        ghost?.configure(createGhostFetcher(fileId, essayFileName, serverBase))
+        ghost?.configure(createGhostFetcher(fileId, essayFileName, serverBase, user?.id))
       }, 0)
     }
 

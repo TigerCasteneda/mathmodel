@@ -82,6 +82,7 @@ import {
   type ChatToolCallEvent,
 } from "@/lib/tauri-api"
 import { getToken, type ProjectCapability } from "@/lib/api"
+import { useAuth } from "@/hooks/use-auth"
 import { QuestionDialog } from "@/components/chat/question-dialog"
 import { TaskPanel } from "@/components/chat/task-panel"
 import { AgentCard } from "@/components/chat/agent-card"
@@ -883,6 +884,8 @@ export function ChatPanel({
   workspaceMode?: "host" | "guest"
   capabilities?: ProjectCapability[]
 }) {
+  const { user } = useAuth()
+  const sessionUserId = user?.id ?? ""
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState("")
   const [sending, setSending] = useState(false)
@@ -933,7 +936,7 @@ export function ChatPanel({
     setBackgroundTasks([])
     setPendingPermissionRequests([])
     setStopRequestedState(false)
-    loadSession(conversationId).then((session) => {
+    loadSession(sessionUserId, conversationId).then((session) => {
       const restored = restoreMessages(session.messages || [])
       setMessages(restored)
       setLoaded(true)
@@ -1084,6 +1087,7 @@ export function ChatPanel({
         projectId,
         authToken: getToken(),
         capabilities,
+        userId: sessionUserId,
       })
     } catch {
       setMessages((prev) => appendAssistantError(prev, "Chat request failed."))

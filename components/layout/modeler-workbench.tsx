@@ -1817,32 +1817,36 @@ export function ModelerWorkbench({ projectId }: { projectId: string }) {
   const refreshSessions = async () => {
     try {
       setSessionQuery("")
-      setSessions(await listSessions())
+      setSessions(await listSessions(user?.id ?? ""))
     } catch {}
   }
 
   const handleSessionSearch = async (query: string) => {
     setSessionQuery(query)
     try {
-      setSessions(query.trim() ? await searchSessions(query) : await listSessions())
+      setSessions(
+        query.trim()
+          ? await searchSessions(user?.id ?? "", query)
+          : await listSessions(user?.id ?? ""),
+      )
     } catch {}
   }
 
   const handleRenameSession = async (sessionId: string) => {
     const name = window.prompt("Rename session:")
     if (name?.trim()) {
-      try { await renameSession(sessionId, name.trim()) } catch {}
+      try { await renameSession(user?.id ?? "", sessionId, name.trim()) } catch {}
       await refreshSessions()
     }
   }
 
   const handleArchiveSession = async (sessionId: string) => {
-    try { await archiveSession(sessionId) } catch {}
+    try { await archiveSession(user?.id ?? "", sessionId) } catch {}
     await refreshSessions()
   }
 
   const handleUnarchiveSession = async (sessionId: string) => {
-    try { await unarchiveSession(sessionId) } catch {}
+    try { await unarchiveSession(user?.id ?? "", sessionId) } catch {}
     await refreshSessions()
   }
 
@@ -1874,7 +1878,7 @@ export function ModelerWorkbench({ projectId }: { projectId: string }) {
   }
 
   const deleteChat = async (sessionId: string) => {
-    try { await deleteSession(sessionId) } catch {}
+    try { await deleteSession(user?.id ?? "", sessionId) } catch {}
     setTabs((prev) => prev.filter((t) => t.id !== sessionId))
     if (activeTab === sessionId) setActiveTab("chat")
     await refreshSessions()

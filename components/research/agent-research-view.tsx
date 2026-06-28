@@ -31,6 +31,7 @@ import {
   type ResearchScraper,
   type SessionInfo,
 } from "@/lib/tauri-api"
+import { useAuth } from "@/hooks/use-auth"
 import { ResearchMarkdown } from "@/components/research/research-markdown"
 import { SourceCard, ToolCard, type Phase, type ToolEntry } from "@/components/research/agent-cards"
 
@@ -186,6 +187,8 @@ export function AgentResearchView({
   scraper: ResearchScraper
   onSaveSources?: (sources: AgentSource[]) => void
 }) {
+  const { user } = useAuth()
+  const sessionUserId = user?.id ?? ""
   const [query, setQuery] = useState("")
   const [state, dispatch] = useReducer(reducer, initialState)
   const [selected, setSelected] = useState<Set<number>>(new Set())
@@ -211,7 +214,7 @@ export function AgentResearchView({
   //   - "+ New" click (fresh id → same as initial)
   useEffect(() => {
     let cancelled = false
-    loadSession(conversationId)
+    loadSession(sessionUserId, conversationId)
       .then((session) => {
         if (cancelled) return
         dispatch({ type: "loadHistory", turns: sessionToTurns(session.messages) })
@@ -346,6 +349,7 @@ useEffect(() => {
         requestId,
         conversationId,
         scraper,
+        sessionUserId || null,
       )
     } catch (err) {
       dispatch({ type: "error", message: err instanceof Error ? err.message : String(err) })
@@ -520,18 +524,20 @@ function ResearchLibrary({
   refreshKey: number
   disabled?: boolean
 }) {
+  const { user } = useAuth()
+  const sessionUserId = user?.id ?? ""
   const [sessions, setSessions] = useState<SessionInfo[]>([])
 
   const refresh = useCallback(async () => {
     try {
-      const all = await listSessions()
+      const all = await listSessions(sessionUserId)
       setSessions(
         all.filter((s) => (s.name || "").startsWith("[Research] ")),
       )
     } catch (err) {
       console.error("ResearchLibrary: listSessions failed:", err)
     }
-  }, [])
+  }, [sessionUserId])
 
   useEffect(() => {
     refresh()
@@ -553,7 +559,7 @@ function ResearchLibrary({
     )
     if (!ok) return
     try {
-      await deleteSession(s.id)
+      await deleteSession(sessionUserId, s.id)
       await refresh()
     } catch (err) {
       console.error("ResearchLibrary: deleteSession failed:", err)
@@ -573,7 +579,7 @@ function ResearchLibrary({
     const trimmed = next.trim()
     if (!trimmed || trimmed === currentDisplay) return
     try {
-      await renameSession(s.id, `[Research] ${trimmed}`)
+      await renameSession(sessionUserId, s.id, `[Research] ${trimmed}`)
       await refresh()
     } catch (err) {
       console.error("ResearchLibrary: renameSession failed:", err)

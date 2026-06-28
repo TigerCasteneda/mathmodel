@@ -382,6 +382,7 @@ pub async fn ai_chat(
     auth_token: Option<String>,
     server_base: Option<String>,
     capabilities: Option<Vec<String>>,
+    user_id: Option<String>,
     app: AppHandle,
     _agent_state: State<'_, AgentState>,
     config_state: State<'_, AiConfigState>,
@@ -397,6 +398,11 @@ pub async fn ai_chat(
 ) -> Result<(), String> {
     let conversation_id = conversation_id.unwrap_or_else(|| "default".to_string());
     stop_flags.clear(&conversation_id)?;
+    // Resolve the user id once. Frontend passes it from useAuth() (decoded
+    // out of the Supabase JWT). When it's missing we fall back to a
+    // shared bucket so older clients keep working — they're just stored
+    // alongside the "unknown" pseudo-user.
+    let session_user_id = user_id.as_deref().unwrap_or("unknown");
     let config = config_state.get()?;
     if config
         .api_key
@@ -407,7 +413,7 @@ pub async fn ai_chat(
         return Err("API key is not configured".to_string());
     }
 
-    sessions.push_user(&conversation_id, message.clone())?;
+    sessions.push_user(session_user_id, &conversation_id, message.clone())?;
     let work_dir = _agent_state
         .work_dir
         .lock()
@@ -467,7 +473,7 @@ pub async fn ai_chat(
         message: ChatMessage::system(&system_text),
         timestamp: chrono::Utc::now().timestamp(),
     }];
-    context_messages.extend(sessions.history_with_timestamps(&conversation_id)?);
+    context_messages.extend(sessions.history_with_timestamps(session_user_id, &conversation_id)?);
     let mut stream_seq = 0u64;
 
     loop {
@@ -656,7 +662,7 @@ pub async fn ai_chat(
 
         if stopped {
             stop_flags.clear(&conversation_id)?;
-            sessions.push_assistant(&conversation_id, assistant_text)?;
+            sessions.push_assistant(session_user_id, &conversation_id, assistant_text)?;
             stream_seq += 1;
             emit_stream(&app, &conversation_id, stream_seq, String::new(), true);
             return Ok(());
@@ -786,7 +792,7 @@ pub async fn ai_chat(
             for persisted in
                 build_persisted_tool_turn_messages(&tool_calls, &persisted_tool_results)
             {
-                sessions.push_chat_message(&conversation_id, persisted)?;
+                sessions.push_chat_message(session_user_id, &conversation_id, persisted)?;
             }
             if stop_flags.should_stop(&conversation_id)? {
                 stop_flags.clear(&conversation_id)?;
@@ -802,7 +808,7 @@ pub async fn ai_chat(
 
         // Normal completion (no tool calls, or finish_reason is "stop")
         stop_flags.clear(&conversation_id)?;
-        sessions.push_assistant(&conversation_id, assistant_text)?;
+        sessions.push_assistant(session_user_id, &conversation_id, assistant_text)?;
         stream_seq += 1;
         emit_stream(&app, &conversation_id, stream_seq, String::new(), true);
         return Ok(());
