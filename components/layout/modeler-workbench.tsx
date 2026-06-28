@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react"
 import { useRouter } from "next/navigation"
-import { AlertCircle, Archive, BookOpen, Check, CheckCircle2, ChevronDown, ChevronRight, Copy, Database, FileCode, FileImage, FileText, Folder, FolderOpen, Globe2, Library, Link, Loader2, LogOut, MessageSquare, Network, MonitorUp, MonitorX, PencilLine, Play, RefreshCw, RotateCcw, Save, Search, Settings, SidebarIcon, Sparkles, Trash2 } from "lucide-react"
+import { AlertCircle, Archive, BookOpen, Check, CheckCircle2, ChevronDown, ChevronRight, Copy, Database, FileCode, FileImage, FileText, Folder, FolderOpen, Globe2, Library, Link, Loader2, LogOut, MessageSquare, Network, MonitorUp, MonitorX, PencilLine, Play, RefreshCw, RotateCcw, Save, Search, Settings, SidebarIcon, Sparkles, Trash2, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { ScrollArea } from "@/components/ui/scroll-area"
@@ -2336,12 +2336,6 @@ export function ModelerWorkbench({ projectId }: { projectId: string }) {
               </div>
             </>
           )}
-          {activeActivity === "research" && (
-            <button className="flex h-8 w-full items-center gap-2 px-3 text-left text-xs text-[#e8e8e8]" onClick={openResearchTab}>
-              <BookOpen className="h-4 w-4 text-[#d4a574]" />
-              Library
-            </button>
-          )}
           {activeActivity === "arena" && (
             <button
               onClick={() => setActiveActivity("knowledge")}
@@ -2418,7 +2412,7 @@ export function ModelerWorkbench({ projectId }: { projectId: string }) {
                       className="ml-1 hidden h-4 w-4 items-center justify-center rounded text-[#787878] hover:bg-[#373737] hover:text-[#f44336] group-hover:flex"
                       onClick={(e) => { e.stopPropagation(); deleteChat(s.id) }}
                     >
-                      ✕
+                      <X className="h-3 w-3" />
                     </button>
                   </div>
                 ))}
@@ -2452,7 +2446,7 @@ export function ModelerWorkbench({ projectId }: { projectId: string }) {
                           className="ml-1 hidden h-4 w-4 items-center justify-center rounded text-[#787878] hover:bg-[#373737] hover:text-[#f44336] group-hover:flex"
                           onClick={(e) => { e.stopPropagation(); deleteChat(s.id) }}
                         >
-                          ✕
+                          <X className="h-3 w-3" />
                         </button>
                       </div>
                     ))}
@@ -2494,7 +2488,7 @@ export function ModelerWorkbench({ projectId }: { projectId: string }) {
                   })
                 }}
               >
-                ✕
+                <X className="h-3 w-3" />
               </span>
             </button>
           ))}
@@ -2608,7 +2602,7 @@ export function ModelerWorkbench({ projectId }: { projectId: string }) {
                       aria-label="Dismiss compile error"
                       className="shrink-0 rounded px-1 text-[#ffb4a8] hover:bg-[#3d2424] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[#5f2424]"
                     >
-                      ✕
+                      <X className="h-3 w-3" />
                     </button>
                   </div>
                   <pre className="max-h-40 overflow-auto whitespace-pre-wrap font-mono text-[10px] leading-4 text-[#e0a59c]">{latexError.log}</pre>
