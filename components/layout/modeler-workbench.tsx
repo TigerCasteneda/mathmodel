@@ -179,22 +179,31 @@ type SyncManifestEntry = {
 
 type SyncManifest = Record<string, SyncManifestEntry>
 
-function syncManifestKey(projectId: string) {
-  return `modeler:host-sync-manifest:${projectId}`
+// localStorage keys for project-scoped preferences are namespaced by
+// user_id so two accounts on the same browser (or sharing a project)
+// don't see each other's workspace mode, auto-sync toggle, host
+// folder path, or sync manifest. The path is the most sensitive —
+// it leaks a real on-disk location like `C:\Users\alice\...`.
+function syncManifestKey(projectId: string, userId: string) {
+  return `modeler:host-sync-manifest:${userId}:${projectId}`
 }
 
-function hostFolderKey(projectId: string) {
-  return `modeler:host-folder:${projectId}`
+function hostFolderKey(projectId: string, userId: string) {
+  return `modeler:host-folder:${userId}:${projectId}`
 }
 
-function autoSyncKey(projectId: string) {
-  return `modeler:auto-sync:${projectId}`
+function autoSyncKey(projectId: string, userId: string) {
+  return `modeler:auto-sync:${userId}:${projectId}`
 }
 
-function loadSyncManifest(projectId: string): SyncManifest {
+function workspaceModeKey(projectId: string, userId: string) {
+  return `modeler:workspace-mode:${userId}:${projectId}`
+}
+
+function loadSyncManifest(projectId: string, userId: string): SyncManifest {
   if (typeof window === "undefined") return {}
   try {
-    const raw = localStorage.getItem(syncManifestKey(projectId))
+    const raw = localStorage.getItem(syncManifestKey(projectId, userId))
     if (!raw) return {}
     const parsed = JSON.parse(raw)
     return parsed && typeof parsed === "object" ? parsed as SyncManifest : {}
@@ -203,9 +212,9 @@ function loadSyncManifest(projectId: string): SyncManifest {
   }
 }
 
-function saveSyncManifest(projectId: string, manifest: SyncManifest) {
+function saveSyncManifest(projectId: string, userId: string, manifest: SyncManifest) {
   if (typeof window === "undefined") return
-  localStorage.setItem(syncManifestKey(projectId), JSON.stringify(manifest))
+  localStorage.setItem(syncManifestKey(projectId, userId), JSON.stringify(manifest))
 }
 
 function normalizePathKey(path: string) {
@@ -1421,24 +1430,24 @@ export function ModelerWorkbench({ projectId }: { projectId: string }) {
   }, [projectId])
 
   useEffect(() => {
-    const stored = localStorage.getItem(`modeler:workspace-mode:${projectId}`)
+    const stored = localStorage.getItem(workspaceModeKey(projectId, user?.id ?? ""))
     if (stored === "host" || stored === "guest") setWorkspaceMode(stored)
   }, [projectId])
 
   useEffect(() => {
-    localStorage.setItem(`modeler:workspace-mode:${projectId}`, workspaceMode)
+    localStorage.setItem(workspaceModeKey(projectId, user?.id ?? ""), workspaceMode)
   }, [projectId, workspaceMode])
 
   useEffect(() => {
     if (typeof window === "undefined") return
     setHostFolderMissing(false)
-    const enabled = localStorage.getItem(autoSyncKey(projectId)) === "true"
+    const enabled = localStorage.getItem(autoSyncKey(projectId, user?.id ?? "")) === "true"
     setAutoSyncEnabled(enabled)
   }, [projectId])
 
   useEffect(() => {
     if (!canSyncWorkspace || workspaceMode !== "host" || !autoSyncEnabled) return
-    const storedPath = localStorage.getItem(hostFolderKey(projectId))
+    const storedPath = localStorage.getItem(hostFolderKey(projectId, user?.id ?? ""))
     if (!storedPath || restoredHostFolderRef.current === `${projectId}:${storedPath}`) return
     restoredHostFolderRef.current = `${projectId}:${storedPath}`
     tauriAgent.changeDir(storedPath)
@@ -1454,7 +1463,7 @@ export function ModelerWorkbench({ projectId }: { projectId: string }) {
 
   useEffect(() => {
     if (typeof window === "undefined") return
-    localStorage.setItem(autoSyncKey(projectId), autoSyncEnabled ? "true" : "false")
+    localStorage.setItem(autoSyncKey(projectId, user?.id ?? ""), autoSyncEnabled ? "true" : "false")
   }, [autoSyncEnabled, projectId])
 
   const refreshRemoteTree = async () => {
@@ -1483,7 +1492,7 @@ export function ModelerWorkbench({ projectId }: { projectId: string }) {
 
     try {
       const remoteItems = await listProjectTree(projectId)
-      const manifest = loadSyncManifest(projectId)
+      const manifest = loadSyncManifest(projectId, user?.id ?? "")
       const nextManifest: SyncManifest = { ...manifest }
       const desiredRemoteIds = new Set<string>()
       const reservedRootNames = new Set(["Code", "Paper", "Research"])
@@ -1748,7 +1757,7 @@ export function ModelerWorkbench({ projectId }: { projectId: string }) {
           stats.failed += 1
         }
       }
-      saveSyncManifest(projectId, nextManifest)
+      saveSyncManifest(projectId, user?.id ?? "", nextManifest)
       setSyncStats(stats)
       await refreshRemoteTree()
     } catch {
@@ -1798,8 +1807,8 @@ export function ModelerWorkbench({ projectId }: { projectId: string }) {
     setSyncStats(null)
     const path = await tauriAgent.openFolder()
     if (path) {
-      localStorage.setItem(hostFolderKey(projectId), path)
-      localStorage.setItem(autoSyncKey(projectId), "true")
+      localStorage.setItem(hostFolderKey(projectId, user?.id ?? ""), path)
+      localStorage.setItem(autoSyncKey(projectId, user?.id ?? ""), "true")
       setHostFolderMissing(false)
     }
     setPendingAutoSync(Boolean(path))
@@ -1808,8 +1817,8 @@ export function ModelerWorkbench({ projectId }: { projectId: string }) {
   const syncCurrentHostTree = async () => {
     if (!tauriAgent.fileTree || syncing || !canSyncWorkspace) return
     setAutoSyncEnabled(true)
-    localStorage.setItem(autoSyncKey(projectId), "true")
-    if (tauriAgent.workDir) localStorage.setItem(hostFolderKey(projectId), tauriAgent.workDir)
+    localStorage.setItem(autoSyncKey(projectId, user?.id ?? ""), "true")
+    if (tauriAgent.workDir) localStorage.setItem(hostFolderKey(projectId, user?.id ?? ""), tauriAgent.workDir)
     await syncHostToRemote(tauriAgent.fileTree)
     setLastAutoSyncSignature(localTreeSignature)
   }
@@ -1912,7 +1921,7 @@ export function ModelerWorkbench({ projectId }: { projectId: string }) {
     const isCloudNode = Boolean(file.id) && (file.zone === "research" || file.zone === "paper")
     const remoteMode = workspaceMode === "guest" || isCloudNode
     const hostManifestEntry = workspaceMode === "host" && !isCloudNode
-      ? loadSyncManifest(projectId)[pathKey]
+      ? loadSyncManifest(projectId, user?.id ?? "")[pathKey]
       : undefined
     const remoteContent = remoteMode && file.id
       ? await getProjectFileContent(projectId, file.id)
@@ -2099,7 +2108,7 @@ export function ModelerWorkbench({ projectId }: { projectId: string }) {
       const remoteContent = await getProjectFileContent(projectId, conflict.fileId)
       const remoteHash = hashContent(remoteContent.content)
       const localContent = conflict.localDeleted ? null : await tauriAgent.openFile(conflict.path)
-      const manifest = loadSyncManifest(projectId)
+      const manifest = loadSyncManifest(projectId, user?.id ?? "")
       manifest[conflict.path] = {
         fileId: conflict.fileId,
         remoteUpdatedAt: remoteContent.updated_at,
@@ -2107,7 +2116,7 @@ export function ModelerWorkbench({ projectId }: { projectId: string }) {
         remoteHash,
         localDeleted: localContent == null,
       }
-      saveSyncManifest(projectId, manifest)
+      saveSyncManifest(projectId, user?.id ?? "", manifest)
       removeSyncConflict(conflict)
       await refreshRemoteTree()
     } catch (error) {
@@ -2119,12 +2128,12 @@ export function ModelerWorkbench({ projectId }: { projectId: string }) {
     setConflictError(null)
     try {
       const localContent = await tauriAgent.openFile(conflict.path)
-      const manifest = loadSyncManifest(projectId)
+      const manifest = loadSyncManifest(projectId, user?.id ?? "")
 
       if (localContent == null) {
         await deleteProjectFile(projectId, conflict.fileId)
         delete manifest[conflict.path]
-        saveSyncManifest(projectId, manifest)
+        saveSyncManifest(projectId, user?.id ?? "", manifest)
         removeSyncConflict(conflict)
         setSyncStats((prev) => prev ? { ...prev, deleted: prev.deleted + 1 } : prev)
         await refreshRemoteTree()
@@ -2141,7 +2150,7 @@ export function ModelerWorkbench({ projectId }: { projectId: string }) {
         remoteHash: localHash,
         localDeleted: false,
       }
-      saveSyncManifest(projectId, manifest)
+      saveSyncManifest(projectId, user?.id ?? "", manifest)
       removeSyncConflict(conflict)
       setSyncStats((prev) => prev ? { ...prev, updated: prev.updated + 1 } : prev)
       await refreshRemoteTree()

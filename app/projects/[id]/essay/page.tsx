@@ -14,12 +14,17 @@ import type { AwarenessUserInfo } from "@/lib/codemirror/awareness"
 import { isTauri, listFiles, readFile } from "@/lib/tauri-api"
 import { getProjectFileContent, getToken } from "@/lib/api"
 import type { EssayComment } from "@/lib/codemirror/comments"
+import { useAuth } from "@/hooks/use-auth"
 
 type SyncState = "synced" | "saving" | "offline"
 type SidebarTab = "files" | "comments"
 
-function getOrCreateUserInfo(): AwarenessUserInfo {
-  const key = "essay-user-info"
+function essayUserInfoKey(userId: string) {
+  return userId ? `essay-user-info:${userId}` : "essay-user-info:anon"
+}
+
+function getOrCreateUserInfo(userId: string, displayName: string): AwarenessUserInfo {
+  const key = essayUserInfoKey(userId)
   if (typeof window !== "undefined") {
     const stored = localStorage.getItem(key)
     if (stored) {
@@ -35,8 +40,10 @@ function getOrCreateUserInfo(): AwarenessUserInfo {
     "#a78bfa", "#f472b6", "#38bdf8", "#fb923c",
   ]
   const color = colors[Math.floor(Math.random() * colors.length)]
+  // Use the real auth display name so collaborators see who is
+  // editing, not a generic "User" string.
   const info: AwarenessUserInfo = {
-    name: "User",
+    name: displayName || "User",
     color,
     colorLight: color + "33",
   }
@@ -50,6 +57,8 @@ function EssayPageContent() {
   const params = useParams<{ id: string }>()
   const searchParams = useSearchParams()
   const router = useRouter()
+  const { user } = useAuth()
+  const sessionUserId = user?.id ?? ""
 
   const projectId = params.id
   const fileId = searchParams.get("file")
@@ -72,7 +81,7 @@ function EssayPageContent() {
   const [notFound, setNotFound] = useState(false)
   const [sidebarTab, setSidebarTab] = useState<SidebarTab>("files")
 
-  const userInfo = getOrCreateUserInfo()
+  const userInfo = getOrCreateUserInfo(sessionUserId, user?.display_name ?? "")
   const token = getToken()
 
   // Load file content and metadata before mounting editor

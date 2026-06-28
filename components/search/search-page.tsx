@@ -18,10 +18,16 @@ import {
   type SearchResultsEvent,
   type SearchQuestionsEvent,
 } from "@/lib/tauri-api"
+import { useAuth } from "@/hooks/use-auth"
 
 // ─── storage ───
+//
+// History is keyed by user_id so two accounts sharing the same
+// browser don't see each other's search queries (which can be
+// sensitive — "company X financials", "competitor Y patents",
+// etc.). When the auth profile is missing we fall back to a
+// session-local "anon" bucket rather than the old shared key.
 
-const HISTORY_KEY = "search_history"
 const MAX_HISTORY = 20
 
 interface HistoryEntry {
@@ -29,20 +35,24 @@ interface HistoryEntry {
   timestamp: number
 }
 
-function loadHistory(): HistoryEntry[] {
+function historyKey(userId: string) {
+  return userId ? `search_history:${userId}` : "search_history:anon"
+}
+
+function loadHistory(userId: string): HistoryEntry[] {
   if (typeof window === "undefined") return []
   try {
-    const raw = localStorage.getItem(HISTORY_KEY)
+    const raw = localStorage.getItem(historyKey(userId))
     return raw ? (JSON.parse(raw) as HistoryEntry[]) : []
   } catch {
     return []
   }
 }
 
-function saveHistory(query: string) {
-  const history = loadHistory().filter((e) => e.query !== query)
+function saveHistory(userId: string, query: string) {
+  const history = loadHistory(userId).filter((e) => e.query !== query)
   history.unshift({ query, timestamp: Date.now() })
-  localStorage.setItem(HISTORY_KEY, JSON.stringify(history.slice(0, MAX_HISTORY)))
+  localStorage.setItem(historyKey(userId), JSON.stringify(history.slice(0, MAX_HISTORY)))
 }
 
 // ─── citation parser ───
@@ -184,6 +194,8 @@ function SearchResultCard({ result, index }: { result: SearchResultItem; index: 
 // ─── main page ───
 
 export default function SearchPage() {
+  const { user } = useAuth()
+  const sessionUserId = user?.id ?? ""
   const [query, setQuery] = useState("")
   const [phase, setPhase] = useState<"initial" | "searching" | "streaming" | "complete">("initial")
   const [answer, setAnswer] = useState("")
@@ -196,7 +208,7 @@ export default function SearchPage() {
   const currentSearchIdRef = useRef<string | null>(null)
 
   useEffect(() => {
-    setHistory(loadHistory())
+    setHistory(loadHistory(sessionUserId))
   }, [])
 
   useEffect(() => {
@@ -252,8 +264,8 @@ export default function SearchPage() {
     setError("")
     setPhase("searching")
 
-    saveHistory(q)
-    setHistory(loadHistory())
+    saveHistory(sessionUserId, q)
+    setHistory(loadHistory(sessionUserId))
 
     try {
       await aiSearch(q, requestId)
