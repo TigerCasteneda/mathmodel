@@ -1,7 +1,7 @@
 "use client"
 
 import { BookOpen, Braces, Database, ExternalLink, FileCode, Globe2, Loader2, Search } from "lucide-react"
-import { type AgentSource } from "@/lib/tauri-api"
+import { openUrl, type AgentSource } from "@/lib/tauri-api"
 
 type Phase = "initial" | "running" | "complete"
 
@@ -89,6 +89,13 @@ function SourceCard({
             href={source.url}
             target="_blank"
             rel="noopener noreferrer"
+            onClick={(e) => {
+              // Hand off to the system browser via tauri-plugin-shell so the
+              // webview doesn't try to navigate itself. href + target are
+              // kept so right-click "Open in new tab" still works in web dev.
+              e.preventDefault()
+              void openUrl(source.url)
+            }}
             className="text-sm font-medium text-[#d4a574] underline underline-offset-2"
           >
             {source.title}
@@ -99,14 +106,15 @@ function SourceCard({
           </div>
           <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-[#b4b4b4]">{source.content}</p>
         </div>
-        <a
-          href={source.url}
-          target="_blank"
-          rel="noopener noreferrer"
+        <button
+          type="button"
+          onClick={() => openUrl(source.url)}
+          title="Open in browser"
+          aria-label={`Open ${source.title} in browser`}
           className="ml-auto shrink-0 rounded p-1 text-[#555] hover:bg-[#1a1a1a] hover:text-[#e8e8e8]"
         >
           <ExternalLink className="h-3.5 w-3.5" />
-        </a>
+        </button>
       </div>
       {source.structured_data && Object.keys(source.structured_data).length > 0 && (
         <details className="mt-2 text-xs">

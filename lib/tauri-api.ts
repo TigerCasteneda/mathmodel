@@ -180,6 +180,27 @@ export async function getWorkDir(): Promise<string | null> {
   return invoke<string | null>("get_work_dir")
 }
 
+/**
+ * Open a URL in the system default browser. In Tauri, this routes through
+ * tauri-plugin-shell so the OS picks the handler (browser, pdf viewer, etc.).
+ * In a plain browser context, falls back to a noopener new-tab open.
+ *
+ * The caller should still keep an `href` on the link so right-click →
+ * "Open in new tab" still works in dev; this helper exists for left-click
+ * and explicit "open" actions.
+ */
+export async function openUrl(url: string): Promise<void> {
+  if (!url) return
+  if (isTauri()) {
+    const { open } = await import("@tauri-apps/plugin-shell")
+    await open(url)
+    return
+  }
+  if (typeof window !== "undefined") {
+    window.open(url, "_blank", "noopener,noreferrer")
+  }
+}
+
 export async function setAiConfig(config: AiConfig): Promise<void> {
   if (!isTauri()) return
   return invoke("set_ai_config", { config })

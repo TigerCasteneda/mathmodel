@@ -20,6 +20,7 @@ import {
   getAiConfigStatus,
   getSidecarStatus,
   listSessions,
+  openUrl,
   renameSession,
   searchSessions,
   unarchiveSession,
@@ -782,7 +783,16 @@ function ResearchSearchPanel({
                           <span className="text-[10px] uppercase text-[#787878]">{result.category}</span>
                         </div>
                         <h3 className="break-words text-sm font-medium text-[#e8e8e8]">{result.title || "Untitled"}</h3>
-                        {result.url && <div className="mt-1 truncate text-xs text-[#787878]">{result.url}</div>}
+                        {result.url && (
+                          <button
+                            type="button"
+                            onClick={() => openUrl(result.url)}
+                            title={result.url}
+                            className="mt-1 block w-full truncate text-left text-xs text-[#787878] underline-offset-2 hover:text-[#d4a574] hover:underline"
+                          >
+                            {result.url}
+                          </button>
+                        )}
                         {result.reason && <p className="mt-1 text-[11px] leading-4 text-[#ebc396]">{result.reason}</p>}
                         {result.planned_query && result.planned_query !== query.trim() && (
                           <div className="mt-1 truncate text-[11px] text-[#787878]">Task: {result.planned_query}</div>
