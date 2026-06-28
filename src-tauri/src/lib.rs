@@ -196,18 +196,20 @@ async fn list_skills(
 
 #[tauri::command]
 async fn list_plugins(
+    user_id: String,
     plugins: State<'_, ai::plugins::PluginManager>,
 ) -> Result<Vec<ai::plugins::PluginInfo>, String> {
-    Ok(plugins.list().await)
+    Ok(plugins.list(&user_id).await)
 }
 
 #[tauri::command]
 async fn toggle_plugin(
+    user_id: String,
     name: String,
     enabled: bool,
     plugins: State<'_, ai::plugins::PluginManager>,
 ) -> Result<bool, String> {
-    plugins.toggle(&name, enabled).await;
+    plugins.toggle(&user_id, &name, enabled).await;
     Ok(enabled)
 }
 
