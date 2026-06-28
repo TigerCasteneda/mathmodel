@@ -60,6 +60,7 @@ function CollaborativeCodeEditor({
   const docRef = useRef<Y.Doc | null>(null)
   const editorRef = useRef<any>(null)
   const textRef = useRef<Y.Text | null>(null)
+  const observerRef = useRef<(() => void) | null>(null)
 
   useEffect(() => {
     editorRef.current?.updateOptions({ readOnly: readOnly || collaborative.readOnly })
@@ -72,9 +73,43 @@ function CollaborativeCodeEditor({
   // after destroy and Yjs warns "Tried to remove event handler that doesn't
   // exist" when its stale observer is detached.
   const cancelBindRef = useRef<(() => void) | null>(null)
+
+  // Tear down the active Yjs stack exactly once. Idempotent: refs are read into
+  // locals and nulled BEFORE destroy() runs, so a second invocation (StrictMode
+  // double-cleanup, or a fileId change racing an unmount) finds nothing to
+  // destroy and can't double-unobserve — which is what produced the Yjs
+  // "Tried to remove event handler that doesn't exist" warning.
+  const teardown = useCallback(() => {
+    cancelBindRef.current?.()
+    cancelBindRef.current = null
+
+    const text = textRef.current
+    const observer = observerRef.current
+    const binding = bindingRef.current
+    const provider = providerRef.current
+    const doc = docRef.current
+
+    textRef.current = null
+    observerRef.current = null
+    bindingRef.current = null
+    providerRef.current = null
+    docRef.current = null
+
+    if (text && observer) {
+      try { text.unobserve(observer) } catch { /* noop */ }
+    }
+    try { binding?.destroy() } catch { /* noop */ }
+    try { provider?.destroy() } catch { /* noop */ }
+    try { doc?.destroy() } catch { /* noop */ }
+  }, [])
+
   const bindYjs = useCallback((editor: any) => {
     editorRef.current = editor
     editor.updateOptions({ readOnly: readOnly || collaborative.readOnly })
+
+    // Defensively tear down any binding still attached from a prior mount
+    // before building a new one, so observers never accumulate.
+    teardown()
 
     let cancelled = false
     cancelBindRef.current = () => { cancelled = true }
@@ -86,6 +121,25 @@ function CollaborativeCodeEditor({
       const text = doc.getText("content")
       const provider = new YjsWebsocketProvider(doc, collaborative.fileId)
       const binding = new yMonaco.MonacoBinding(text, model, new Set([editor]), null)
+      // Make binding.destroy() idempotent. y-monaco registers an
+      // onWillDispose handler on the Monaco model that auto-destroys the
+      // binding whenever the model goes away (StrictMode double-mount,
+      // editor swap, unmount). Our teardown also calls binding.destroy().
+      // The second call would re-unobserve observers that are already
+      // gone, and yjs logs "[yjs] Tried to remove event handler that
+      // doesn't exist." via console.error — which Next.js dev mode
+      // surfaces as a Console Error and the surrounding try/catch can't
+      // catch (it's not a throw). Guarding with a one-shot flag keeps
+      // both paths safe.
+      {
+        let destroyed = false
+        const originalDestroy = binding.destroy.bind(binding)
+        binding.destroy = () => {
+          if (destroyed) return
+          destroyed = true
+          originalDestroy()
+        }
+      }
 
       docRef.current = doc
       textRef.current = text
@@ -97,24 +151,15 @@ function CollaborativeCodeEditor({
         onChange?.(content)
         collaborative.onDocumentChange?.(content)
       }
+      observerRef.current = emitChange
       text.observe(emitChange)
       emitChange()
     })
-  }, [collaborative.fileId])
+  }, [collaborative.fileId, teardown])
 
   useEffect(() => {
-    return () => {
-      cancelBindRef.current?.()
-      cancelBindRef.current = null
-      try { bindingRef.current?.destroy() } catch { /* noop */ }
-      try { providerRef.current?.destroy() } catch { /* noop */ }
-      try { docRef.current?.destroy() } catch { /* noop */ }
-      bindingRef.current = null
-      providerRef.current = null
-      docRef.current = null
-      textRef.current = null
-    }
-  }, [collaborative.fileId])
+    return () => teardown()
+  }, [collaborative.fileId, teardown])
 
   return (
     <MonacoEditor
