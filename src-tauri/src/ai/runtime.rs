@@ -574,7 +574,7 @@ impl ModelerAiRuntime {
         let permission =
             match self
                 .permission_store
-                .evaluate_tool_call(self.permission_mode, name, &arguments)
+                .evaluate_tool_call(&self.user_id, self.permission_mode, name, &arguments)
             {
                 Ok(permission) => permission,
                 Err(error) => {
@@ -616,7 +616,7 @@ impl ModelerAiRuntime {
                 .emit("chat:permission_request", prompt.clone());
             let approved = match self
                 .permission_store
-                .wait_for_resolution(prompt.clone(), Duration::from_secs(30))
+                .wait_for_resolution(&self.user_id, prompt.clone(), Duration::from_secs(30))
                 .await
             {
                 Ok(allow) => allow,

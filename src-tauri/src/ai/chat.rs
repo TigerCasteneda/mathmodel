@@ -428,7 +428,7 @@ pub async fn ai_chat(
         server_base,
         capabilities,
     );
-    let configured_permission_mode = permissions.configured_mode()?;
+    let configured_permission_mode = permissions.configured_mode(session_user_id)?;
     let permission_mode =
         PermissionMode::from_option(permission_mode.or(configured_permission_mode));
     let runtime = ModelerAiRuntime::new(

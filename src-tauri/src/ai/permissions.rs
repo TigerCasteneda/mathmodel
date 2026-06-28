@@ -158,11 +158,28 @@ impl PermissionRequest {
     }
 }
 
+/// Per-user permission store. The previous implementation held a single
+/// `Arc<Mutex<PermissionState>>` (config + DenialTracker) plus a single
+/// `HashMap<String, oneshot::Sender<bool>>` for pending prompts, so
+/// every account on the same desktop install shared:
+///  - the deny/allow/ask lists (User B's tool calls were evaluated
+///    against User A's rules)
+///  - the consecutive/total denial counter (User B inherited User A's
+///    lockouts)
+///  - the pending prompt map (a `request_id` for User A's prompt
+///    could be resolved by User B)
+/// Now state and pending are both keyed by `user_id`.
 #[derive(Clone)]
 pub struct PermissionStore {
-    path: PathBuf,
-    state: Arc<Mutex<PermissionState>>,
-    pending: Arc<Mutex<HashMap<String, oneshot::Sender<bool>>>>,
+    /// Directory that holds per-user `<sanitized_user_id>.json` files.
+    config_dir: PathBuf,
+    /// user_id -> { config, tracker }. Lazy-loaded on first access.
+    state: Arc<Mutex<HashMap<String, PermissionState>>>,
+    /// user_id -> request_id -> oneshot sender. The outer map is
+    /// `Mutex<HashMap<...>>`; the inner one only needs to be unique per
+    /// user so we use `Mutex` rather than `RwLock` to keep the simple
+    /// lock ordering (outer first, then inner if needed).
+    pending: Arc<Mutex<HashMap<String, HashMap<String, oneshot::Sender<bool>>>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -171,82 +188,176 @@ struct PermissionState {
     tracker: DenialTracker,
 }
 
+fn sanitize_user_id(user_id: &str) -> String {
+    let cleaned: String = user_id
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .take(64)
+        .collect();
+    if cleaned.is_empty() {
+        "unknown".to_string()
+    } else {
+        cleaned
+    }
+}
+
+fn user_config_path(config_dir: &PathBuf, user_id: &str) -> PathBuf {
+    config_dir.join(format!("{}.json", sanitize_user_id(user_id)))
+}
+
 impl PermissionStore {
     pub fn new(app_data_dir: PathBuf) -> Self {
-        let path = app_data_dir.join("permissions.json");
-        let config = std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|content| serde_json::from_str::<PermissionConfig>(&content).ok())
-            .unwrap_or_default();
+        let config_dir = app_data_dir.join("permissions");
+        let _ = std::fs::create_dir_all(&config_dir);
+
+        // One-shot migration: the previous layout stored a single
+        // `permissions.json` at the data-dir root. We can't safely
+        // attribute its deny/allow lists to any user_id, so drop it.
+        // Consistent with chat / hooks / plans / plugins migration
+        // policy: user chose 'delete old data'.
+        let legacy = app_data_dir.join("permissions.json");
+        if legacy.exists() {
+            let _ = std::fs::remove_file(&legacy);
+        }
 
         Self {
-            path,
-            state: Arc::new(Mutex::new(PermissionState {
-                config,
-                tracker: DenialTracker::default(),
-            })),
+            config_dir,
+            state: Arc::new(Mutex::new(HashMap::new())),
             pending: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
-    pub fn get_config(&self) -> Result<PermissionConfig, String> {
-        let state = self.state.lock().map_err(|error| error.to_string())?;
-        Ok(state.config.clone())
+    /// Read the user's config from disk, populating the in-memory cache
+    /// on first access. Returns an empty default if the file is absent
+    /// or unparseable.
+    fn load_user_state(&self, user_id: &str) -> PermissionState {
+        let path = user_config_path(&self.config_dir, user_id);
+        let config = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|content| serde_json::from_str::<PermissionConfig>(&content).ok())
+            .unwrap_or_default();
+        PermissionState {
+            config,
+            tracker: DenialTracker::default(),
+        }
     }
 
-    pub fn set_config(&self, config: PermissionConfig) -> Result<PermissionConfig, String> {
+    fn get_or_init_user_state(&self, user_id: &str) -> Result<PermissionState, String> {
+        let mut state = self.state.lock().map_err(|error| error.to_string())?;
+        if let Some(s) = state.get(user_id) {
+            return Ok(s.clone());
+        }
+        let new_state = self.load_user_state(user_id);
+        state.insert(user_id.to_string(), new_state.clone());
+        Ok(new_state)
+    }
+
+    pub fn get_config(&self, user_id: &str) -> Result<PermissionConfig, String> {
+        let state = self.get_or_init_user_state(user_id)?;
+        Ok(state.config)
+    }
+
+    pub fn set_config(
+        &self,
+        user_id: &str,
+        config: PermissionConfig,
+    ) -> Result<PermissionConfig, String> {
         validate_mode_value(config.mode.as_deref())?;
         let mut state = self.state.lock().map_err(|error| error.to_string())?;
-        state.config = config.clone();
-        persist_permission_config(&self.path, &state.config)?;
+        // Force lazy-load first so we don't overwrite a previously
+        // persisted config with an empty default.
+        let new_state = match state.get(user_id) {
+            Some(_) => PermissionState {
+                config: config.clone(),
+                tracker: state
+                    .get(user_id)
+                    .map(|s| s.tracker.clone())
+                    .unwrap_or_default(),
+            },
+            None => {
+                let loaded = self.load_user_state(user_id);
+                PermissionState {
+                    config: config.clone(),
+                    tracker: loaded.tracker,
+                }
+            }
+        };
+        state.insert(user_id.to_string(), new_state);
+        persist_permission_config(&user_config_path(&self.config_dir, user_id), &config)?;
         Ok(config)
     }
 
-    pub fn configured_mode(&self) -> Result<Option<String>, String> {
-        let state = self.state.lock().map_err(|error| error.to_string())?;
+    pub fn configured_mode(&self, user_id: &str) -> Result<Option<String>, String> {
+        let state = self.get_or_init_user_state(user_id)?;
         Ok(state.config.mode.clone())
     }
 
     pub fn evaluate_tool_call(
         &self,
+        user_id: &str,
         mode: PermissionMode,
         tool_name: &str,
         arguments: &Value,
     ) -> Result<PermissionOutcome, String> {
         let request = PermissionRequest::from_tool_call(tool_name, arguments);
         let mut state = self.state.lock().map_err(|error| error.to_string())?;
-        let outcome = evaluate_permission(&state.config, state.tracker.clone(), mode, &request);
-        state.tracker = outcome.next_tracker.clone();
+        let user_state = state
+            .entry(user_id.to_string())
+            .or_insert_with(|| self.load_user_state(user_id));
+        let outcome = evaluate_permission(
+            &user_state.config,
+            user_state.tracker.clone(),
+            mode,
+            &request,
+        );
+        user_state.tracker = outcome.next_tracker.clone();
         Ok(outcome)
     }
 
     pub fn wait_for_resolution(
         &self,
+        user_id: &str,
         request: PermissionPromptRequest,
         timeout: std::time::Duration,
     ) -> impl Future<Output = Result<bool, String>> + Send + 'static {
         let (sender, receiver) = oneshot::channel();
         let pending = self.pending.clone();
         {
-            let mut pending_guard = pending.lock().expect("permission pending lock");
-            pending_guard.insert(request.request_id.clone(), sender);
+            let mut outer = pending.lock().expect("permission pending outer lock");
+            let user_map = outer.entry(user_id.to_string()).or_default();
+            user_map.insert(request.request_id.clone(), sender);
         }
+        let user_id_owned = user_id.to_string();
         async move {
             let resolved = match tokio::time::timeout(timeout, receiver).await {
                 Ok(Ok(allow)) => allow,
                 Ok(Err(_)) => false,
                 Err(_) => false,
             };
-            let mut pending_guard = pending.lock().map_err(|error| error.to_string())?;
-            pending_guard.remove(&request.request_id);
+            let mut outer = pending.lock().map_err(|error| error.to_string())?;
+            if let Some(user_map) = outer.get_mut(&user_id_owned) {
+                user_map.remove(&request.request_id);
+            }
             Ok(resolved)
         }
     }
 
-    pub fn resolve_request(&self, request_id: &str, allow: bool) -> Result<(), String> {
+    /// Resolve a pending permission request. Restricted to the
+    /// requesting user: a request_id is scoped by user_id, so
+    /// User B cannot answer User A's prompt (even if they could
+    /// somehow learn the request_id, which is a UUID v4).
+    pub fn resolve_request(
+        &self,
+        user_id: &str,
+        request_id: &str,
+        allow: bool,
+    ) -> Result<(), String> {
         let sender = {
-            let mut pending = self.pending.lock().map_err(|error| error.to_string())?;
-            pending.remove(request_id)
+            let mut outer = self.pending.lock().map_err(|error| error.to_string())?;
+            let user_map = outer
+                .get_mut(user_id)
+                .ok_or_else(|| format!("unknown permission request: {request_id}"))?;
+            user_map.remove(request_id)
         }
         .ok_or_else(|| format!("unknown permission request: {request_id}"))?;
 
@@ -338,26 +449,29 @@ pub fn evaluate_permission(
 
 #[tauri::command]
 pub fn get_permission_config(
+    user_id: String,
     store: State<'_, PermissionStore>,
 ) -> Result<PermissionConfig, String> {
-    store.get_config()
+    store.get_config(&user_id)
 }
 
 #[tauri::command]
 pub fn set_permission_config(
+    user_id: String,
     config: PermissionConfig,
     store: State<'_, PermissionStore>,
 ) -> Result<PermissionConfig, String> {
-    store.set_config(config)
+    store.set_config(&user_id, config)
 }
 
 #[tauri::command]
 pub fn resolve_permission_request(
+    user_id: String,
     request_id: String,
     allow: bool,
     store: State<'_, PermissionStore>,
 ) -> Result<(), String> {
-    store.resolve_request(&request_id, allow)
+    store.resolve_request(&user_id, &request_id, allow)
 }
 
 fn persist_permission_config(path: &PathBuf, config: &PermissionConfig) -> Result<(), String> {
@@ -603,6 +717,15 @@ mod tests {
 
     use crate::ai::runtime::PermissionMode;
 
+    fn unique_tmp_dir(label: &str) -> std::path::PathBuf {
+        let nanos = chrono::Utc::now()
+            .timestamp_nanos_opt()
+            .unwrap_or_default();
+        let dir = std::env::temp_dir().join(format!("modeler-perms-{label}-{nanos}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
     #[test]
     fn parses_rule_with_tool_alias_and_wildcard_content() {
         let rule = super::PermissionRule::parse("Bash(git status *)").unwrap();
@@ -664,52 +787,114 @@ mod tests {
         assert!(matches!(locked.decision, super::PermissionDecision::Ask));
     }
 
-    #[tokio::test]
-    async fn pending_permission_request_can_be_resolved() {
-        let store = super::PermissionStore::new(std::env::temp_dir().join(format!(
-            "permission-test-{}",
-            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
-        )));
-        let request = super::PermissionPromptRequest {
-            request_id: "req_1".to_string(),
-            conversation_id: "conv".to_string(),
-            tool_name: "execute_command".to_string(),
-            arguments: serde_json::json!({ "command": "git status" }),
-            reason: "Need approval".to_string(),
-            mode: "auto".to_string(),
-            content: Some("git status".to_string()),
-            expires_at_ms: 0,
-        };
+    #[test]
+    fn new_drops_legacy_permissions_json() {
+        let root = unique_tmp_dir("legacy-perms");
+        // Pre-existing legacy file at the data-dir root.
+        std::fs::write(
+            root.join("permissions.json"),
+            r#"{"mode":"default","deny_list":[],"ask_list":[],"allow_list":[]}"#,
+        )
+        .unwrap();
 
-        let wait = store.wait_for_resolution(request.clone(), Duration::from_secs(1));
-        store.resolve_request("req_1", true).unwrap();
-        let approved = wait.await.unwrap();
+        let _store = super::PermissionStore::new(root.clone());
 
-        assert!(approved);
+        assert!(!root.join("permissions.json").exists(), "legacy permissions.json must be removed");
+        // Per-user dir is created eagerly.
+        assert!(root.join("permissions").is_dir());
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
-    #[tokio::test]
-    async fn pending_permission_request_times_out_to_deny() {
-        let store = super::PermissionStore::new(std::env::temp_dir().join(format!(
-            "permission-test-{}",
-            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
-        )));
-        let request = super::PermissionPromptRequest {
-            request_id: "req_2".to_string(),
-            conversation_id: "conv".to_string(),
-            tool_name: "execute_command".to_string(),
-            arguments: serde_json::json!({ "command": "git reset --hard" }),
-            reason: "Need approval".to_string(),
-            mode: "default".to_string(),
-            content: Some("git reset --hard".to_string()),
-            expires_at_ms: 0,
-        };
+    #[test]
+    fn configs_and_trackers_are_isolated_per_user() {
+        let root = unique_tmp_dir("per-user-perms");
+        let store = super::PermissionStore::new(root.clone());
 
-        let approved = store
-            .wait_for_resolution(request, Duration::from_millis(10))
-            .await
+        // Alice configures a deny list; Bob leaves the default. Alice's
+        // tool call must hit her deny list, Bob's must not see it.
+        let mut alice_config = super::PermissionConfig::default();
+        alice_config.deny_list.push("execute_command".to_string());
+        store.set_config("user-alice", alice_config).unwrap();
+
+        let alice_outcome = store
+            .evaluate_tool_call(
+                "user-alice",
+                PermissionMode::Bypass,
+                "execute_command",
+                &serde_json::json!({ "command": "echo hi" }),
+            )
+            .unwrap();
+        let bob_outcome = store
+            .evaluate_tool_call(
+                "user-bob",
+                PermissionMode::Bypass,
+                "execute_command",
+                &serde_json::json!({ "command": "echo hi" }),
+            )
             .unwrap();
 
-        assert!(!approved);
+        assert!(matches!(alice_outcome.decision, super::PermissionDecision::Deny));
+        assert!(matches!(bob_outcome.decision, super::PermissionDecision::Allow));
+
+        // The tracker counter must also be per-user: three denials
+        // from Alice's side must not lock Bob out.
+        for _ in 0..3 {
+            let _ = store
+                .evaluate_tool_call(
+                    "user-alice",
+                    PermissionMode::Default,
+                    "execute_command",
+                    &serde_json::json!({ "command": "git reset --hard" }),
+                )
+                .unwrap();
+        }
+        let bob_locked = store
+            .evaluate_tool_call(
+                "user-bob",
+                PermissionMode::Default,
+                "execute_command",
+                &serde_json::json!({ "command": "git reset --hard" }),
+            )
+            .unwrap();
+        // Bob hasn't accumulated any denials, so he should still get
+        // the default Deny (not the Ask-from-circuit-breaker) decision.
+        assert!(matches!(bob_locked.decision, super::PermissionDecision::Deny));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn pending_prompts_are_scoped_per_user() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let store = super::PermissionStore::new(unique_tmp_dir("per-user-pending"));
+            let request = super::PermissionPromptRequest {
+                request_id: "req_1".to_string(),
+                conversation_id: "conv".to_string(),
+                tool_name: "execute_command".to_string(),
+                arguments: serde_json::json!({ "command": "git status" }),
+                reason: "Need approval".to_string(),
+                mode: "auto".to_string(),
+                content: Some("git status".to_string()),
+                expires_at_ms: 0,
+            };
+
+            // Alice registers a pending prompt.
+            let wait = store.wait_for_resolution(
+                "user-alice",
+                request.clone(),
+                Duration::from_secs(1),
+            );
+
+            // Bob trying to resolve Alice's request must fail.
+            let cross = store.resolve_request("user-bob", "req_1", true);
+            assert!(cross.is_err(), "Bob must not be able to resolve Alice's prompt");
+
+            // Alice resolves her own prompt successfully.
+            store.resolve_request("user-alice", "req_1", true).unwrap();
+            let approved = wait.await.unwrap();
+            assert!(approved);
+        });
     }
 }

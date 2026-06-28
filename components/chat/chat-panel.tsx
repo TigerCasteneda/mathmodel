@@ -1141,7 +1141,7 @@ export function ChatPanel({
     if (!activePermissionRequest || resolvingPermission) return
     setResolvingPermission(true)
     try {
-      await resolvePermissionRequest(activePermissionRequest.request_id, allow)
+      await resolvePermissionRequest(sessionUserId, activePermissionRequest.request_id, allow)
     } catch {
       setMessages((prev) => [
         ...prev,

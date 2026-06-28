@@ -665,9 +665,13 @@ export async function researchAgentRun(
   })
 }
 
-export async function resolvePermissionRequest(requestId: string, allow: boolean): Promise<void> {
+export async function resolvePermissionRequest(
+  userId: string,
+  requestId: string,
+  allow: boolean,
+): Promise<void> {
   if (!isTauri()) return
-  return invoke("resolve_permission_request", { requestId, allow })
+  return invoke("resolve_permission_request", { userId, requestId, allow })
 }
 
 // ─── Questions ──
