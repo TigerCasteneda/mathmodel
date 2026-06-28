@@ -167,9 +167,10 @@ async fn get_sidecar_status(sidecar: State<'_, SidecarState>) -> Result<bool, St
 
 #[tauri::command]
 async fn list_hooks(
+    user_id: String,
     hooks: State<'_, ai::hooks::HookManager>,
 ) -> Result<Vec<ai::hooks::Hook>, String> {
-    Ok(hooks.list_hooks().await)
+    Ok(hooks.list_hooks(&user_id).await)
 }
 
 #[tauri::command]
@@ -212,11 +213,12 @@ async fn toggle_plugin(
 
 #[tauri::command]
 async fn toggle_hook(
+    user_id: String,
     name: String,
     enabled: bool,
     hooks: State<'_, ai::hooks::HookManager>,
 ) -> Result<bool, String> {
-    hooks.toggle_hook(&name, enabled).await;
+    hooks.toggle_hook(&user_id, &name, enabled).await;
     Ok(enabled)
 }
 

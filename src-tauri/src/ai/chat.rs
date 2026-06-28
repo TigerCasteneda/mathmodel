@@ -734,7 +734,7 @@ pub async fn ai_chat(
                     tool_output: None,
                     timestamp: chrono::Utc::now().timestamp_millis(),
                 };
-                hooks.execute(HookPoint::PreToolUse, &hook_ctx).await;
+                hooks.execute(session_user_id, HookPoint::PreToolUse, &hook_ctx).await;
             }
 
             let mut persisted_tool_results = Vec::new();
@@ -762,7 +762,7 @@ pub async fn ai_chat(
                     tool_output: Some(serde_json::json!({ "output": tool_output_text })),
                     timestamp: chrono::Utc::now().timestamp_millis(),
                 };
-                hooks.execute(HookPoint::PostToolUse, &post_hook_ctx).await;
+                hooks.execute(session_user_id, HookPoint::PostToolUse, &post_hook_ctx).await;
 
                 context_messages.push(ContextMessage {
                     message: ChatMessage::tool(&result.id, tool_output_text),
