@@ -389,6 +389,7 @@ impl ModelerAiRuntime {
             can_write,
             enabled_deferred_tools.clone(),
             app_handle.clone(),
+            user_id.clone(),
             conversation_id.clone(),
             work_dir,
             data_dir,
@@ -674,6 +675,7 @@ async fn register_workspace_tools(
     can_write: bool,
     enabled_deferred_tools: Arc<RwLock<HashSet<String>>>,
     app_handle: AppHandle,
+    user_id: String,
     conversation_id: String,
     work_dir: std::path::PathBuf,
     data_dir: std::path::PathBuf,
@@ -681,7 +683,7 @@ async fn register_workspace_tools(
 ) {
     let ah = app_handle.clone();
     let cid = conversation_id.clone();
-    let task_store = Arc::new(TaskStore::new(cid.clone(), data_dir));
+    let task_store = Arc::new(TaskStore::new(user_id.clone(), cid.clone(), data_dir));
     register_tool_search(registry, enabled_deferred_tools).await;
     register_file_read(registry, workspace.clone(), "file_read").await;
     register_file_read(registry, workspace.clone(), "read_file").await;

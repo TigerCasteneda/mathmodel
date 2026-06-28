@@ -175,16 +175,37 @@ async fn list_hooks(
 
 #[tauri::command]
 async fn list_tasks(
+    user_id: String,
     conversation_id: String,
     app: AppHandle,
 ) -> Result<Vec<serde_json::Value>, String> {
     let data_dir = app.path().app_data_dir().unwrap_or_default();
-    let path = data_dir.join("task-lists").join(format!("{conversation_id}.json"));
+    // Mirror the per-user layout used by `TaskStore`: task-lists/
+    // <user_id>/<conversation_id>.json. Reading directly here so we
+    // don't have to plumb `data_dir` into a one-shot TaskStore
+    // construction just for a read.
+    let path = data_dir
+        .join("task-lists")
+        .join(sanitize_user_id_for_path(&user_id))
+        .join(format!("{conversation_id}.json"));
     let tasks: Vec<serde_json::Value> = std::fs::read_to_string(&path)
         .ok()
         .and_then(|data| serde_json::from_str(&data).ok())
         .unwrap_or_default();
     Ok(tasks)
+}
+
+fn sanitize_user_id_for_path(user_id: &str) -> String {
+    let cleaned: String = user_id
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .take(64)
+        .collect();
+    if cleaned.is_empty() {
+        "unknown".to_string()
+    } else {
+        cleaned
+    }
 }
 
 #[tauri::command]

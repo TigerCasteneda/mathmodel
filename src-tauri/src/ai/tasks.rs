@@ -61,14 +61,36 @@ impl TaskPriority {
     }
 }
 
+/// Per-user per-conversation task list store. The previous layout
+/// stored tasks under `task-lists/<conversation_id>.json` with no
+/// user_id, so two accounts using the same conversation_id (e.g. the
+/// "default" fallback) shared a single file and overwrote each
+/// other's todo list. The `Task.subject` / `description` / `tags`
+/// fields are user-authored, so a leak here is real content
+/// exposure.
 pub struct TaskStore {
+    user_id: String,
     conversation_id: String,
     data_dir: PathBuf,
 }
 
+fn sanitize_user_id(user_id: &str) -> String {
+    let cleaned: String = user_id
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .take(64)
+        .collect();
+    if cleaned.is_empty() {
+        "unknown".to_string()
+    } else {
+        cleaned
+    }
+}
+
 impl TaskStore {
-    pub fn new(conversation_id: String, data_dir: PathBuf) -> Self {
+    pub fn new(user_id: String, conversation_id: String, data_dir: PathBuf) -> Self {
         Self {
+            user_id,
             conversation_id,
             data_dir,
         }
@@ -77,6 +99,7 @@ impl TaskStore {
     fn file_path(&self) -> PathBuf {
         self.data_dir
             .join("task-lists")
+            .join(sanitize_user_id(&self.user_id))
             .join(format!("{}.json", self.conversation_id))
     }
 
@@ -184,5 +207,64 @@ impl TaskStore {
         self.load_tasks()
             .into_iter()
             .find(|t| t.id == task_id && t.status != TaskStatus::Deleted)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    fn unique_tmp_dir(label: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let dir = std::env::temp_dir().join(format!("modeler-tasks-{label}-{nanos}-{n}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn tasks_are_isolated_per_user() {
+        // Same conversation_id, two different users. Alice's task list
+        // and Bob's task list must live in separate files.
+        let root = unique_tmp_dir("per-user-tasks");
+        let alice = TaskStore::new("user-alice".into(), "conv-1".into(), root.clone());
+        let bob = TaskStore::new("user-bob".into(), "conv-1".into(), root.clone());
+
+        alice
+            .create("Alice todo", "Alice's secret plan", None, None, None);
+        bob.create("Bob todo", "Bob's secret plan", None, None, None);
+
+        let alice_list = alice.list(None, None);
+        let bob_list = bob.list(None, None);
+        assert_eq!(alice_list.len(), 1);
+        assert_eq!(bob_list.len(), 1);
+        assert_eq!(alice_list[0].subject, "Alice todo");
+        assert_eq!(bob_list[0].subject, "Bob todo");
+
+        // Disk layout: per-user dir under task-lists/.
+        assert!(root
+            .join("task-lists")
+            .join("user-alice")
+            .join("conv-1.json")
+            .exists());
+        assert!(root
+            .join("task-lists")
+            .join("user-bob")
+            .join("conv-1.json")
+            .exists());
+        assert!(!root
+            .join("task-lists")
+            .join("user-bob")
+            .join("user-alice")
+            .exists());
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
