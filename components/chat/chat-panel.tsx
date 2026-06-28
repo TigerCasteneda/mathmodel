@@ -884,7 +884,7 @@ export function ChatPanel({
   workspaceMode?: "host" | "guest"
   capabilities?: ProjectCapability[]
 }) {
-  const { user } = useAuth()
+  const { user, loading: authLoading } = useAuth()
   const sessionUserId = user?.id ?? ""
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState("")
@@ -1065,7 +1065,10 @@ export function ChatPanel({
     }
   }, [pendingPermissionRequests])
 
-  const canSend = useMemo(() => input.trim().length > 0 && !sending && loaded, [input, sending, loaded])
+  const canSend = useMemo(
+    () => input.trim().length > 0 && !sending && loaded && !authLoading && !!user?.id,
+    [input, sending, loaded, authLoading, user?.id],
+  )
   const waitingForAssistant = sending && messages[messages.length - 1]?.role === "user"
 
   const handleSubmit = async (event?: FormEvent) => {
