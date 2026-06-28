@@ -927,6 +927,7 @@ async fn register_workspace_tools(
                 question_store: question_store.clone(),
                 app_handle: ah,
                 conversation_id: cid,
+                user_id: user_id.clone(),
             }),
         )
         .await;

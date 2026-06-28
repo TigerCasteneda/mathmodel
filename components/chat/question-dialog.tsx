@@ -17,12 +17,15 @@ import {
   type QuestionEvent,
   type QuestionItem,
 } from "@/lib/tauri-api"
+import { useAuth } from "@/hooks/use-auth"
 
 export function QuestionDialog({
   conversationId,
 }: {
   conversationId: string
 }) {
+  const { user } = useAuth()
+  const sessionUserId = user?.id ?? ""
   const [event, setEvent] = useState<QuestionEvent | null>(null)
   const [answers, setAnswers] = useState<Record<string, string[]>>({})
   const [resolving, setResolving] = useState(false)
@@ -69,7 +72,7 @@ export function QuestionDialog({
     if (!event || resolving) return
     setResolving(true)
     try {
-      await resolveQuestion(event.request_id, answers)
+      await resolveQuestion(sessionUserId, event.request_id, answers)
       setEvent(null)
     } catch {
       // fallback

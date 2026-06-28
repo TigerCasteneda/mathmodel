@@ -32,7 +32,14 @@ pub struct QuestionEvent {
 
 #[derive(Clone)]
 pub struct QuestionStore {
-    pending: Arc<Mutex<HashMap<String, oneshot::Sender<String>>>>,
+    /// user_id -> request_id -> sender. The previous layout was a
+    /// single `HashMap<request_id, sender>` keyed only by UUID, so a
+    /// caller who somehow knew another account's request_id (e.g.
+    /// replayed log traffic) could resolve their pending question.
+    /// UUIDs are collision-resistant in practice, but defense in
+    /// depth is cheap and the user_id check enforces the contract
+    /// directly.
+    pending: Arc<Mutex<HashMap<String, HashMap<String, oneshot::Sender<String>>>>>,
 }
 
 impl QuestionStore {
@@ -42,21 +49,28 @@ impl QuestionStore {
         }
     }
 
-    pub async fn wait_for_answer(&self, request_id: String) -> Option<String> {
+    pub async fn wait_for_answer(&self, user_id: &str, request_id: String) -> Option<String> {
         let (tx, rx) = oneshot::channel();
         {
-            let mut guard = self.pending.lock().await;
-            guard.insert(request_id, tx);
+            let mut outer = self.pending.lock().await;
+            let user_map = outer.entry(user_id.to_string()).or_default();
+            user_map.insert(request_id, tx);
         }
         rx.await.ok()
     }
 
-    pub async fn resolve(&self, request_id: &str, answers: &str) -> bool {
-        let mut guard = self.pending.lock().await;
-        if let Some(tx) = guard.remove(request_id) {
-            tx.send(answers.to_string()).is_ok()
-        } else {
-            false
+    /// Resolve a pending question prompt. Restricted to the requesting
+    /// user: a `request_id` for User A's prompt cannot be resolved by
+    /// User B even if they learn the id.
+    pub async fn resolve(&self, user_id: &str, request_id: &str, answers: &str) -> bool {
+        let mut outer = self.pending.lock().await;
+        let tx = match outer.get_mut(user_id) {
+            Some(map) => map.remove(request_id),
+            None => return false,
+        };
+        match tx {
+            Some(tx) => tx.send(answers.to_string()).is_ok(),
+            None => false,
         }
     }
 }
@@ -65,6 +79,7 @@ pub struct AskUserQuestionExecutor {
     pub question_store: QuestionStore,
     pub app_handle: AppHandle,
     pub conversation_id: String,
+    pub user_id: String,
 }
 
 #[async_trait]
@@ -133,7 +148,8 @@ impl ToolExecutor for AskUserQuestionExecutor {
         // Wait for answer or timeout
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(120),
-            self.question_store.wait_for_answer(request_id.clone()),
+            self.question_store
+                .wait_for_answer(&self.user_id, request_id.clone()),
         )
         .await;
 
@@ -146,8 +162,10 @@ impl ToolExecutor for AskUserQuestionExecutor {
             Ok(None) => Ok(json!({ "status": "cancelled" })),
             Err(_) => {
                 // Timeout - clean up
-                let mut guard = self.question_store.pending.lock().await;
-                guard.remove(&request_id);
+                let mut outer = self.question_store.pending.lock().await;
+                if let Some(user_map) = outer.get_mut(&self.user_id) {
+                    user_map.remove(&request_id);
+                }
                 Ok(json!({ "status": "timeout" }))
             }
         }

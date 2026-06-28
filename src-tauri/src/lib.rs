@@ -247,11 +247,12 @@ async fn toggle_hook(
 
 #[tauri::command]
 async fn resolve_question(
+    user_id: String,
     request_id: String,
     answers: String,
     store: State<'_, ai::tools::question::QuestionStore>,
 ) -> Result<bool, String> {
-    Ok(store.resolve(&request_id, &answers).await)
+    Ok(store.resolve(&user_id, &request_id, &answers).await)
 }
 
 async fn start_server(data_dir: PathBuf) -> anyhow::Result<u16> {

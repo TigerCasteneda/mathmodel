@@ -704,9 +704,13 @@ export function onQuestion(callback: (event: QuestionEvent) => void): () => void
   return () => { unlisten.then((fn) => fn()) }
 }
 
-export async function resolveQuestion(requestId: string, answers: Record<string, any>): Promise<void> {
+export async function resolveQuestion(
+  userId: string,
+  requestId: string,
+  answers: Record<string, any>,
+): Promise<void> {
   if (!isTauri()) return
-  return invoke("resolve_question", { requestId, answers: JSON.stringify(answers) })
+  return invoke("resolve_question", { userId, requestId, answers: JSON.stringify(answers) })
 }
 
 // ─── Agent events ──
