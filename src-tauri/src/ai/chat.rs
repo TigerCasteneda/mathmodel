@@ -436,6 +436,7 @@ pub async fn ai_chat(
         workspace,
         app.clone(),
         conversation_id.clone(),
+        session_user_id.to_string(),
         permission_mode,
         permissions.inner().clone(),
         question_store.inner().clone(),
@@ -693,7 +694,7 @@ pub async fn ai_chat(
             let execution_requests = build_execution_requests(&tool_calls);
 
             // Plan mode guard: filter out write/execute tools
-            let is_planning = plan.is_planning().await;
+            let is_planning = plan.is_planning(session_user_id).await;
             let filtered_calls: Vec<_> = if is_planning {
                 let blocked: Vec<_> = tool_calls.iter()
                     .filter(|tc| !is_tool_read_only(&tc.function.name))

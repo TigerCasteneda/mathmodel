@@ -350,6 +350,11 @@ pub struct ModelerAiRuntime {
     question_store: QuestionStore,
     app_handle: AppHandle,
     conversation_id: String,
+    /// Authenticated user who owns this runtime's tool calls. Used to
+    /// scope plan/hook state to the right account. The runtime is
+    /// constructed per `ai_chat` invocation, where user_id is decoded
+    /// from the Supabase JWT by the frontend.
+    user_id: String,
 }
 
 impl ModelerAiRuntime {
@@ -358,6 +363,7 @@ impl ModelerAiRuntime {
         context: WorkspaceContext,
         app_handle: AppHandle,
         conversation_id: String,
+        user_id: String,
         permission_mode: PermissionMode,
         permission_store: PermissionStore,
         question_store: QuestionStore,
@@ -434,7 +440,10 @@ impl ModelerAiRuntime {
         registry
             .register(
                 McpTool::new("enter_plan_mode", "Enter plan-only mode: restrict to read-only tools for exploration before implementing.", json!({ "type": "object", "properties": {} })),
-                Arc::new(EnterPlanModeExecutor { plan_service: plan.clone() }),
+                Arc::new(EnterPlanModeExecutor {
+                    plan_service: plan.clone(),
+                    user_id: user_id.clone(),
+                }),
             )
             .await;
 
@@ -455,7 +464,10 @@ impl ModelerAiRuntime {
                     },
                     "required": ["title", "phases"]
                 })),
-                Arc::new(ExitPlanModeExecutor { plan_service: plan.clone() }),
+                Arc::new(ExitPlanModeExecutor {
+                    plan_service: plan.clone(),
+                    user_id: user_id.clone(),
+                }),
             )
             .await;
 
@@ -469,7 +481,10 @@ impl ModelerAiRuntime {
                     },
                     "required": ["phase", "status"]
                 })),
-                Arc::new(PlanUpdateExecutor { plan_service: plan }),
+                Arc::new(PlanUpdateExecutor {
+                    plan_service: plan,
+                    user_id: user_id.clone(),
+                }),
             )
             .await;
 
@@ -499,6 +514,7 @@ impl ModelerAiRuntime {
             question_store,
             app_handle,
             conversation_id,
+            user_id,
         })
     }
 
