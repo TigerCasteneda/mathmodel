@@ -836,6 +836,7 @@ impl AgentRun {
 
         let entry = OperationEntry {
             id: uuid::Uuid::new_v4().to_string(),
+            user_id: self.user_id.clone(),
             session_id: self.conversation_id.clone(),
             op_type: classify_operation(&tc.function.name),
             tool_name: tc.function.name.clone(),
@@ -844,7 +845,7 @@ impl AgentRun {
             duration_ms: started.elapsed().as_millis() as u64,
             timestamp: chrono::Utc::now().timestamp(),
         };
-        if let Err(e) = op_history.record(entry) {
+        if let Err(e) = op_history.record(&self.user_id, entry) {
             tracing::warn!(
                 "research_agent: op_history.record failed for {conv}: {e}",
                 conv = self.conversation_id
@@ -1186,8 +1187,9 @@ mod tests {
             .push_user(user_id, conv_id, "[Research] what is X".to_string())
             .unwrap();
         op_history
-            .record(OperationEntry {
+            .record(user_id, OperationEntry {
                 id: uuid::Uuid::new_v4().to_string(),
+                user_id: user_id.to_string(),
                 session_id: conv_id.to_string(),
                 op_type: classify_operation("search_academic"),
                 tool_name: "search_academic".to_string(),
@@ -1211,7 +1213,7 @@ mod tests {
         assert_eq!(loaded.messages.len(), 2);
         assert_eq!(loaded.messages[0].role, "user");
         assert_eq!(loaded.messages[1].role, "assistant");
-        let ops = op_history.list(conv_id).unwrap();
+        let ops = op_history.list(user_id, conv_id).unwrap();
         assert_eq!(ops.len(), 1);
         assert_eq!(ops[0].op_type, OperationType::WebSearch);
 

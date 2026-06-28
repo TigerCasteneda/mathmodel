@@ -285,9 +285,12 @@ export async function aiChat(
   })
 }
 
-export async function stopGeneration(conversationId = "default"): Promise<void> {
+export async function stopGeneration(
+  userId: string,
+  conversationId: string,
+): Promise<void> {
   if (!isTauri()) return
-  return invoke("stop_generation", { conversationId })
+  return invoke("stop_generation", { userId, conversationId })
 }
 
 // ─── Events ─────────────────────────────────────────
@@ -821,6 +824,7 @@ export async function exportSession(
 
 export interface OperationEntry {
   id: string
+  user_id: string
   session_id: string
   op_type: string
   tool_name: string
@@ -838,12 +842,18 @@ export interface OperationStats {
   top_tools: Array<{ tool_name: string; count: number }>
 }
 
-export async function listOperations(sessionId: string): Promise<OperationEntry[]> {
+export async function listOperations(
+  userId: string,
+  sessionId: string,
+): Promise<OperationEntry[]> {
   if (!isTauri()) return []
-  return invoke<OperationEntry[]>("list_operations", { sessionId })
+  return invoke<OperationEntry[]>("list_operations", { userId, sessionId })
 }
 
-export async function getOperationStats(sessionId: string): Promise<OperationStats | null> {
+export async function getOperationStats(
+  userId: string,
+  sessionId: string,
+): Promise<OperationStats | null> {
   if (!isTauri()) return null
-  return invoke<OperationStats>("get_operation_stats", { sessionId })
+  return invoke<OperationStats>("get_operation_stats", { userId, sessionId })
 }

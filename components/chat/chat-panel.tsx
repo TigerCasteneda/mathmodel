@@ -1105,7 +1105,7 @@ export function ChatPanel({
     if (!sending || stopRequested) return
     setStopRequestedState(true)
     try {
-      await stopGeneration(conversationId)
+      await stopGeneration(sessionUserId, conversationId)
     } catch {
       setStopRequestedState(false)
       setMessages((prev) => updateActiveAssistant(prev, (message) => ({
@@ -1219,7 +1219,7 @@ export function ChatPanel({
           onClick={() => {
             setShowOpHistory((prev) => !prev)
             if (!showOpHistory) {
-              listOperations(conversationId).then(setOperations).catch(() => setOperations([]))
+              listOperations(sessionUserId, conversationId).then(setOperations).catch(() => setOperations([]))
             }
           }}
           title="Operation history"

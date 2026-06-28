@@ -59,31 +59,37 @@ pub struct ChatErrorEvent {
 
 #[derive(Default)]
 pub struct StopFlags {
-    inner: Mutex<HashSet<String>>,
+    /// Keyed by `(user_id, conversation_id)` so User A's "stop" click
+    /// cannot halt User B's in-flight generation. Without the user
+    /// dimension, two accounts sharing the same conversation_id (the
+    /// "default" fallback for unnamed chats, plus the chat-sessions
+    /// `unwrap_or("default")` collapse point) would cross-cancel each
+    /// other.
+    inner: Mutex<HashSet<(String, String)>>,
 }
 
 impl StopFlags {
-    fn request_stop(&self, conversation_id: &str) -> Result<(), String> {
+    fn request_stop(&self, user_id: &str, conversation_id: &str) -> Result<(), String> {
         self.inner
             .lock()
             .map_err(|e| e.to_string())?
-            .insert(conversation_id.to_string());
+            .insert((user_id.to_string(), conversation_id.to_string()));
         Ok(())
     }
 
-    fn should_stop(&self, conversation_id: &str) -> Result<bool, String> {
+    fn should_stop(&self, user_id: &str, conversation_id: &str) -> Result<bool, String> {
         Ok(self
             .inner
             .lock()
             .map_err(|e| e.to_string())?
-            .contains(conversation_id))
+            .contains(&(user_id.to_string(), conversation_id.to_string())))
     }
 
-    fn clear(&self, conversation_id: &str) -> Result<(), String> {
+    fn clear(&self, user_id: &str, conversation_id: &str) -> Result<(), String> {
         self.inner
             .lock()
             .map_err(|e| e.to_string())?
-            .remove(conversation_id);
+            .remove(&(user_id.to_string(), conversation_id.to_string()));
         Ok(())
     }
 }
@@ -365,11 +371,19 @@ pub fn set_ai_model(
 
 #[tauri::command]
 pub fn stop_generation(
+    user_id: Option<String>,
     conversation_id: Option<String>,
     stop_flags: State<'_, StopFlags>,
 ) -> Result<(), String> {
-    let conversation_id = conversation_id.unwrap_or_else(|| "default".to_string());
-    stop_flags.request_stop(&conversation_id)
+    let user_id = user_id
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| "user_id is required to stop a generation".to_string())?;
+    let conversation_id = conversation_id
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| "conversation_id is required to stop a generation".to_string())?;
+    stop_flags.request_stop(user_id, conversation_id)
 }
 
 #[tauri::command]
@@ -397,12 +411,12 @@ pub async fn ai_chat(
     op_history: State<'_, OperationHistoryStore>,
 ) -> Result<(), String> {
     let conversation_id = conversation_id.unwrap_or_else(|| "default".to_string());
-    stop_flags.clear(&conversation_id)?;
     // Resolve the user id once. Frontend passes it from useAuth() (decoded
     // out of the Supabase JWT). When it's missing we fall back to a
     // shared bucket so older clients keep working — they're just stored
     // alongside the "unknown" pseudo-user.
     let session_user_id = user_id.as_deref().unwrap_or("unknown");
+    stop_flags.clear(session_user_id, &conversation_id)?;
     let config = config_state.get()?;
     if config
         .api_key
@@ -478,8 +492,8 @@ pub async fn ai_chat(
     let mut stream_seq = 0u64;
 
     loop {
-        if stop_flags.should_stop(&conversation_id)? {
-            stop_flags.clear(&conversation_id)?;
+        if stop_flags.should_stop(session_user_id, &conversation_id)? {
+            stop_flags.clear(session_user_id, &conversation_id)?;
             stream_seq += 1;
             emit_stream(&app, &conversation_id, stream_seq, String::new(), true);
             return Ok(());
@@ -516,7 +530,7 @@ pub async fn ai_chat(
         let mut logged_first_chunk = false;
 
         while let Some(chunk) = stream.next().await {
-            if stop_flags.should_stop(&conversation_id)? {
+            if stop_flags.should_stop(session_user_id, &conversation_id)? {
                 stopped = true;
                 break;
             }
@@ -529,7 +543,7 @@ pub async fn ai_chat(
             buffer.push_str(&String::from_utf8_lossy(&bytes));
 
             while let Some(idx) = buffer.find('\n') {
-                if stop_flags.should_stop(&conversation_id)? {
+                if stop_flags.should_stop(session_user_id, &conversation_id)? {
                     stopped = true;
                     break;
                 }
@@ -662,7 +676,7 @@ pub async fn ai_chat(
         }
 
         if stopped {
-            stop_flags.clear(&conversation_id)?;
+            stop_flags.clear(session_user_id, &conversation_id)?;
             sessions.push_assistant(session_user_id, &conversation_id, assistant_text)?;
             stream_seq += 1;
             emit_stream(&app, &conversation_id, stream_seq, String::new(), true);
@@ -779,6 +793,7 @@ pub async fn ai_chat(
                     .collect();
                 let entry = OperationEntry {
                     id: uuid::Uuid::new_v4().to_string(),
+                    user_id: session_user_id.to_string(),
                     session_id: conversation_id.clone(),
                     op_type: classify_operation(&result.name),
                     tool_name: result.name.clone(),
@@ -787,7 +802,7 @@ pub async fn ai_chat(
                     duration_ms: 0,
                     timestamp: chrono::Utc::now().timestamp(),
                 };
-                let _ = op_history.record(entry);
+                let _ = op_history.record(session_user_id, entry);
             }
 
             for persisted in
@@ -795,8 +810,8 @@ pub async fn ai_chat(
             {
                 sessions.push_chat_message(session_user_id, &conversation_id, persisted)?;
             }
-            if stop_flags.should_stop(&conversation_id)? {
-                stop_flags.clear(&conversation_id)?;
+            if stop_flags.should_stop(session_user_id, &conversation_id)? {
+                stop_flags.clear(session_user_id, &conversation_id)?;
                 stream_seq += 1;
                 emit_stream(&app, &conversation_id, stream_seq, String::new(), true);
                 return Ok(());
@@ -808,7 +823,7 @@ pub async fn ai_chat(
         }
 
         // Normal completion (no tool calls, or finish_reason is "stop")
-        stop_flags.clear(&conversation_id)?;
+        stop_flags.clear(session_user_id, &conversation_id)?;
         sessions.push_assistant(session_user_id, &conversation_id, assistant_text)?;
         stream_seq += 1;
         emit_stream(&app, &conversation_id, stream_seq, String::new(), true);
@@ -1120,18 +1135,25 @@ mod tests {
     }
 
     #[test]
-    fn stop_flags_are_keyed_by_conversation() {
+    fn stop_flags_are_keyed_by_user_and_conversation() {
         let flags = super::StopFlags::default();
-        assert!(!flags.should_stop("a").unwrap());
+        // Two different users on the same conversation_id must not
+        // cross-cancel. A clicking stop should not halt B's run.
+        assert!(!flags.should_stop("user-a", "default").unwrap());
 
-        flags.request_stop("a").unwrap();
+        flags.request_stop("user-a", "default").unwrap();
 
-        assert!(flags.should_stop("a").unwrap());
-        assert!(!flags.should_stop("b").unwrap());
+        assert!(flags.should_stop("user-a", "default").unwrap());
+        assert!(
+            !flags.should_stop("user-b", "default").unwrap(),
+            "User B's run on the same conversation must not see User A's stop flag"
+        );
+        // Different conversation, same user.
+        assert!(!flags.should_stop("user-a", "other").unwrap());
 
-        flags.clear("a").unwrap();
+        flags.clear("user-a", "default").unwrap();
 
-        assert!(!flags.should_stop("a").unwrap());
+        assert!(!flags.should_stop("user-a", "default").unwrap());
     }
 
     #[test]
