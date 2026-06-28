@@ -463,7 +463,7 @@ export function ArenaChat({
     const optimistic: ChatMessage = {
       id: echoId,
       project_id: projectId,
-      user_id: "",
+      user_id: currentUserId,
       display_name: "You",
       content,
       content_type: "text",
@@ -509,7 +509,7 @@ export function ArenaChat({
       )
       echoIds.delete(echoId)
     }, 10_000)
-  }, [input, sending, canWrite, replyingTo, projectId, scrollToBottom, echoIds])
+  }, [input, sending, canWrite, replyingTo, projectId, scrollToBottom, echoIds, currentUserId])
 
   // ── file upload ──
   const handleFileChange = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -524,7 +524,7 @@ export function ArenaChat({
       const optimistic: ChatMessage = {
         id: echoId,
         project_id: projectId,
-        user_id: "",
+        user_id: currentUserId,
         display_name: "You",
         content: "",
         content_type: "file",
@@ -567,7 +567,7 @@ export function ArenaChat({
       setUploading(false)
       if (fileInputRef.current) fileInputRef.current.value = ""
     }
-  }, [uploading, projectId, scrollToBottom, echoIds])
+  }, [uploading, projectId, scrollToBottom, echoIds, currentUserId])
 
   // ── keyboard ──
   const handleKeyDown = useCallback(
