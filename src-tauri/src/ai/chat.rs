@@ -410,12 +410,21 @@ pub async fn ai_chat(
     stop_flags: State<'_, StopFlags>,
     op_history: State<'_, OperationHistoryStore>,
 ) -> Result<(), String> {
-    let conversation_id = conversation_id.unwrap_or_else(|| "default".to_string());
-    // Resolve the user id once. Frontend passes it from useAuth() (decoded
-    // out of the Supabase JWT). When it's missing we fall back to a
-    // shared bucket so older clients keep working — they're just stored
-    // alongside the "unknown" pseudo-user.
-    let session_user_id = user_id.as_deref().unwrap_or("unknown");
+    let conversation_id = conversation_id
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| "conversation_id is required".to_string())?
+        .to_string();
+    // Required for per-user scoping of every downstream store
+    // (chat sessions, hooks, plans, plugins, permissions, history,
+    // tasks, stop flags). Frontend decodes the Supabase JWT via
+    // useAuth() and threads userId through. Falling back to a
+    // shared "unknown" bucket would re-introduce the cross-account
+    // leak this whole audit set out to fix.
+    let session_user_id = user_id
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| "user_id is required".to_string())?;
     stop_flags.clear(session_user_id, &conversation_id)?;
     let config = config_state.get()?;
     if config

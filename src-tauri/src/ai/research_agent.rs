@@ -376,10 +376,15 @@ pub async fn research_agent_run(
         return Err("Query is empty.".to_string());
     }
     let scraper = scraper.unwrap_or_default();
-    // Scope persisted chat history to the authenticated user; falls back to
-    // "unknown" when the frontend omits the id so legacy callers still work
-    // (they just share that one bucket).
-    let session_user_id = user_id.as_deref().unwrap_or("unknown");
+    // Required for per-user scoping of every downstream store. The
+    // frontend decodes the Supabase JWT via useAuth() and threads
+    // userId through; falling back to a shared "unknown" bucket
+    // would re-introduce the cross-account leak this whole audit
+    // set out to fix.
+    let session_user_id = user_id
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| "user_id is required".to_string())?;
 
     // Note: the user message is persisted inside `execute()` (single source of
     // truth for both disk and model context). Loading it back via
