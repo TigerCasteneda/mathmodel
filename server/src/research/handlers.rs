@@ -48,6 +48,19 @@ fn validate_category(cat: &str) -> Result<&str, AppError> {
     }
 }
 
+/// Map a search envelope kind to the destination top-level zone. Paper-kind
+/// searches land under the Paper/ folder, code-kind under Code/, anything
+/// else (auto / web / dataset / docs / missing / unknown) under Research/.
+/// This routes Save & Extract outputs to the folder that was provisioned for
+/// the kind and that the UI already grafts into the file tree by zone.
+fn zone_for_kind(kind: Option<&str>) -> &'static str {
+    match kind {
+        Some("paper") => "paper",
+        Some("code") => "code",
+        _ => "research",
+    }
+}
+
 async fn load_item_for_user(
     pool: &sqlx::SqlitePool,
     item_id: &str,
@@ -75,6 +88,10 @@ async fn save_items(
     let mut warnings = Vec::new();
     let mut mirrors: Vec<ResearchFileMirror> = Vec::new();
     let now = Utc::now().timestamp();
+    // Resolve the destination zone once for the whole batch. All files
+    // (markdown / bib / pdf) for a single Save & Extract call share the
+    // same source kind, so per-item routing would be redundant.
+    let zone = zone_for_kind(req.kind.as_deref());
 
     for input in &req.items {
         let cat = validate_category(&input.category)?;
@@ -136,6 +153,7 @@ async fn save_items(
             &input.title,
             "md",
             &md_content,
+            zone,
         )
         .await
         {
@@ -154,6 +172,7 @@ async fn save_items(
                         &input.title,
                         "bib",
                         &bib_content,
+                        zone,
                     )
                     .await
                     {
@@ -179,6 +198,7 @@ async fn save_items(
                             &attachment.filename,
                             "application/pdf",
                             &bytes,
+                            zone,
                         )
                         .await
                         {
@@ -414,4 +434,42 @@ async fn delete_item(
     tx.commit().await?;
 
     Ok(Json(serde_json::json!({ "deleted": true })))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::zone_for_kind;
+
+    #[test]
+    fn zone_for_kind_routes_paper_to_paper_folder() {
+        assert_eq!(zone_for_kind(Some("paper")), "paper");
+    }
+
+    #[test]
+    fn zone_for_kind_routes_code_to_code_folder() {
+        assert_eq!(zone_for_kind(Some("code")), "code");
+    }
+
+    #[test]
+    fn zone_for_kind_falls_back_to_research_for_other_kinds() {
+        assert_eq!(zone_for_kind(Some("auto")), "research");
+        assert_eq!(zone_for_kind(Some("web")), "research");
+        assert_eq!(zone_for_kind(Some("dataset")), "research");
+        assert_eq!(zone_for_kind(Some("docs")), "research");
+    }
+
+    #[test]
+    fn zone_for_kind_defaults_to_research_when_missing() {
+        // Backwards compatibility: clients built before this field existed
+        // send no `kind` and must keep getting the legacy Research/ behavior.
+        assert_eq!(zone_for_kind(None), "research");
+    }
+
+    #[test]
+    fn zone_for_kind_treats_unknown_values_as_research() {
+        // Defensive: any kind the Tauri envelope adds later (or a typo)
+        // should not crash the save path — fall through to research.
+        assert_eq!(zone_for_kind(Some("unknown")), "research");
+        assert_eq!(zone_for_kind(Some("")), "research");
+    }
 }

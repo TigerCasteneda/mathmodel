@@ -29,6 +29,13 @@ pub struct ResearchItem {
 pub struct SaveItemsRequest {
     pub project_id: String,
     pub items: Vec<SaveItemInput>,
+    /// Source kind from the search envelope (`auto`/`web`/`paper`/`dataset`
+    /// /`code`/`docs`). Drives which top-level zone the saved files land in:
+    /// `paper` → `Paper/`, `code` → `Code/`, anything else → `Research/`.
+    /// Optional for backwards compat — older clients that omit this field
+    /// fall through to the legacy all-`Research/` behavior.
+    #[serde(default)]
+    pub kind: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

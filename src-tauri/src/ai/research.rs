@@ -859,6 +859,11 @@ pub async fn research_extract_and_save(
         .json(&json!({
             "project_id": request.project_id,
             "items": items,
+            // Forward the envelope kind so the server can route paper-kind
+            // saves to Paper/ and code-kind saves to Code/. ResearchSearchKind
+            // serializes as snake_case ("paper"/"code"/...) — matches the
+            // server's zone_for_kind string literals one-to-one.
+            "kind": request.kind,
         }))
         .send()
         .await

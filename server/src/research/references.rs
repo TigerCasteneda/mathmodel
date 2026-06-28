@@ -160,7 +160,21 @@ pub fn cloud_file_name(file_id: &str, title: &str, extension: &str) -> String {
     format!("{slug}-{suffix}.{extension}")
 }
 
+/// Map a zone identifier to the human-readable name of the top-level folder
+/// the server provisioned for it (matches `server/src/project/handlers.rs`).
+/// Used by `create_cloud_*` to resolve parent folder IDs for the right zone.
+fn parent_folder_name(zone: &str) -> &'static str {
+    match zone {
+        "paper" => "Paper",
+        "code" => "Code",
+        _ => "Research",
+    }
+}
+
 /// Create a cloud file entry using existing project file + CRDT storage path.
+/// The `zone` parameter picks which top-level folder the file is parented
+/// under: `"paper"` → `Paper/`, `"code"` → `Code/`, anything else → `Research/`.
+/// Falls back to project root if no folder with that name+zone exists yet.
 pub async fn create_cloud_text_file(
     pool: &sqlx::SqlitePool,
     project_id: &str,
@@ -168,6 +182,7 @@ pub async fn create_cloud_text_file(
     title: &str,
     extension: &str,
     content: &str,
+    zone: &str,
 ) -> Result<(), AppError> {
     let now = Utc::now().timestamp();
     let file_name = cloud_file_name(file_id, title, extension);
@@ -175,23 +190,26 @@ pub async fn create_cloud_text_file(
         "SELECT id FROM files
          WHERE project_id = ?
            AND parent_id IS NULL
-           AND name = 'Research'
+           AND name = ?
            AND type = 'folder'
-           AND zone = 'research'
+           AND zone = ?
          LIMIT 1",
     )
     .bind(project_id)
+    .bind(parent_folder_name(zone))
+    .bind(zone)
     .fetch_optional(pool)
     .await?;
 
     sqlx::query(
         "INSERT INTO files (id, project_id, parent_id, name, type, zone, created_at, updated_at)
-         VALUES (?, ?, ?, ?, 'file', 'research', ?, ?)",
+         VALUES (?, ?, ?, ?, 'file', ?, ?, ?)",
     )
     .bind(file_id)
     .bind(project_id)
     .bind(&parent_id)
     .bind(&file_name)
+    .bind(zone)
     .bind(now)
     .bind(now)
     .execute(pool)
@@ -225,6 +243,7 @@ pub async fn create_cloud_binary_file(
     file_name: &str,
     mime_type: &str,
     content: &[u8],
+    zone: &str,
 ) -> Result<(), AppError> {
     let now = Utc::now().timestamp();
     let suffix = file_id.chars().take(8).collect::<String>();
@@ -233,7 +252,15 @@ pub async fn create_cloud_binary_file(
         .trim_end_matches(".PDF")
         .trim_matches('_');
     let file_name = if file_stem.is_empty() {
-        format!("research-paper-{suffix}.pdf")
+        // Empty stem fallback is hit when the caller passed something
+        // degenerate (no .pdf extension, just underscores, etc.). Prefix
+        // with the zone so it doesn't collide with another zone's content.
+        let zone_prefix = match zone {
+            "paper" => "paper",
+            "code" => "code",
+            _ => "research-paper",
+        };
+        format!("{zone_prefix}-{suffix}.pdf")
     } else {
         format!("{file_stem}-{suffix}.pdf")
     };
@@ -241,18 +268,20 @@ pub async fn create_cloud_binary_file(
         "SELECT id FROM files
          WHERE project_id = ?
            AND parent_id IS NULL
-           AND name = 'Research'
+           AND name = ?
            AND type = 'folder'
-           AND zone = 'research'
+           AND zone = ?
          LIMIT 1",
     )
     .bind(project_id)
+    .bind(parent_folder_name(zone))
+    .bind(zone)
     .fetch_optional(pool)
     .await?;
 
     sqlx::query(
         "INSERT INTO files (id, project_id, parent_id, name, type, mime_type, size, zone, created_at, updated_at)
-         VALUES (?, ?, ?, ?, 'file', ?, ?, 'research', ?, ?)",
+         VALUES (?, ?, ?, ?, 'file', ?, ?, ?, ?, ?)",
     )
     .bind(file_id)
     .bind(project_id)
@@ -260,6 +289,7 @@ pub async fn create_cloud_binary_file(
     .bind(&file_name)
     .bind(mime_type)
     .bind(content.len() as i64)
+    .bind(zone)
     .bind(now)
     .bind(now)
     .execute(pool)
