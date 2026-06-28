@@ -150,6 +150,16 @@ pub fn title_to_slug(title: &str) -> String {
     }
 }
 
+/// Compute the cloud-side file_name that `create_cloud_text_file` writes for a
+/// given title + file_id + extension. Centralized so callers (the save_items
+/// handler and tests) can reference the same naming without duplicating the
+/// slug derivation.
+pub fn cloud_file_name(file_id: &str, title: &str, extension: &str) -> String {
+    let slug = title_to_slug(title);
+    let suffix: String = file_id.chars().take(8).collect();
+    format!("{slug}-{suffix}.{extension}")
+}
+
 /// Create a cloud file entry using existing project file + CRDT storage path.
 pub async fn create_cloud_text_file(
     pool: &sqlx::SqlitePool,
@@ -160,9 +170,7 @@ pub async fn create_cloud_text_file(
     content: &str,
 ) -> Result<(), AppError> {
     let now = Utc::now().timestamp();
-    let slug = title_to_slug(title);
-    let suffix = file_id.chars().take(8).collect::<String>();
-    let file_name = format!("{slug}-{suffix}.{extension}");
+    let file_name = cloud_file_name(file_id, title, extension);
     let parent_id: Option<String> = sqlx::query_scalar(
         "SELECT id FROM files
          WHERE project_id = ?
@@ -297,6 +305,25 @@ mod tests {
         assert!(md.contains("## Key Parameters"));
         assert!(md.contains("## Relevance to Project"));
         assert!(md.contains("## BibTeX"));
+    }
+
+    #[test]
+    fn cloud_file_name_matches_create_cloud_text_file() {
+        // The cloud-side file_name is consumed by the host agent to mirror
+        // files locally; it must match what create_cloud_text_file writes.
+        let name = cloud_file_name("7f3a8c12-aaaa-bbbb-cccc-111122223333", "Bayesian SIR", "md");
+        assert_eq!(name, "bayesian_sir-7f3a8c12.md");
+
+        // Empty title falls back to the placeholder slug.
+        let name = cloud_file_name("abcdef01-xxxx", "!!!", "bib");
+        assert_eq!(name, "research-item-abcdef01.bib");
+
+        // Long titles truncate to 64-char slug + suffix + extension.
+        let long_title = "a".repeat(100);
+        let name = cloud_file_name("12345678", &long_title, "md");
+        assert_eq!(name.len(), 64 + 1 + 8 + 1 + 2);
+        assert!(name.starts_with(&"a".repeat(64)));
+        assert!(name.ends_with("-12345678.md"));
     }
 
     #[test]

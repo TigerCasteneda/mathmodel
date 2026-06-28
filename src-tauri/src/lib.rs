@@ -110,6 +110,7 @@ pub fn run() {
             agent::commands::read_file_base64,
             agent::commands::write_file,
             agent::commands::create_file,
+            agent::commands::get_work_dir,
             agent::commands::change_work_dir,
             agent::commands::open_folder,
             agent::commands::compile_latex,

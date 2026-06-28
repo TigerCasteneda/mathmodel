@@ -175,6 +175,11 @@ export async function changeWorkDir(path: string): Promise<FileTreeItem> {
   return invoke<FileTreeItem>("change_work_dir", { path })
 }
 
+export async function getWorkDir(): Promise<string | null> {
+  if (!isTauri()) return null
+  return invoke<string | null>("get_work_dir")
+}
+
 export async function setAiConfig(config: AiConfig): Promise<void> {
   if (!isTauri()) return
   return invoke("set_ai_config", { config })
@@ -298,6 +303,31 @@ export interface NativeResearchSaveRequest {
   kind: ResearchSearchKind
   auth_token?: string | null
   server_base?: string | null
+  /**
+   * Workspace mode from the frontend. `"host"` enables a one-way mirror of
+   * the server-saved items into `host_folder/references/`. Anything else
+   * (including `undefined`) keeps the legacy server-only behavior.
+   */
+  workspace_mode?: "host" | "guest" | null
+  /** Absolute path to the host workspace root; required when host-mode mirroring. */
+  host_folder?: string | null
+}
+
+export interface NativeResearchFileMirror {
+  cloud_file_id: string
+  file_name: string
+  body_md: string
+  bib_file_name?: string | null
+  body_bib?: string | null
+  title: string
+  url: string
+}
+
+export interface NativeResearchLocalMirror {
+  attempted: number
+  created: number
+  skipped: number
+  errors: Array<{ file_name: string; error: string }>
 }
 
 export interface NativeResearchSaveResponse {
@@ -305,6 +335,10 @@ export interface NativeResearchSaveResponse {
   items: unknown[]
   files_created: number
   warnings?: string[] | null
+  /** Per-item mirror metadata returned by the server for host-mode mirroring. */
+  mirrors?: NativeResearchFileMirror[]
+  /** Summary of what the host agent wrote to local disk; absent in guest mode. */
+  local_mirror?: NativeResearchLocalMirror
 }
 
 export async function researchSearchNative(

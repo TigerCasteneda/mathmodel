@@ -55,6 +55,32 @@ pub struct SaveItemsResponse {
     pub items: Vec<ResearchItem>,
     pub files_created: i32,
     pub warnings: Vec<String>,
+    /// Mirror metadata for any host agent running in Host Local mode. The
+    /// server is still authoritative; clients use this to write a one-way
+    /// local copy into `work_dir/references/`. Empty for guest-only callers.
+    pub mirrors: Vec<ResearchFileMirror>,
+}
+
+/// Per-item mirror payload returned alongside the canonical save response.
+/// Allows a Host Local agent to write a byte-identical copy of the cloud-side
+/// `.md` (and `.bib` when present) to its local workspace without re-running
+/// the AI extraction or the slug derivation.
+#[derive(Debug, Serialize)]
+pub struct ResearchFileMirror {
+    /// ID of the cloud `files` row holding the canonical markdown body.
+    pub cloud_file_id: String,
+    /// Server-computed filename for the `.md`, e.g. `bayesian_sir-7f3a8c12.md`.
+    pub file_name: String,
+    /// Exact body written into `crdt_docs` for the `.md` file.
+    pub body_md: String,
+    /// Server-computed filename for the `.bib`, present when bibtex was extracted.
+    pub bib_file_name: Option<String>,
+    /// Exact body written into `crdt_docs` for the `.bib` file.
+    pub body_bib: Option<String>,
+    /// Title as supplied by the client; used for the local manifest entry.
+    pub title: String,
+    /// Original URL; used for the local manifest entry.
+    pub url: String,
 }
 
 #[derive(Debug, Deserialize)]

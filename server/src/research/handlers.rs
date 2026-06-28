@@ -73,6 +73,7 @@ async fn save_items(
     let mut saved = Vec::new();
     let mut files_created = 0i32;
     let mut warnings = Vec::new();
+    let mut mirrors: Vec<ResearchFileMirror> = Vec::new();
     let now = Utc::now().timestamp();
 
     for input in &req.items {
@@ -140,6 +141,11 @@ async fn save_items(
         {
             Ok(()) => {
                 files_created += 1;
+                // Compute the cloud-side file_name once so it can be reused in
+                // the host-side mirror without re-deriving the slug.
+                let md_file_name = references::cloud_file_name(&cloud_file_id, &input.title, "md");
+                let mut bib_file_name: Option<String> = None;
+                let mut body_bib: Option<String> = None;
                 if !bib_content.trim().is_empty() {
                     match references::create_cloud_text_file(
                         &state.pool,
@@ -151,7 +157,15 @@ async fn save_items(
                     )
                     .await
                     {
-                        Ok(()) => files_created += 1,
+                        Ok(()) => {
+                            files_created += 1;
+                            bib_file_name = Some(references::cloud_file_name(
+                                &bib_file_id,
+                                &input.title,
+                                "bib",
+                            ));
+                            body_bib = Some(bib_content.clone());
+                        }
                         Err(err) => tracing::warn!("Failed to create cloud bib file: {err:?}"),
                     }
                 }
@@ -201,6 +215,19 @@ async fn save_items(
                         }
                     }
                 }
+
+                // Push the mirror entry now that all cloud-side files for
+                // this item are committed. The host agent uses this to write
+                // a byte-identical local copy into work_dir/references/.
+                mirrors.push(ResearchFileMirror {
+                    cloud_file_id: cloud_file_id.clone(),
+                    file_name: md_file_name,
+                    body_md: md_content.clone(),
+                    bib_file_name,
+                    body_bib,
+                    title: input.title.clone(),
+                    url: input.url.clone(),
+                });
             }
             Err(err) => {
                 tracing::warn!("Failed to create cloud md file: {err:?}");
@@ -224,6 +251,7 @@ async fn save_items(
         items: saved,
         files_created,
         warnings,
+        mirrors,
     }))
 }
 

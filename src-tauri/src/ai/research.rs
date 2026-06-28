@@ -65,6 +65,15 @@ pub struct ResearchExtractSaveRequest {
     pub kind: ResearchSearchKind,
     pub auth_token: Option<String>,
     pub server_base: Option<String>,
+    /// Optional workspace mode from the frontend. `"host"` enables a
+    /// one-way mirror to `host_folder/references/`; `"guest"` (default) and
+    /// `None` keep the legacy server-only behavior.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub workspace_mode: Option<String>,
+    /// Absolute path to the host workspace root. Required when
+    /// `workspace_mode == "host"`; ignored otherwise.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub host_folder: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -863,7 +872,29 @@ pub async fn research_extract_and_save(
     if !status.is_success() {
         return Err(format!("Research save failed ({status}): {body}"));
     }
-    serde_json::from_str(&body).map_err(|error| format!("Invalid save response: {error}"))
+    let mut response_value: Value = serde_json::from_str(&body)
+        .map_err(|error| format!("Invalid save response: {error}"))?;
+
+    // Host-side mirror: when workspace_mode == "host" and host_folder is set,
+    // write each server-returned mirror entry to host_folder/references/ so
+    // the user can browse the items in their local file tree. The server
+    // remains authoritative; this is a read-only mirror for this iteration.
+    let local_mirror = crate::agent::commands::mirror_research_save_to_host(
+        request.workspace_mode.as_deref(),
+        request.host_folder.as_deref(),
+        &request.project_id,
+        &response_value,
+    );
+
+    if let Value::Object(ref mut map) = response_value {
+        map.insert("local_mirror".to_string(), local_mirror);
+    } else {
+        tracing::warn!(
+            "Research save response is not a JSON object; skipping local_mirror field"
+        );
+    }
+
+    Ok(response_value)
 }
 
 /// Search the general web via Scrapling's DDG HTML scraping.

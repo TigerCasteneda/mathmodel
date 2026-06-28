@@ -373,14 +373,41 @@ function errorText(error: unknown, fallback: string) {
   return fallback
 }
 
+function formatMirrorSummary(
+  workspaceMode: WorkspaceMode | undefined,
+  response: Awaited<ReturnType<typeof researchExtractAndSave>>,
+): string {
+  const mirror = response.local_mirror
+  if (!mirror) return ""
+  if (workspaceMode !== "host") return ""
+  if (mirror.skipped > 0) {
+    return " Open a folder in Explorer to enable local mirror."
+  }
+  if (mirror.errors.length > 0) {
+    const errNames = mirror.errors
+      .slice(0, 3)
+      .map((e) => e.file_name)
+      .join(", ")
+    return ` Local mirror: ${mirror.created} of ${mirror.attempted} (skipped: ${errNames}).`
+  }
+  if (mirror.attempted > 0) {
+    return ` Local mirror: ${mirror.created} of ${mirror.attempted} file(s).`
+  }
+  return ""
+}
+
 function ResearchSearchPanel({
   projectId,
   capabilities,
   onKeepOpen,
+  workspaceMode,
+  hostFolder,
 }: {
   projectId: string
   capabilities: ProjectCapability[]
   onKeepOpen: () => void
+  workspaceMode?: WorkspaceMode
+  hostFolder?: string | null
 }) {
   const [items, setItems] = useState<ResearchItem[]>([])
   const [query, setQuery] = useState("")
@@ -488,9 +515,14 @@ function ResearchSearchPanel({
         results: selectedResults,
         kind,
         auth_token: getToken(),
+        workspace_mode: workspaceMode,
+        host_folder: workspaceMode === "host" ? hostFolder ?? null : null,
       })
       const warningText = response.warnings?.length ? ` ${response.warnings.join(" ")}` : ""
-      setMessage(`Saved ${response.saved} item(s) and created ${response.files_created} research file(s).${warningText}`)
+      const mirrorText = formatMirrorSummary(workspaceMode, response)
+      setMessage(
+        `Saved ${response.saved} item(s) and created ${response.files_created} research file(s).${mirrorText}${warningText}`,
+      )
       setSelected(new Set())
       onKeepOpen()
       try {
@@ -527,9 +559,14 @@ function ResearchSearchPanel({
         results: mapped,
         kind: "auto",
         auth_token: getToken(),
+        workspace_mode: workspaceMode,
+        host_folder: workspaceMode === "host" ? hostFolder ?? null : null,
       })
       const warningText = response.warnings?.length ? ` ${response.warnings.join(" ")}` : ""
-      setMessage(`Saved ${response.saved} item(s) and created ${response.files_created} research file(s).${warningText}`)
+      const mirrorText = formatMirrorSummary(workspaceMode, response)
+      setMessage(
+        `Saved ${response.saved} item(s) and created ${response.files_created} research file(s).${mirrorText}${warningText}`,
+      )
       onKeepOpen()
       try {
         setItems(await listResearchItems(projectId))
@@ -2515,7 +2552,13 @@ export function ModelerWorkbench({ projectId }: { projectId: string }) {
               capabilities={capabilities}
             />
           ) : active?.kind === "research" ? (
-            <ResearchSearchPanel projectId={projectId} capabilities={capabilities} onKeepOpen={openResearchTab} />
+            <ResearchSearchPanel
+              projectId={projectId}
+              capabilities={capabilities}
+              onKeepOpen={openResearchTab}
+              workspaceMode={workspaceMode}
+              hostFolder={workspaceMode === "host" ? tauriAgent.workDir : null}
+            />
           ) : active?.kind === "diff" ? (
             <div className="flex h-full flex-col">
               <div className="flex h-8 items-center gap-3 border-b border-[#373737] bg-[#121212] px-3 text-xs text-[#b4b4b4]">
