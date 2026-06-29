@@ -512,18 +512,18 @@
   border-left-color: var(--essay-accent);
 }
 .essay-tree-chevron {
-  width: 14px;
-  height: 14px;
+  width: 16px;
+  height: 16px;
   flex-shrink: 0;
-  color: var(--essay-text-faint);
+  color: var(--essay-text-muted);
   transition: transform var(--essay-transition);
 }
 .essay-tree-chevron--open {
   transform: rotate(90deg);
 }
 .essay-tree-icon {
-  width: 14px;
-  height: 14px;
+  width: 16px;
+  height: 16px;
   flex-shrink: 0;
   color: var(--essay-text-faint);
 }
