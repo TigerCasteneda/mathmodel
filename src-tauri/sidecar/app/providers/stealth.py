@@ -25,7 +25,11 @@ from app.models import SearchResultItem
 STEALTHY_KWARGS: dict[str, Any] = dict(
     headless=True,
     solve_cloudflare=True,
-    timeout=30_000,
+    # 50s leaves a ~10s buffer under the Rust-side 60s HTTP timeout so the
+    # sidecar can return a clean JSON response (with a warning) instead of
+    # having the reqwest client cut the connection mid-stream. Chromium +
+    # Cloudflare bypass can legitimately take 25-40s on a slow link.
+    timeout=50_000,
 )
 
 # Plain Fetcher (curl_cffi) — used for trusted sites where speed > anti-bot.

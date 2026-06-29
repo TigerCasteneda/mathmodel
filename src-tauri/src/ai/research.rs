@@ -1115,7 +1115,12 @@ async fn search_s2_html_scrapling(
         .filter(|item| is_allowed_academic_source(&item.url, &ResearchSearchKind::Paper))
         .collect();
     items.truncate(limit as usize);
-    Ok(ProviderSearchResult { items, warning: None })
+    // Propagate the sidecar's timeout/selector warning so the caller can
+    // distinguish "no results" from "StealthyFetcher timed out". The
+    // `_wrap_scrapling_search` helper on the Python side emits a warning
+    // when 0 items come back after >20s — that's the timeout signal.
+    let warning = parsed["warning"].as_str().map(String::from);
+    Ok(ProviderSearchResult { items, warning })
 }
 
 /// Search github.com via Scrapling HTML scraping. PRIMARY path for code search.
@@ -1160,7 +1165,12 @@ async fn search_github_html_scrapling(
         .filter(|item| is_allowed_academic_source(&item.url, &ResearchSearchKind::Code))
         .collect();
     items.truncate(limit as usize);
-    Ok(ProviderSearchResult { items, warning: None })
+    // Propagate the sidecar's timeout/selector warning so the caller can
+    // distinguish "no results" from "StealthyFetcher timed out". The
+    // `_wrap_scrapling_search` helper on the Python side emits a warning
+    // when 0 items come back after >20s — that's the timeout signal.
+    let warning = parsed["warning"].as_str().map(String::from);
+    Ok(ProviderSearchResult { items, warning })
 }
 
 /// Search kaggle.com via Scrapling HTML scraping. PRIMARY path for Kaggle datasets.
@@ -1202,7 +1212,12 @@ async fn search_kaggle_html_scrapling(
         .filter(|item| is_allowed_academic_source(&item.url, &ResearchSearchKind::Dataset))
         .collect();
     items.truncate(limit as usize);
-    Ok(ProviderSearchResult { items, warning: None })
+    // Propagate the sidecar's timeout/selector warning so the caller can
+    // distinguish "no results" from "StealthyFetcher timed out". The
+    // `_wrap_scrapling_search` helper on the Python side emits a warning
+    // when 0 items come back after >20s — that's the timeout signal.
+    let warning = parsed["warning"].as_str().map(String::from);
+    Ok(ProviderSearchResult { items, warning })
 }
 
 async fn search_firecrawl(

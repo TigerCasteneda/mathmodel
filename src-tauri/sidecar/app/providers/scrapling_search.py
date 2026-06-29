@@ -16,6 +16,8 @@ Scraping policy:
 from __future__ import annotations
 
 import asyncio
+import logging
+import time
 from typing import Any
 from urllib.parse import quote_plus
 
@@ -27,7 +29,6 @@ __all__ = [
     "search_arxiv_html",
     "search_semanticscholar_html",
     "search_pubmed_html",
-    "search_zenodo_html",
     "search_github_html",
     "search_kaggle_html",
 ]
@@ -281,9 +282,21 @@ async def search_semanticscholar_html(query: str, limit: int = 8) -> list[dict[s
     from scrapling import Selector
 
     url = f"https://www.semanticscholar.org/search?q={quote_plus(query)}&sort=relevance"
+    _t0 = time.monotonic()
     try:
         page = await _stealthy_get(url)
-    except Exception:
+    except Exception as exc:
+        # Don't silently swallow — selector rot, StealthyFetcher timeout,
+        # and network failures all land here; the caller needs to know
+        # which it was. Elapsed time tells us if it was a timeout
+        # (close to STEALTHY_KWARGS.timeout) vs an instant parse failure.
+        logging.getLogger(__name__).warning(
+            "Scrapling S2 HTML fetch failed for query=%r after %.1fs: %s: %s",
+            query,
+            time.monotonic() - _t0,
+            type(exc).__name__,
+            exc,
+        )
         return []
 
     selector = Selector(content=page.html_content, url=getattr(page, "url", url))
@@ -386,25 +399,51 @@ async def search_github_html(query: str, limit: int = 8) -> list[dict[str, Any]]
     to see more than ~10 results; without auth, expect 5-10 repos per page.
     The caller should fall back to the GitHub API for deeper results.
 
-    The search page is at ``https://github.com/search?q={q}&type=repositories``.
-    Each result is a repository card with:
-      - a.v-align-middle    → owner/repo title + URL
-      - p.color-fg-muted    → description
-      - a[href*='/stargazers'] → star count
+    GitHub uses CSS-modules with hashed class names that change on every
+    deploy (e.g. ``Result-module__Result__Up5vk``), so we rely on stable
+    structural hooks:
+
+      - Container row:   ``[data-testid='results-list'] > div``
+      - Title anchor:    ``a[data-component='Link']`` whose href is exactly
+                         ``/owner/repo`` (skip ``/stargazers``, ``/topics/...``,
+                         ``/issues`` etc. that share the same component)
+      - Title text:      derived from the href — more reliable than
+                         ``title_node.text`` which Scrapling can strip of
+                         nested ``<span>``/``<em>`` matches
+      - Description:     ``[class*='Content-module__Content']`` (current)
+                         with legacy ``p.color-fg-muted`` as fallback
+
+    The old ``div.SearchResult`` / ``article.Box-row`` selectors currently
+    return 0 (github migrated off them) but are kept as last-resort in case
+    of rollback.
     """
+    import logging
     from scrapling import Selector
 
     url = f"https://github.com/search?q={quote_plus(query)}&type=repositories"
+    _t0 = time.monotonic()
     try:
         page = await _stealthy_get(url)
-    except Exception:
+    except Exception as exc:
+        # Don't silently swallow — selector rot, StealthyFetcher timeout,
+        # and network failures all land here; the caller needs to know
+        # which it was. Elapsed time tells us if it was a timeout
+        # (close to STEALTHY_KWARGS.timeout) vs an instant parse failure.
+        logging.getLogger(__name__).warning(
+            "Scrapling github HTML fetch failed for query=%r after %.1fs: %s: %s",
+            query,
+            time.monotonic() - _t0,
+            type(exc).__name__,
+            exc,
+        )
         return []
 
     selector = Selector(content=page.html_content, url=getattr(page, "url", url))
+    # Stable hook first; legacy classes as last-resort fallback.
     nodes = (
-        selector.css("div.SearchResult")
+        selector.css("[data-testid='results-list'] > div")
+        or selector.css("div.SearchResult")
         or selector.css("article.Box-row")
-        or selector.css("[data-testid='results-list'] > div")
     )
 
     # Selector.css may return a single Adaptor or a list of Adaptors depending
@@ -420,33 +459,68 @@ async def search_github_html(query: str, limit: int = 8) -> list[dict[str, Any]]
     items: list[dict[str, Any]] = []
     for i, node in enumerate(node_list[:limit]):
         try:
-            title_node = (
-                node.css("a.v-align-middle").first
-                or node.css("a[data-testid='result-repo-link']").first
-                or node.css("h3 a").first
-            )
+            # Prefer the new ``a[data-component='Link']`` with a clean
+            # ``/owner/repo`` href. Skip footer links (/stargazers has 3
+            # segments, /topics/foo is to a topic page, /issues/... etc.).
+            link_select = node.css("a[data-component='Link']")
+            if hasattr(link_select, "__iter__") and not isinstance(link_select, str):
+                anchor_candidates = list(link_select)
+            else:
+                first = link_select.first if hasattr(link_select, "first") else link_select
+                anchor_candidates = [first] if first is not None else []
+
+            title_node = None
+            for anchor in anchor_candidates:
+                href = (anchor.attrib.get("href") or "").strip()
+                parts = [p for p in href.lstrip("/").split("/") if p]
+                if len(parts) == 2 and all("." not in p for p in parts):
+                    title_node = anchor
+                    break
+            if title_node is None:
+                # Legacy fallbacks
+                title_node = (
+                    node.css("h3 a").first
+                    or node.css("a.v-align-middle").first
+                    or node.css("a[data-testid='result-repo-link']").first
+                )
             if title_node is None:
                 continue
-            raw_title = (title_node.text or "").strip()
-            # Title often contains "owner / repo" — normalize whitespace
-            title = " / ".join(
-                [
-                    p.strip()
-                    for p in raw_title.replace("\n", " ").split("/")
-                    if p.strip()
-                ]
-            )
+
+            # Derive title from href (more reliable than .text which can be
+            # stripped of nested <span>/<em> children by Scrapling).
             url_final = (title_node.attrib.get("href") or "").strip()
             if url_final.startswith("/"):
                 url_final = f"https://github.com{url_final}"
+            owner_repo = url_final.replace("https://github.com/", "").strip("/")
+            title = " / ".join(p for p in owner_repo.split("/") if p)
+            if not title:
+                # Last resort: scrape visible text.
+                raw_title = (title_node.text or "").strip()
+                title = " / ".join(
+                    [
+                        p.strip()
+                        for p in raw_title.replace("\n", " ").split("/")
+                        if p.strip()
+                    ]
+                )
 
             desc_node = (
-                node.css("p.color-fg-muted").first
+                node.css("[class*='Content-module__Content']").first
+                or node.css("p.color-fg-muted").first
                 or node.css("div.SearchResult-second-line").first
             )
             desc = ""
-            if desc_node is not None and desc_node.text:
-                desc = " ".join(desc_node.text.split())
+            if desc_node is not None:
+                # Scrapling's ``.text`` strips nested <span>/<em> children
+                # (it returns direct text nodes only), which empties the
+                # description on the current GitHub layout. Use
+                # ``get_all_text(strip=True)`` to recurse into descendants.
+                raw_desc = ""
+                if hasattr(desc_node, "get_all_text"):
+                    raw_desc = desc_node.get_all_text(strip=True) or ""
+                if not raw_desc:
+                    raw_desc = (desc_node.text or "")
+                desc = " ".join(raw_desc.split())
 
             if not url_final or not title:
                 continue
@@ -475,94 +549,6 @@ async def search_github_html(query: str, limit: int = 8) -> list[dict[str, Any]]
     return items
 
 
-async def search_zenodo_html(query: str, limit: int = 8) -> list[dict[str, Any]]:
-    """Scrape zenodo.org's search results page.
-
-    Zenodo has no anti-bot — uses the basic Fetcher. The search page is at
-    ``https://zenodo.org/search?q={q}``. Each result is a
-    ``<div class="result-item">`` block (with ``<article class="result">`` as
-    fallback) with:
-
-    - ``h4 a``              → record title + URL (e.g. ``/record/12345``)
-    - ``span.result-authors`` → author list
-    - ``p.result-description`` → description snippet
-    - ``span.result-date``  → publication date (year is regex-extracted)
-
-    Returns dicts compatible with ``SearchResultItem``. On any failure returns
-    an empty list so the caller can fall back gracefully.
-    """
-    import re
-    from scrapling import Selector
-
-    url = f"https://zenodo.org/search?q={quote_plus(query)}"
-    try:
-        page = await _fetcher_get(url)
-    except Exception:
-        return []
-
-    selector = Selector(content=page.html_content, url=getattr(page, "url", url))
-    nodes = selector.css("div.result-item") or selector.css("article.result")
-    if hasattr(nodes, "__iter__") and not isinstance(nodes, str):
-        try:
-            node_list = list(nodes)
-        except TypeError:
-            node_list = nodes if nodes is not None else []
-    else:
-        node_list = nodes if nodes is not None else []
-
-    items: list[dict[str, Any]] = []
-    for i, node in enumerate(node_list[:limit]):
-        try:
-            title_node = node.css("h4 a").first
-            if title_node is None:
-                title_node = node.css("a.result-title").first
-            if title_node is None:
-                continue
-            title = (title_node.text or "").strip()
-            url_final = (title_node.attrib.get("href") or "").strip()
-            if url_final.startswith("/"):
-                url_final = f"https://zenodo.org{url_final}"
-
-            authors_node = node.css("span.result-authors").first
-            authors_text = ""
-            if authors_node is not None and authors_node.text:
-                authors_text = " ".join(authors_node.text.split())
-
-            desc_node = node.css("p.result-description").first
-            desc = ""
-            if desc_node is not None and desc_node.text:
-                desc = " ".join(desc_node.text.split())
-
-            year: int | None = None
-            date_node = node.css("span.result-date").first
-            if date_node is not None and date_node.text:
-                m = re.search(r"\b(19|20)\d{2}\b", date_node.text)
-                if m:
-                    year = int(m.group(0))
-
-            if not url_final or not title:
-                continue
-            if "zenodo.org" not in url_final:
-                continue
-
-            items.append({
-                "title": title,
-                "url": url_final,
-                "content": desc or title,
-                "provider": "scrapling_zenodo",
-                "source": "scrapling_zenodo_search",
-                "category": "dataset",
-                "authors": authors_text or None,
-                "publish_year": year,
-                "keywords": None,
-                "relevance_score": max(0.1, 1.0 - i * 0.05),
-                "raw_json": {},
-            })
-        except Exception:
-            continue
-    return items
-
-
 async def search_kaggle_html(query: str, limit: int = 8) -> list[dict[str, Any]]:
     """Scrape kaggle.com's search results page.
 
@@ -580,9 +566,21 @@ async def search_kaggle_html(query: str, limit: int = 8) -> list[dict[str, Any]]
     from scrapling import Selector
 
     url = f"https://www.kaggle.com/search?q={quote_plus(query)}"
+    _t0 = time.monotonic()
     try:
         page = await _stealthy_get(url)
-    except Exception:
+    except Exception as exc:
+        # Don't silently swallow — selector rot, StealthyFetcher timeout,
+        # and network failures all land here; the caller needs to know
+        # which it was. Elapsed time tells us if it was a timeout
+        # (close to STEALTHY_KWARGS.timeout) vs an instant parse failure.
+        logging.getLogger(__name__).warning(
+            "Scrapling kaggle HTML fetch failed for query=%r after %.1fs: %s: %s",
+            query,
+            time.monotonic() - _t0,
+            type(exc).__name__,
+            exc,
+        )
         return []
 
     selector = Selector(content=page.html_content, url=getattr(page, "url", url))

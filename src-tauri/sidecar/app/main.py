@@ -1,4 +1,6 @@
 import asyncio
+import logging
+import time
 import traceback
 
 from fastapi import FastAPI
@@ -16,6 +18,39 @@ from app.models import (
 from app.providers import arxiv, github, kaggle, openalex, scrapling_search, semantic_scholar, stealth, zenodo
 
 app = FastAPI(title="Modeler Sidecar", version="0.1.0")
+
+
+# Heuristic: if StealthyFetcher returned 0 items AND took >20s, it's almost
+# certainly a timeout (STEALTHY_KWARGS.timeout is 50s). Surface as a warning
+# so the Rust caller can fast-fall-back instead of waiting the full 60s
+# reqwest timeout before its own retry logic kicks in.
+_SCRAPLING_SLOW_THRESHOLD_SECS = 20.0
+
+
+def _wrap_scrapling_search(
+    raw_items: list[dict],
+    t0: float,
+    source_name: str,
+) -> SearchResponse:
+    """Convert raw scrapling dicts to a SearchResponse and detect likely timeouts.
+
+    A scrapling call that returns 0 items in <2s almost certainly means the
+    HTML structure changed (selector rot). A call that returns 0 items in
+    20-50s almost certainly hit StealthyFetcher's timeout. We can't tell from
+    the Python side without inspecting the exception, so we use the
+    elapsed-time heuristic to flag the slow case for the caller.
+    """
+    items = [SearchResultItem(**item) for item in raw_items]
+    warning: str | None = None
+    if not items:
+        elapsed = time.monotonic() - t0
+        if elapsed >= _SCRAPLING_SLOW_THRESHOLD_SECS:
+            warning = (
+                f"Scrapling {source_name} returned 0 items after {elapsed:.1f}s "
+                f"(StealthyFetcher timeout likely — caller should fast-fallback)"
+            )
+            logging.getLogger(__name__).info(warning)
+    return SearchResponse(items=items, warning=warning)
 
 
 @app.get("/health")
@@ -68,9 +103,9 @@ async def search_papers_scrapling_s2(req: SearchRequest):
     so the Rust side can fall back to the API-based S2 search.
     """
     from app.providers.scrapling_search import search_semanticscholar_html
+    t0 = time.monotonic()
     raw = await search_semanticscholar_html(req.query, req.limit)
-    items = [SearchResultItem(**item) for item in raw]
-    return SearchResponse(items=items, warning=None)
+    return _wrap_scrapling_search(raw, t0, "semanticscholar")
 
 
 @app.post("/search/datasets", response_model=SearchResponse)
@@ -85,15 +120,19 @@ async def search_datasets(req: SearchRequest):
 
 @app.post("/search/datasets/scrapling/zenodo", response_model=SearchResponse)
 async def search_datasets_scrapling_zenodo(req: SearchRequest):
-    """zenodo.org HTML search via Scrapling (no API key needed).
+    """Zenodo dataset search via the InvenioRDM REST API.
 
-    PRIMARY path for dataset search — Zenodo has no anti-bot so this uses
-    the basic Fetcher (no Chromium needed). Falls back to the existing
-    REST-API /search/datasets endpoint when this returns 0 results.
+    PRIMARY path for dataset search. Zenodo migrated to an InvenioRDM
+    SPA, so the legacy HTML scrape (`scrapling_search.search_zenodo_html`,
+    selectors `div.result-item` / `article.result`) returns 0 because the
+    search results are JS-rendered after page load. The canonical
+    InvenioRDM API at `/api/records` returns the same data as JSON and
+    works without a browser — used here directly.
+
+    The endpoint name keeps the `/scrapling/` prefix for backward compat
+    with the Rust caller (`research.rs::search_zenodo_html_scrapling`).
     """
-    from app.providers.scrapling_search import search_zenodo_html
-    raw = await search_zenodo_html(req.query, req.limit)
-    items = [SearchResultItem(**item) for item in raw]
+    items = await zenodo.search(req.query, req.limit)
     return SearchResponse(items=items, warning=None)
 
 
@@ -107,9 +146,9 @@ async def search_datasets_scrapling_kaggle(req: SearchRequest):
     Kaggle REST API in that case.
     """
     from app.providers.scrapling_search import search_kaggle_html
+    t0 = time.monotonic()
     raw = await search_kaggle_html(req.query, req.limit)
-    items = [SearchResultItem(**item) for item in raw]
-    return SearchResponse(items=items, warning=None)
+    return _wrap_scrapling_search(raw, t0, "kaggle")
 
 
 @app.post("/search/code", response_model=SearchResponse)
@@ -128,9 +167,9 @@ async def search_code_scrapling_github(req: SearchRequest):
     REST GitHub API) is the FALLBACK when this returns 0 results. Note:
     GitHub requires login for >10 results; without auth, expect 5-10 repos.
     """
+    t0 = time.monotonic()
     raw = await scrapling_search.search_github_html(req.query, req.limit)
-    items = [SearchResultItem(**item) for item in raw]
-    return SearchResponse(items=items, warning=None)
+    return _wrap_scrapling_search(raw, t0, "github")
 
 
 @app.post("/enrich", response_model=SearchResultItem | None)
