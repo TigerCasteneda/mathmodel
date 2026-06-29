@@ -10,10 +10,10 @@ import {
   MessageSquare,
   Pencil,
   Plus,
-  Sparkles,
   Trash2,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { ModelerMark } from "@/components/chat/modeler-mark"
 import {
   deleteSession,
   listSessions,
@@ -397,7 +397,11 @@ useEffect(() => {
         {/* Query bar */}
         <div className="border-b border-[#373737] p-3">
           <div className="flex items-center gap-2 rounded-md border border-[#373737] bg-[#232323] px-3 focus-within:border-[#d4a574]">
-            <Sparkles className="h-4 w-4 shrink-0 text-[#d4a574]" />
+            <ModelerMark
+              size={14}
+              state={state.phase === "running" ? "thinking" : "idle"}
+              className="shrink-0"
+            />
             <input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
@@ -422,7 +426,7 @@ useEffect(() => {
         <div ref={scrollRef} className="relative flex-1 overflow-auto p-4">
           {state.phase === "initial" && state.turns.length === 0 ? (
             <div className="flex h-full flex-col items-center justify-center text-center text-[#555]">
-              <Sparkles className="mb-3 h-8 w-8 text-[#373737]" />
+              <ModelerMark size={32} state="idle" className="mb-3" />
               <p className="text-sm">Agentic research — searches arXiv, Semantic Scholar, OpenAlex,</p>
               <p className="text-sm">Zenodo, Kaggle, and GitHub, then writes a cited answer.</p>
             </div>

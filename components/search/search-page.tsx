@@ -19,6 +19,7 @@ import {
   type SearchQuestionsEvent,
 } from "@/lib/tauri-api"
 import { useAuth } from "@/hooks/use-auth"
+import { ModelerMark } from "@/components/chat/modeler-mark"
 
 // ─── storage ───
 //
@@ -470,7 +471,11 @@ function ResultsState({
       {answer && (
         <div className="mb-8">
           <div className="mb-2 flex items-center gap-2 text-xs text-[#787878]">
-            <Sparkles className="h-3.5 w-3.5 text-[#d4a574]" />
+            <ModelerMark
+              size={14}
+              state={phase === "streaming" ? "speaking" : "thinking"}
+              className="shrink-0"
+            />
             <span>AI Answer{phase === "streaming" && " — streaming..."}</span>
           </div>
           <div className="prose prose-invert max-w-none text-sm leading-relaxed">

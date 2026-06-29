@@ -42,6 +42,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
 import { cn } from "@/lib/utils"
+import { ModelerMark, type ModelerMarkState } from "@/components/chat/modeler-mark"
 import {
   appendAssistantError,
   appendErrorTimeline,
@@ -214,16 +215,29 @@ function restoreMessages(sessionMessages: PersistedSessionMessage[]): Message[] 
   return restored
 }
 
-function OrangeMark({ className }: { className?: string }) {
+/**
+ * Agent avatar — a small badge wrapping ModelerMark. The badge
+ * gives the mark visual weight at small sizes (16–32px) and a
+ * brand-tinted ring that reads as "this came from the agent".
+ *
+ * Sizing stays in Tailwind class names (`h-6 w-6`, `h-7 w-7`, etc.)
+ * for consistency with the rest of the chat UI — CSS scales the
+ * inner mark to 70% of the badge via the `.agent-mark-badge > .modeler-mark`
+ * rule.
+ */
+function AgentMark({
+  className,
+  state = "thinking",
+}: {
+  className?: string
+  state?: ModelerMarkState
+}) {
   return (
     <span
-      className={cn(
-        "cc-claude-breathe inline-flex items-center justify-center rounded-full border border-[#d97757]/55 bg-[#1f1308] shadow-[0_0_18px_rgba(217,119,87,0.22)]",
-        className,
-      )}
-      aria-hidden="true"
+      className={cn("agent-mark-badge", className)}
+      aria-label="Modeler AI"
     >
-      <img src="/claude-color.svg" alt="" className="h-[62%] w-[62%]" />
+      <ModelerMark size={32} state={state} />
     </span>
   )
 }
@@ -694,7 +708,7 @@ function BackgroundTaskCard({ task }: { task: BackgroundTaskEntry }) {
   return (
     <div className="my-2 rounded-lg border border-[#373737] bg-[#151515] px-3 py-2 text-xs shadow-[0_0_0_1px_rgba(245,158,11,0.08)]">
       <div className="flex items-center gap-2">
-        <OrangeMark className="h-6 w-6 shrink-0" />
+        <AgentMark className="h-6 w-6" state="thinking" />
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
             <span className="font-semibold text-[#e8e8e8]">Background {task.taskType}</span>
@@ -950,7 +964,10 @@ function TranscriptTurn({
 
   return (
     <div className="flex gap-3">
-      <OrangeMark className="mt-0.5 h-7 w-7 shrink-0" />
+      <AgentMark
+        className="mt-0.5 h-7 w-7"
+        state={message.streaming ? "speaking" : "thinking"}
+      />
       <div
         className={cn(
           "min-w-0 flex-1 border-l border-[#2a2a2a] pl-3",
@@ -1330,7 +1347,7 @@ export function ChatPanel({
 
       {/* Header bar */}
       <div className="flex h-11 items-center gap-2 border-b border-[#373737] bg-[#121212]/95 px-3 shrink-0">
-        <OrangeMark className="cc-claude-mark h-7 w-7" />
+        <AgentMark className="h-7 w-7" state={sending ? "speaking" : "thinking"} />
         <div className="flex flex-col leading-none">
           <span className="text-sm font-medium">Modeler AI</span>
           <span className="mt-1 text-[10px] uppercase tracking-[0.18em] text-[#787878]">Claude Code Runtime</span>
@@ -1366,7 +1383,7 @@ export function ChatPanel({
       <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto">
         {messages.length === 0 ? (
           <div className="mx-auto flex h-full max-w-2xl flex-col justify-center px-4">
-            <OrangeMark className="mb-4 h-12 w-12" />
+            <AgentMark className="mb-4 h-12 w-12" state="idle" />
             <h2 className="text-xl font-semibold">Modeler AI</h2>
             <p className="mt-2 text-sm text-[#787878]">Mathematical modeling assistant. Search papers, write code, analyze data.</p>
             <div className="mt-4 flex flex-wrap gap-2 text-xs text-[#b4b4b4]">
@@ -1403,7 +1420,7 @@ export function ChatPanel({
             )}
             {waitingForAssistant && (
               <div className="flex gap-3">
-                <OrangeMark className="mt-1 h-8 w-8 shrink-0" />
+                <AgentMark className="mt-1 h-8 w-8" state="thinking" />
                 <div className="max-w-[80%]">
                   <ThinkingStrip />
                 </div>

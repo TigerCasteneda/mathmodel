@@ -11,10 +11,31 @@ const globalsSource = readFileSync("app/globals.css", "utf8")
 const cargoSource = readFileSync("src-tauri/Cargo.toml", "utf8")
 const capabilitySource = readFileSync("src-tauri/capabilities/default.json", "utf8")
 
-test("chat uses the Claude color asset with breathing motion", () => {
-  assert.match(chatSource, /\/claude-color\.svg/)
-  assert.match(chatSource, /cc-claude-breathe/)
-  assert.match(globalsSource, /@keyframes cc-claude-breathe/)
+test("chat uses the ModelerMark component with breathing motion", () => {
+  // The chat panel renders the new dynamic mark instead of the
+  // static Claude spark. Verify by importing ModelerMark with
+  // explicit state values, and that the breathing keyframes exist
+  // in globals.css.
+  assert.match(chatSource, /import.*ModelerMark/)
+  // At least one of the chat-panel call sites must use a state prop
+  // (we ship idle / thinking / speaking).
+  assert.match(chatSource, /state="thinking"/)
+  assert.match(chatSource, /state="idle"/)
+  assert.match(globalsSource, /@keyframes modeler-mark-breathe/)
+
+  // The state class names are baked into the React component
+  // (ModelerMark concatenates `modeler-mark--${state}`), so check
+  // them in the component file rather than the chat panel source.
+  const modelerMarkSource = readFileSync(
+    "components/chat/modeler-mark.tsx",
+    "utf8",
+  )
+  assert.match(modelerMarkSource, /modeler-mark--\$\{state\}/)
+  // And confirm the old Claude mark asset is no longer referenced
+  // from chat-panel.tsx.
+  assert.doesNotMatch(chatSource, /claude-color\.svg/)
+  assert.doesNotMatch(chatSource, /cc-claude-breathe/)
+  assert.doesNotMatch(chatSource, /OrangeMark/)
 })
 
 test("project app mark uses the file box asset without changing favicon metadata", () => {

@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react"
 import { useRouter } from "next/navigation"
-import { AlertCircle, Archive, BookOpen, Check, CheckCircle2, ChevronDown, ChevronRight, Copy, Database, FileCode, FileImage, FileText, Folder, FolderOpen, Globe2, Library, Link, Loader2, LogOut, MessageSquare, Network, MonitorUp, MonitorX, PencilLine, Play, RefreshCw, RotateCcw, Save, Search, Settings, SidebarIcon, Sparkles, Trash2, X } from "lucide-react"
+import { AlertCircle, Archive, BookOpen, Check, CheckCircle2, ChevronDown, ChevronRight, Copy, Database, FileCode, FileImage, FileText, Folder, FolderOpen, Globe2, Library, Link, Loader2, LogOut, MessageSquare, Network, MonitorUp, MonitorX, PencilLine, Play, RefreshCw, RotateCcw, Save, Search, Settings, SidebarIcon, Trash2, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { ScrollArea } from "@/components/ui/scroll-area"
@@ -13,6 +13,7 @@ import { CodeEditor } from "@/components/editor/code-editor"
 import ImageViewer from "@/components/editor/image-viewer"
 import PdfViewer from "@/components/editor/pdf-viewer"
 import { cn } from "@/lib/utils"
+import { ModelerMark } from "@/components/chat/modeler-mark"
 import {
   archiveSession,
   compileLatex,
@@ -644,7 +645,7 @@ function ResearchSearchPanel({
               mode === "agent" ? "bg-[#2d241a] text-[#ebc396]" : "text-[#b4b4b4] hover:text-[#e8e8e8]",
             )}
           >
-            <Sparkles className="h-3 w-3" />
+            <ModelerMark size={12} state={mode === "agent" ? "thinking" : "idle"} className="shrink-0" />
             Agent
           </button>
         </div>
