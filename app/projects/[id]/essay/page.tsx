@@ -136,34 +136,42 @@ function EssayPageContent() {
 
   const closeTab = useCallback(
     (tabId: string) => {
-      setOpenTabs((prev) => {
-        const idx = prev.findIndex((t) => t.id === tabId)
-        if (idx === -1) return prev
-        const next = prev.filter((t) => t.id !== tabId)
-        // If the closed tab was the active one, navigate to the
-        // previous sibling (or next if there is no previous). If no
-        // tabs remain, navigate back to the project root.
-        if (tabId === currentBasename) {
-          if (next.length === 0) {
-            router.push(`/projects/${projectId}`)
-          } else {
-            const fallback = next[Math.max(0, idx - 1)] ?? next[0]
-            const params = new URLSearchParams()
-            params.set("file", `${fallback.id}.md`)
-            params.set("path", `${fallback.id}.md`)
-            router.push(`/projects/${projectId}/essay?${params.toString()}`)
-          }
+      // Compute the navigation target and the new tab list from the
+      // current committed state. Doing this outside the `setOpenTabs`
+      // updater is required: setState updaters run during render, and
+      // calling `router.push` from one would trigger a Router
+      // setState mid-render — React logs "Cannot update a component
+      // while rendering a different component".
+      const idx = openTabs.findIndex((t) => t.id === tabId)
+      if (idx === -1) return
+      const next = openTabs.filter((t) => t.id !== tabId)
+
+      let navTarget: string | null = null
+      if (tabId === currentBasename) {
+        if (next.length === 0) {
+          navTarget = `/projects/${projectId}`
+        } else {
+          const fallback = next[Math.max(0, idx - 1)] ?? next[0]
+          const params = new URLSearchParams()
+          params.set("file", `${fallback.id}.md`)
+          params.set("path", `${fallback.id}.md`)
+          navTarget = `/projects/${projectId}/essay?${params.toString()}`
         }
-        return next
-      })
+      }
+
+      setOpenTabs(next)
       setDirtyTabIds((prev) => {
         if (!prev.has(tabId)) return prev
-        const next = new Set(prev)
-        next.delete(tabId)
-        return next
+        const s = new Set(prev)
+        s.delete(tabId)
+        return s
       })
+
+      if (navTarget) router.push(navTarget)
     },
-    [currentBasename, projectId, router],
+    // openTabs is read directly (not via the updater) so we list it
+    // as a dep to keep the closure fresh.
+    [openTabs, currentBasename, projectId, router],
   )
 
   const selectTab = useCallback(
