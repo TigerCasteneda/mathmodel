@@ -417,6 +417,18 @@ export function ArenaChat({
   }, [isNearBottom])
 
   // ── init ──
+  //
+  // The WebSocket must be created **synchronously** in the effect body
+  // (not inside `loadHistory().then(...)`) so the cleanup function can
+  // reliably reach it. If WS creation is deferred to a `.then()` callback,
+  // a synchronous remount (React StrictMode in dev, Fast Refresh on
+  // code edits, parent re-renders that flip the deps) can run the
+  // cleanup BEFORE the first `.then()` resolves — leaving
+  // `wsRef.current === null` for the cleanup to destroy, and letting
+  // BOTH the old and new WS connections stay open. The Rust side then
+  // broadcasts a "joined the chat" system message to each open
+  // subscription, so the user sees the announcement twice (once per
+  // surviving connection).
   useEffect(() => {
     setMessages([])
     setOnlineUsers([])
@@ -426,11 +438,11 @@ export function ArenaChat({
     setLoadingInitial(true)
     echoIds.clear()
 
-    loadHistory().then(() => {
-      const ws = new ArenaChatWebSocket(projectId, handleEvent, setConnected)
-      wsRef.current = ws
-      ws.connect()
-    })
+    const ws = new ArenaChatWebSocket(projectId, handleEvent, setConnected)
+    wsRef.current = ws
+    ws.connect()
+
+    loadHistory()
 
     return () => {
       wsRef.current?.destroy()
