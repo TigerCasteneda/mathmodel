@@ -1,6 +1,6 @@
 "use client"
 
-import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { FormEvent, useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react"
 import {
   AlertCircle,
   CheckCircle2,
@@ -45,11 +45,14 @@ import { cn } from "@/lib/utils"
 import {
   appendAssistantError,
   appendErrorTimeline,
+  appendStoppedTimeline,
+  appendTextTimeline,
   appendThinkingTimeline,
-  applyStreamEvent,
   assistantTimelineFromContent,
+  createTimelineId,
   finalizeActiveAssistant,
   hasRenderableTimeline,
+  textTimelineItem,
   updateActiveAssistant,
   upsertToolTimeline,
   upsertUsageTimeline,
@@ -76,6 +79,7 @@ import {
   stopGeneration,
   type AiPermissionMode,
   type ChatBackgroundTaskEvent,
+  type ChatTokenUsageEvent,
   type OperationEntry,
   type PermissionRequestEvent,
   type SessionMessage as PersistedSessionMessage,
@@ -225,6 +229,120 @@ function OrangeMark({ className }: { className?: string }) {
 }
 
 // ── markdown renderer ──
+
+// ── Reducer for chat messages ──
+//
+// Uses a reducer (vs useState) to eliminate a race where the first
+// stream event arrives BEFORE React has flushed the click handler's
+// optimistic setMessages. With useState + multiple setMessages calls,
+// the listener's "create new assistant because no streaming assistant
+// in prev" path could create a duplicate message that the optimistic
+// setMessages then overwrites (or vice-versa). The reducer's 'send'
+// and 'stream' actions are atomic — every event dispatch sees the
+// state produced by the previous one, so the listener never races
+// with the click handler.
+
+type MessagesAction =
+  | { type: "restore"; messages: Message[] }
+  | {
+      type: "send"
+      userMsg: Message
+      assistantMsg: Message
+    }
+  | {
+      type: "stream"
+      content: string
+      done: boolean
+      wasStopRequested: boolean
+    }
+  | { type: "thinking"; content: string }
+  | { type: "usage"; event: ChatTokenUsageEvent }
+  | { type: "tool"; entry: ToolCallEntry }
+  | { type: "error"; message: string }
+  | { type: "toolError"; message: string }
+  | { type: "finalize" }
+  | { type: "system"; content: string }
+  | { type: "toggleThinking"; messageId: string; itemId: string }
+
+function messagesReducer(state: Message[], action: MessagesAction): Message[] {
+  switch (action.type) {
+    case "restore":
+      return action.messages
+    case "send":
+      return [...state, action.userMsg, action.assistantMsg]
+    case "stream": {
+      const last = state[state.length - 1]
+      if (!last || last.role !== "assistant" || !last.streaming) {
+        if (action.done && !action.content) return state
+        const newAssistant: Message = {
+          id: createTimelineId("assistant"),
+          role: "assistant",
+          content: action.content,
+          streaming: !action.done,
+          timeline: action.content ? [textTimelineItem(action.content)] : [],
+        }
+        return [...state, newAssistant]
+      }
+      const timeline = appendTextTimeline(last.timeline || [], action.content)
+      const finalTimeline =
+        action.done && action.wasStopRequested
+          ? appendStoppedTimeline(timeline)
+          : timeline
+      return [
+        ...state.slice(0, -1),
+        {
+          ...last,
+          content: `${last.content}${action.content}`,
+          streaming: !action.done,
+          timeline: finalTimeline,
+        },
+      ]
+    }
+    case "thinking":
+      return updateActiveAssistant(state, (message) => ({
+        ...message,
+        streaming: true,
+        timeline: appendThinkingTimeline(message.timeline || [], action.content),
+      }))
+    case "usage":
+      return updateActiveAssistant(state, (message) => ({
+        ...message,
+        timeline: upsertUsageTimeline(message.timeline || [], action.event),
+      }))
+    case "tool":
+      return updateActiveAssistant(state, (message) => ({
+        ...message,
+        streaming: true,
+        timeline: upsertToolTimeline(message.timeline || [], action.entry),
+      }))
+    case "error":
+      return appendAssistantError(state, action.message)
+    case "toolError":
+      return updateActiveAssistant(state, (message) => ({
+        ...message,
+        timeline: appendErrorTimeline(message.timeline || [], action.message),
+      }))
+    case "finalize":
+      return finalizeActiveAssistant(state)
+    case "system":
+      return [
+        ...state,
+        { id: createTimelineId("system"), role: "system", content: action.content },
+      ]
+    case "toggleThinking":
+      return state.map((message) => {
+        if (message.id !== action.messageId || !message.timeline) return message
+        return {
+          ...message,
+          timeline: message.timeline.map((item) =>
+            item.type === "thinking" && item.id === action.itemId
+              ? { ...item, expanded: !item.expanded }
+              : item,
+          ),
+        }
+      })
+  }
+}
 
 function MarkdownContent({ content }: { content: string }) {
   return (
@@ -886,7 +1004,7 @@ export function ChatPanel({
 }) {
   const { user, loading: authLoading } = useAuth()
   const sessionUserId = user?.id ?? ""
-  const [messages, setMessages] = useState<Message[]>([])
+  const [messages, dispatchMessages] = useReducer(messagesReducer, [])
   const [input, setInput] = useState("")
   const [sending, setSending] = useState(false)
   const [loaded, setLoaded] = useState(false)
@@ -910,17 +1028,7 @@ export function ChatPanel({
   }, [])
 
   const toggleThinkingItem = useCallback((messageId: string, itemId: string) => {
-    setMessages((prev) => prev.map((message) => {
-      if (message.id !== messageId || !message.timeline) return message
-      return {
-        ...message,
-        timeline: message.timeline.map((item) =>
-          item.type === "thinking" && item.id === itemId
-            ? { ...item, expanded: !item.expanded }
-            : item,
-        ),
-      }
-    }))
+    dispatchMessages({ type: "toggleThinking", messageId, itemId })
   }, [])
 
   useEffect(() => {
@@ -938,9 +1046,12 @@ export function ChatPanel({
     setStopRequestedState(false)
     loadSession(sessionUserId, conversationId).then((session) => {
       const restored = restoreMessages(session.messages || [])
-      setMessages(restored)
+      dispatchMessages({ type: "restore", messages: restored })
       setLoaded(true)
-    }).catch(() => { setMessages([]); setLoaded(true) })
+    }).catch(() => {
+      dispatchMessages({ type: "restore", messages: [] })
+      setLoaded(true)
+    })
   }, [conversationId])
 
   // Auto-scroll
@@ -955,33 +1066,22 @@ export function ChatPanel({
       if (event.conversation_id !== conversationId) return
       const wasStopRequested = event.done && stopRequestedRef.current
       if (event.done) setStopRequestedState(false)
-      setMessages((prev) => {
-        if (typeof event.seq === "number") {
-          const key = `${event.conversation_id}:${event.seq}`
-          if (seenStreamEventsRef.current.has(key)) return prev
-          seenStreamEventsRef.current.add(key)
-        }
-        return applyStreamEvent(prev, event, wasStopRequested)
-      })
+      if (typeof event.seq === "number") {
+        const key = `${event.conversation_id}:${event.seq}`
+        if (seenStreamEventsRef.current.has(key)) return
+        seenStreamEventsRef.current.add(key)
+      }
+      dispatchMessages({ type: "stream", content: event.content, done: event.done, wasStopRequested })
     })
 
     const offThinking = onChatThinking((event) => {
       if (event.conversation_id !== conversationId) return
-      setMessages((prev) => {
-        return updateActiveAssistant(prev, (message) => ({
-          ...message,
-          streaming: true,
-          timeline: appendThinkingTimeline(message.timeline || [], event.content),
-        }))
-      })
+      dispatchMessages({ type: "thinking", content: event.content })
     })
 
     const offUsage = onChatTokenUsage((event) => {
       if (event.conversation_id !== conversationId) return
-      setMessages((prev) => updateActiveAssistant(prev, (message) => ({
-        ...message,
-        timeline: upsertUsageTimeline(message.timeline || [], event),
-      })))
+      dispatchMessages({ type: "usage", event })
     })
 
     const offTool = onChatToolCall((event: ChatToolCallEvent) => {
@@ -993,18 +1093,12 @@ export function ChatPanel({
         output: event.output,
         status: event.status as ToolCallEntry["status"],
       }
-      setMessages((prev) => {
-        return updateActiveAssistant(prev, (message) => ({
-          ...message,
-          streaming: true,
-          timeline: upsertToolTimeline(message.timeline || [], entry),
-        }))
-      })
+      dispatchMessages({ type: "tool", entry })
     })
 
     const offError = onChatError((event) => {
       if (event.conversation_id !== conversationId) return
-      setMessages((prev) => appendAssistantError(prev, event.message))
+      dispatchMessages({ type: "error", message: event.message })
     })
 
     const offBackground = onChatBackgroundTask((event: ChatBackgroundTaskEvent) => {
@@ -1078,11 +1172,11 @@ export function ChatPanel({
     setInput("")
     setSending(true)
     setStopRequestedState(false)
-    setMessages((prev) => [
-      ...prev,
-      { id: crypto.randomUUID(), role: "user", content: message },
-      { id: crypto.randomUUID(), role: "assistant", content: "", streaming: true, timeline: [] },
-    ])
+    dispatchMessages({
+      type: "send",
+      userMsg: { id: crypto.randomUUID(), role: "user", content: message },
+      assistantMsg: { id: crypto.randomUUID(), role: "assistant", content: "", streaming: true, timeline: [] },
+    })
     try {
       await aiChat(message, conversationId, {
         workspaceMode,
@@ -1093,14 +1187,14 @@ export function ChatPanel({
         userId: sessionUserId,
       })
     } catch {
-      setMessages((prev) => appendAssistantError(prev, "Chat request failed."))
+      dispatchMessages({ type: "error", message: "Chat request failed." })
     } finally {
       setSending(false)
       // The call has resolved, so the backend has finished streaming. Force the
       // trailing assistant message out of its streaming state in case the final
       // done:true event was dropped — otherwise its text stays in the raw
       // pre-wrap path and only renders as markdown after re-entering the panel.
-      setMessages((prev) => finalizeActiveAssistant(prev))
+      dispatchMessages({ type: "finalize" })
     }
   }
 
@@ -1111,10 +1205,7 @@ export function ChatPanel({
       await stopGeneration(sessionUserId, conversationId)
     } catch {
       setStopRequestedState(false)
-      setMessages((prev) => updateActiveAssistant(prev, (message) => ({
-        ...message,
-        timeline: appendErrorTimeline(message.timeline || [], "Failed to stop generation."),
-      })))
+      dispatchMessages({ type: "toolError", message: "Failed to stop generation." })
     }
   }
 
@@ -1134,7 +1225,7 @@ export function ChatPanel({
       const status = await setAiModel(model)
       if (status) setSelectedModel(status.model)
     } catch {
-      setMessages((prev) => [...prev, { id: crypto.randomUUID(), role: "system", content: "Failed to update model." }])
+      dispatchMessages({ type: "system", content: "Failed to update model." })
     }
   }
 
@@ -1146,10 +1237,7 @@ export function ChatPanel({
     try {
       await resolvePermissionRequest(sessionUserId, activePermissionRequest.request_id, allow)
     } catch {
-      setMessages((prev) => [
-        ...prev,
-        { id: crypto.randomUUID(), role: "system", content: "Failed to resolve permission request." },
-      ])
+      dispatchMessages({ type: "system", content: "Failed to resolve permission request." })
     } finally {
       setPendingPermissionRequests((prev) => prev.filter((item) => item.request_id !== activePermissionRequest.request_id))
       setResolvingPermission(false)
