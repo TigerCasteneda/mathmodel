@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+  <!--
+    Modeler AI mark — four mathematical curves morphing into each other.
+    Uses SMIL <animate> on the path's `d` attribute so the curve
+    continuously transforms rather than crossfading. Loops every 6s
+    with smooth easing on each segment.
+
+    Curves:  sin  →  cos  →  parabola  →  cubic  →  sin (loop)
+  -->
+  <defs>
+    <filter id="mm-glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="0.8" result="blur" />
+      <feMerge>
+        <feMergeNode in="blur" />
+        <feMergeNode in="SourceGraphic" />
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- baseline tick marks for "this is a chart" cue -->
+  <g opacity="0.35" stroke-width="1.5">
+    <line x1="6" y1="32" x2="10" y2="32" />
+    <line x1="54" y1="32" x2="58" y2="32" />
+    <line x1="32" y1="6" x2="32" y2="10" />
+    <line x1="32" y1="54" x2="32" y2="58" />
+  </g>
+
+  <!-- morphing curve -->
+  <path
+    filter="url(#mm-glow)"
+    d="M 10 32 C 22 16, 42 48, 54 32"
+  >
+    <animate
+      attributeName="d"
+      dur="6s"
+      repeatCount="indefinite"
+      calcMode="spline"
+      keyTimes="0; 0.25; 0.5; 0.75; 1"
+      keySplines="0.45 0 0.25 1; 0.45 0 0.25 1; 0.45 0 0.25 1; 0.45 0 0.25 1"
+      values="
+        M 10 32 C 22 16, 42 48, 54 32;
+        M 10 32 C 22 48, 42 16, 54 32;
+        M 10 12 C 22 52, 42 52, 54 12;
+        M 10 32 C 18 8, 46 56, 54 32;
+        M 10 32 C 22 16, 42 48, 54 32
+      "
+    />
+  </path>
+</svg>

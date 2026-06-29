@@ -218,6 +218,43 @@
   animation: cc-claude-breathe 2.4s ease-in-out infinite;
 }
 
+/* Modeler AI mark — the dynamic chat-agent icon. The SVG file
+ * public/modeler-mark.svg handles the inner curve morph via SMIL;
+ * these classes add an outer breathing pulse and tint variants
+ * driven by the React component's `state` prop. */
+.modeler-mark {
+  display: inline-block;
+  color: var(--essay-accent, #d4a574);
+  filter: drop-shadow(0 0 6px rgba(212, 165, 116, 0.35));
+  animation: modeler-mark-breathe 2.4s ease-in-out infinite;
+  transform-origin: center;
+  flex-shrink: 0;
+}
+.modeler-mark--thinking {
+  animation-duration: 1.6s; /* faster breath while agent is reasoning */
+}
+.modeler-mark--speaking {
+  animation-duration: 1.1s; /* fastest during streaming response */
+}
+.modeler-mark--error {
+  color: #f44336;
+  filter: drop-shadow(0 0 6px rgba(244, 67, 54, 0.4));
+}
+.modeler-mark--idle {
+  opacity: 0.55; /* dim when waiting on user input */
+  animation-duration: 3.2s;
+}
+.modeler-mark svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+@keyframes modeler-mark-breathe {
+  0%, 100% { transform: scale(1); }
+  50%      { transform: scale(1.06); }
+}
+
 .cc-live-dot {
   animation: cc-live-pulse 1.35s ease-in-out infinite;
 }
