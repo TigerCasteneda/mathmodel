@@ -1037,8 +1037,21 @@ export function ChatPanel({
       .catch(() => {})
   }, [])
 
-  // Load persisted session
+  // Load persisted session.
+  //
+  // The dependency array must include `sessionUserId` (not just
+  // `conversationId`) so the effect re-fires when the auth identity
+  // becomes available after a logout → re-login cycle. Otherwise the
+  // effect can run while `sessionUserId === ""` (auth still loading),
+  // call `loadSession("")` which sanitises to "unknown", miss the real
+  // user's chat-sessions/{user_id}/ directory, and write an empty
+  // `messages: []` into the in-memory store — silently wiping the
+  // session for that conversation until the user creates a new one.
+  //
+  // We also gate on `authLoading` to avoid firing the request before we
+  // know who the user is.
   useEffect(() => {
+    if (authLoading || !sessionUserId) return
     seenStreamEventsRef.current.clear()
     setLoaded(false)
     setBackgroundTasks([])
@@ -1052,7 +1065,7 @@ export function ChatPanel({
       dispatchMessages({ type: "restore", messages: [] })
       setLoaded(true)
     })
-  }, [conversationId])
+  }, [conversationId, sessionUserId, authLoading])
 
   // Auto-scroll
   const scrollToBottom = useCallback(() => {
