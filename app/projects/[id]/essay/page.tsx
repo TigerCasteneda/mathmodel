@@ -121,6 +121,16 @@ function EssayPageContent() {
   const userInfo = getOrCreateUserInfo(sessionUserId, user?.display_name ?? "")
   const token = getToken()
 
+  // Set up collaboration (only after content is loaded). Declared
+  // early because closeTab below captures `evictYDoc` in its closure.
+  const { ydoc, ytext, awareness, commentsMap, evict: evictYDoc } =
+    useEssayCollab({
+      fileId: fileKey,
+      initialContent: loadedFile?.key === fileKey ? loadedFile.content : undefined,
+      readOnly: !token,
+      onSynced: () => setSyncState("synced"),
+    })
+
   // Track open tabs: every time the URL's file changes, push it onto
   // the list (or set as active if already present). Closes use
   // `closeTab` below to navigate to a sibling.
@@ -167,11 +177,15 @@ function EssayPageContent() {
         return s
       })
 
+      // Free the Y.Doc for this file — without this the cache would
+      // grow unboundedly as the user opens tabs over a session.
+      evictYDoc(tabId)
+
       if (navTarget) router.push(navTarget)
     },
     // openTabs is read directly (not via the updater) so we list it
     // as a dep to keep the closure fresh.
-    [openTabs, currentBasename, projectId, router],
+    [openTabs, currentBasename, projectId, router, evictYDoc],
   )
 
   const selectTab = useCallback(
@@ -228,14 +242,6 @@ function EssayPageContent() {
     load()
     return () => { cancelled = true }
   }, [projectId, fileId, filePath])
-
-  // Set up collaboration (only after content is loaded)
-  const { ydoc, ytext, awareness, commentsMap } = useEssayCollab({
-    fileId: fileKey,
-    initialContent: loadedFile?.key === fileKey ? loadedFile.content : undefined,
-    readOnly: !token,
-    onSynced: () => setSyncState("synced"),
-  })
 
   // Set local user info once awareness is ready
   useEffect(() => {
