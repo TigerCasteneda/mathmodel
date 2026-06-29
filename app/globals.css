@@ -250,6 +250,26 @@
   height: 100%;
 }
 
+/* AgentMark — wrapper that gives ModelerMark a dark badge with a
+ * brand-tinted ring. Used wherever an assistant-issued bubble shows
+ * a small avatar (chat header, message rows, empty states). The
+ * inner mark is sized to 70% of the badge via the .modeler-mark
+ * rule above. */
+.agent-mark-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9999px;
+  border: 1px solid color-mix(in srgb, var(--essay-accent) 38%, transparent);
+  background: var(--essay-bg);
+  box-shadow: 0 0 18px rgba(212, 165, 116, 0.18);
+  flex-shrink: 0;
+}
+.agent-mark-badge > .modeler-mark {
+  width: 70%;
+  height: 70%;
+}
+
 @keyframes modeler-mark-breathe {
   0%, 100% { transform: scale(1); }
   50%      { transform: scale(1.06); }
