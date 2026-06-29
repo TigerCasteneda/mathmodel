@@ -57,10 +57,14 @@ pub struct SessionInfo {
 pub struct ChatSessionStore {
     /// Root directory that holds per-user subdirectories.
     sessions_dir: PathBuf,
-    /// In-memory cache keyed by conversation_id. Holds the currently
-    /// active user's sessions; cleared on logout by the frontend which
-    /// issues a fresh `load_session` for each tab it cares about.
-    active: Mutex<HashMap<String, Session>>,
+    /// In-memory cache keyed by `(user_id, conversation_id)`. The
+    /// `user_id` is part of the key so a cache hit for one account
+    /// cannot accidentally return another account's session when the
+    /// store is shared (e.g. Tauri process keeps running across a
+    /// logout → different-account login). Cleared on logout by the
+    /// frontend which issues a fresh `load_session` for each tab it
+    /// cares about.
+    active: Mutex<HashMap<(String, String), Session>>,
 }
 
 /// Strip a Supabase-style user id down to a safe filesystem component.
@@ -152,9 +156,10 @@ impl ChatSessionStore {
 
     /// Load or create a session by id.
     pub fn load(&self, user_id: &str, conversation_id: &str) -> Result<Session, String> {
+        let cache_key = (user_id.to_string(), conversation_id.to_string());
         {
             let active = self.active.lock().map_err(|e| e.to_string())?;
-            if let Some(session) = active.get(conversation_id) {
+            if let Some(session) = active.get(&cache_key) {
                 return Ok(session.clone());
             }
         }
@@ -176,7 +181,7 @@ impl ChatSessionStore {
         };
 
         let mut active = self.active.lock().map_err(|e| e.to_string())?;
-        active.insert(conversation_id.to_string(), session.clone());
+        active.insert(cache_key, session.clone());
         Ok(session)
     }
 
@@ -191,7 +196,7 @@ impl ChatSessionStore {
         std::fs::write(&path, &content).map_err(|e| format!("write session: {e}"))?;
 
         let mut active = self.active.lock().map_err(|e| e.to_string())?;
-        active.insert(session.id.clone(), session.clone());
+        active.insert((user_id.to_string(), session.id.clone()), session.clone());
         Ok(())
     }
 
@@ -295,7 +300,7 @@ impl ChatSessionStore {
             std::fs::remove_file(&path).map_err(|e| format!("delete session: {e}"))?;
         }
         let mut active = self.active.lock().map_err(|e| e.to_string())?;
-        active.remove(conversation_id);
+        active.remove(&(user_id.to_string(), conversation_id.to_string()));
         Ok(())
     }
 
@@ -528,6 +533,49 @@ mod tests {
         assert!(store.user_dir_for_tests(bob).join("bob-chat-1.json").exists());
         assert!(!store.user_dir_for_tests(alice).join("bob-chat-1.json").exists());
         assert!(!store.user_dir_for_tests(bob).join("alice-chat-1.json").exists());
+
+        let _ = std::fs::remove_dir_all(store.sessions_dir_for_tests());
+    }
+
+    /// Regression: when two users reuse the same `conversation_id`, the
+    /// in-memory cache must not return one user's session to the other.
+    /// Previously the cache was keyed by `conversation_id` alone, so a
+    /// second account logging into the same Tauri process without a
+    /// restart would see the first account's messages.
+    #[test]
+    fn in_memory_cache_is_scoped_per_user_id() {
+        let store = test_store();
+        let alice = "alice";
+        let bob = "bob";
+        let shared_id = "shared-conversation-id";
+
+        store
+            .push_user(alice, shared_id, "alice's private thought".into())
+            .unwrap();
+        let alice_loaded = store.load(alice, shared_id).unwrap();
+        assert_eq!(alice_loaded.messages.len(), 1);
+
+        // Bob loads the SAME conversation_id — must hit disk and get a
+        // different session (his own), not the cached alice session.
+        let bob_loaded = store.load(bob, shared_id).unwrap();
+        assert_eq!(
+            bob_loaded.messages.len(),
+            0,
+            "bob must not see alice's cached session"
+        );
+        assert_ne!(alice_loaded.name, bob_loaded.name);
+
+        // Bob writes his own content; alice's cache entry must remain
+        // untouched (no shared mutable state by conversation_id alone).
+        store
+            .push_user(bob, shared_id, "bob's note".into())
+            .unwrap();
+        let alice_again = store.load(alice, shared_id).unwrap();
+        assert_eq!(alice_again.messages.len(), 1);
+        assert!(alice_again
+            .messages
+            .iter()
+            .any(|m| m.content.as_deref() == Some("alice's private thought")));
 
         let _ = std::fs::remove_dir_all(store.sessions_dir_for_tests());
     }
