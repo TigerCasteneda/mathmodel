@@ -996,11 +996,20 @@ export function ChatPanel({
   projectId,
   workspaceMode = "host",
   capabilities = [],
+  onSessionPersisted,
 }: {
   conversationId?: string
   projectId?: string
   workspaceMode?: "host" | "guest"
   capabilities?: ProjectCapability[]
+  /**
+   * Called after a chat turn finishes (or errors) so the parent can
+   * refresh its session list / sidebar. The Rust backend persists the
+   * session on disk during `ai_chat`; without this hook the sidebar
+   * keeps showing the stale empty list until something else triggers
+   * a refresh (e.g. clicking "New conversation").
+   */
+  onSessionPersisted?: () => void
 }) {
   const { user, loading: authLoading } = useAuth()
   const sessionUserId = user?.id ?? ""
@@ -1208,6 +1217,14 @@ export function ChatPanel({
       // done:true event was dropped — otherwise its text stays in the raw
       // pre-wrap path and only renders as markdown after re-entering the panel.
       dispatchMessages({ type: "finalize" })
+      // Notify the parent so it can refresh the sidebar session list.
+      // The Rust side persists the session on disk during `ai_chat` (both
+      // user and assistant messages are pushed via `push_chat_message`),
+      // but the frontend `setSessions` state has no other signal that a
+      // new session just landed. Without this hook the sidebar keeps
+      // showing the stale empty list until something else triggers a
+      // refresh (e.g. clicking "New conversation").
+      onSessionPersisted?.()
     }
   }
 

@@ -2567,6 +2567,7 @@ export function ModelerWorkbench({ projectId }: { projectId: string }) {
               projectId={projectId}
               workspaceMode={workspaceMode}
               capabilities={capabilities}
+              onSessionPersisted={refreshSessions}
             />
           ) : active?.kind === "research" ? (
             <ResearchSearchPanel
