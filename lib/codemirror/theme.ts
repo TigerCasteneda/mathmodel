@@ -4,8 +4,8 @@ import { EditorView } from "@codemirror/view"
 export const essayTheme = EditorView.theme(
   {
     "&": {
-      backgroundColor: "#0d0d0d",
-      color: "#d4d4d4",
+      backgroundColor: "var(--essay-bg)",
+      color: "var(--essay-text)",
       fontSize: "15px",
       height: "100%",
     },
@@ -13,8 +13,10 @@ export const essayTheme = EditorView.theme(
       caretColor: "#e0e0e0",
       fontFamily:
         "'Segoe UI', 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif",
-      padding: "24px 32px",
-      lineHeight: "1.85",
+      padding: "32px 48px",
+      // 1.6 reads tight without being cramped; closer to Obsidian than
+      // the previous 1.85 which felt airy for note-taking.
+      lineHeight: "1.6",
       maxWidth: "800px",
       margin: "0 auto",
     },
@@ -23,15 +25,21 @@ export const essayTheme = EditorView.theme(
     },
     "&.cm-focused .cm-selectionBackground, .cm-selectionBackground, .cm-content ::selection":
       {
-        backgroundColor: "#264f78",
+        backgroundColor: "rgba(212, 165, 116, 0.18)",
       },
+    // Subtle active-line highlight — closer to Obsidian's whisper
+    // (0.04 alpha) than a strong glow. Pairs with the focus ring.
     ".cm-activeLine": {
-      backgroundColor: "#ffffff06",
+      backgroundColor: "var(--essay-active-line)",
+    },
+    ".cm-activeLineGutter": {
+      backgroundColor: "var(--essay-active-line)",
+      color: "var(--essay-text-muted)",
     },
 
     // ── Gutters ──────────────────────────────────────
     ".cm-gutters": {
-      backgroundColor: "#0d0d0d",
+      backgroundColor: "var(--essay-bg)",
       color: "#555",
       border: "none",
       paddingRight: "10px",
@@ -121,9 +129,9 @@ export const essayTheme = EditorView.theme(
 
     // ── Code blocks ──────────────────────────────────
     ".cm-codeBlock": {
-      backgroundColor: "#1a1a2e",
+      backgroundColor: "var(--essay-code-bg)",
       borderRadius: "6px",
-      border: "1px solid #2a2a3e",
+      border: "1px solid var(--essay-border)",
       padding: "14px 18px",
       fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
       fontSize: "0.88em",
@@ -133,16 +141,18 @@ export const essayTheme = EditorView.theme(
     },
 
     // ── Block quotes ─────────────────────────────────
+    // Obsidian-style: 2px left border in a muted grey, no fill,
+    // no italic, no rounded right. Indent is 16px.
     ".cm-quote": {
-      borderLeft: "3px solid #d19a66",
-      backgroundColor: "#1a1510",
-      paddingLeft: "14px",
-      paddingTop: "4px",
-      paddingBottom: "4px",
+      borderLeft: "2px solid var(--essay-quote-border)",
+      backgroundColor: "transparent",
+      paddingLeft: "16px",
+      paddingTop: "2px",
+      paddingBottom: "2px",
       marginTop: "6px",
       marginBottom: "6px",
-      color: "#c8b99a",
-      borderRadius: "0 4px 4px 0",
+      color: "var(--essay-text-muted)",
+      borderRadius: "0",
     },
 
     // ── Links ────────────────────────────────────────

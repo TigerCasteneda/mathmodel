@@ -18,11 +18,14 @@ export function EssayStatusBar({
     : "Unsaved"
 
   return (
-    <div className="flex h-7 items-center gap-4 border-t border-[#2a2a2a] bg-[#0f0f0f] px-4 text-xs text-[#555] shrink-0 select-none">
+    <div
+      className="flex items-center gap-4 border-t border-essay-border bg-essay-bg-alt px-4 text-xs text-essay-text-faint shrink-0 select-none"
+      style={{ height: "var(--essay-status-h)" }}
+    >
       <span>
         {wordCount.toLocaleString()} words
       </span>
-      <span className="text-[#444]">|</span>
+      <span className="text-essay-text-faint opacity-60">|</span>
       <span>
         § {sectionIndex} of {sectionCount}
       </span>

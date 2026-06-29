@@ -37,11 +37,11 @@ export function EssayTopBar({
   const config = syncConfig[syncState]
 
   return (
-    <div className="flex h-10 items-center gap-3 border-b border-[#2a2a2a] bg-[#0f0f0f] px-4 shrink-0">
+    <div className="flex h-10 items-center gap-3 border-b border-essay-border bg-essay-bg-alt px-4 shrink-0">
       {/* Back */}
       <button
         onClick={() => router.push(`/projects/${projectId}`)}
-        className="flex items-center gap-1 text-xs text-[#888] hover:text-[#e0e0e0] transition-colors"
+        className="flex items-center gap-1 text-xs text-essay-text-muted hover:text-essay-text transition-colors"
         title="Back to project (Ctrl+Shift+E)"
       >
         <ArrowLeft className="h-4 w-4" />
@@ -68,7 +68,7 @@ export function EssayTopBar({
               setEditing(false)
             }
           }}
-          className="bg-[#1a1a1a] text-sm text-[#e0e0e0] border border-[#444] rounded px-2 py-0.5 outline-none focus:border-[#666] min-w-[200px]"
+          className="bg-essay-bg text-sm text-essay-text border border-essay-border-strong rounded px-2 py-0.5 outline-none focus:border-essay-text-muted min-w-[200px]"
         />
       ) : (
         <button
@@ -76,17 +76,17 @@ export function EssayTopBar({
             setDraft(title)
             setEditing(true)
           }}
-          className="flex items-center gap-1.5 text-sm text-[#e0e0e0] hover:text-white group"
+          className="flex items-center gap-1.5 text-sm text-essay-text hover:text-white group"
         >
           <span className="font-medium">{title}</span>
-          <PencilLine className="h-3 w-3 text-[#555] opacity-0 group-hover:opacity-100 transition-opacity" />
+          <PencilLine className="h-3 w-3 text-essay-text-faint opacity-0 group-hover:opacity-100 transition-opacity" />
         </button>
       )}
 
       <div className="flex-1" />
 
       {/* Sync indicator */}
-      <div className="flex items-center gap-1.5 text-xs text-[#666]">
+      <div className="flex items-center gap-1.5 text-xs text-essay-text-faint">
         <span
           className={cn("inline-block h-2 w-2 rounded-full", config.dot)}
         />
@@ -99,7 +99,7 @@ export function EssayTopBar({
           {collaborators.slice(0, 5).map((c, i) => (
             <div
               key={i}
-              className="flex h-6 w-6 items-center justify-center rounded-full text-[10px] font-semibold text-white border border-[#2a2a2a]"
+              className="flex h-6 w-6 items-center justify-center rounded-full text-[10px] font-semibold text-white border border-essay-border"
               style={{ backgroundColor: c.color }}
               title={c.name}
             >
@@ -112,7 +112,7 @@ export function EssayTopBar({
             </div>
           ))}
           {collaborators.length > 5 && (
-            <div className="flex h-6 w-6 items-center justify-center rounded-full bg-[#333] text-[10px] text-[#aaa] border border-[#2a2a2a]">
+            <div className="flex h-6 w-6 items-center justify-center rounded-full bg-essay-bg-active text-[10px] text-essay-text-muted border border-essay-border">
               +{collaborators.length - 5}
             </div>
           )}

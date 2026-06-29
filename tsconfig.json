@@ -42,6 +42,7 @@
     "peri",
     "claude-code-rust",
     "chatwoot",
-    "components/**/*.test.tsx"
+    "components/**/*.test.tsx",
+    "lib/**/*.test.ts"
   ]
 }
