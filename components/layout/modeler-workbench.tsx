@@ -2,11 +2,12 @@
 
 import { useEffect, useMemo, useRef, useState } from "react"
 import { useRouter } from "next/navigation"
-import { AlertCircle, Archive, BookOpen, Check, CheckCircle2, ChevronDown, ChevronRight, Copy, Database, FileCode, FileImage, FileText, Folder, FolderOpen, Globe2, Library, Link, Loader2, LogOut, MessageSquare, Network, MonitorUp, MonitorX, PencilLine, Play, RefreshCw, RotateCcw, Save, Search, Settings, SidebarIcon, Trash2, X } from "lucide-react"
+import { AlertCircle, Archive, BookOpen, Check, CheckCircle2, ChevronDown, ChevronRight, Copy, Database, FileCode, FileImage, FileText, Folder, FolderOpen, Globe2, Library, Link, Loader2, LogOut, Map, MessageSquare, Network, MonitorUp, MonitorX, PencilLine, Play, RefreshCw, RotateCcw, Save, Search, Settings, SidebarIcon, Trash2, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { ArenaPanel } from "@/components/arena/arena-panel"
+import { GeoPanel } from "@/components/geo/geo-panel"
 import { KnowledgeBasePanel } from "@/components/knowledge/knowledge-base-panel"
 import { ChatPanel } from "@/components/chat/chat-panel"
 import { CodeEditor } from "@/components/editor/code-editor"
@@ -70,7 +71,14 @@ import { researchItemToArenaInput, searchResultToArenaInput } from "@/lib/resear
 import { AgentResearchView } from "@/components/research/agent-research-view"
 import { useAuth } from "@/hooks/use-auth"
 
-type Activity = "explorer" | "arena" | "knowledge" | "research" | "chat" | "settings"
+type Activity =
+  | "explorer"
+  | "arena"
+  | "knowledge"
+  | "research"
+  | "chat"
+  | "geo"
+  | "settings"
 type Tab = {
   id: string
   title: string
@@ -133,6 +141,7 @@ const activities = [
   { id: "knowledge" as const, icon: Library, label: "Knowledge Base" },
   { id: "research" as const, icon: BookOpen, label: "Research" },
   { id: "chat" as const, icon: MessageSquare, label: "Chat" },
+  { id: "geo" as const, icon: Map, label: "Geo Workshop" },
   { id: "settings" as const, icon: Settings, label: "Settings" },
 ]
 
@@ -2560,6 +2569,8 @@ export function ModelerWorkbench({ projectId }: { projectId: string }) {
             />
           ) : activeActivity === "arena" ? (
             <ArenaPanel projectId={projectId} capabilities={capabilities} />
+          ) : activeActivity === "geo" ? (
+            <GeoPanel projectId={projectId} capabilities={capabilities} />
           ) : activeActivity === "knowledge" ? (
             <KnowledgeBasePanel projectId={projectId} capabilities={capabilities} />
           ) : active?.kind === "chat" ? (

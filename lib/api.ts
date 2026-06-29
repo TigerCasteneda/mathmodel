@@ -625,3 +625,138 @@ export async function deleteResearchItem(itemId: string): Promise<{ deleted: boo
     method: "DELETE",
   })
 }
+
+// ─── Geo Workshop ────────────────────────────────────────
+//
+// Thin wrappers around the sidecar's `/geo/*` endpoints (osmnx-powered).
+// Both the FastAPI server and the sidecar share the same port
+// (`getServerPort()`), so these route through the existing `apiFetch`.
+//
+// A 503 from `/geo/health` means osmnx / shapely / geopandas failed to
+// load inside the sidecar — usually a missing pip dependency. The UI
+// pings `/geo/health` once on mount and surfaces a banner if false.
+
+export interface GeoPlaceResult {
+  id: string
+  display_name: string
+  lat: number | null
+  lon: number | null
+  /** [west, south, east, north] in WGS84, or null if Nominatim returned a point. */
+  bbox: [number, number, number, number] | null
+  /** Polygon (preferred) or point geometry as a GeoJSON Geometry object. */
+  geojson: { type: string; coordinates: unknown } | null
+}
+
+export interface GeoStats {
+  n?: number
+  m?: number
+  k_avg?: number
+  edge_length_total?: number
+  intersection_count?: number
+  streets_per_node_avg?: number
+  circuity_avg?: number
+  [k: string]: unknown
+}
+
+export async function geoHealth(): Promise<{ available: boolean }> {
+  return apiFetch<{ available: boolean }>("/geo/health")
+}
+
+export async function geoPlaces(
+  q: string,
+  limit = 5
+): Promise<GeoPlaceResult[]> {
+  const res = await apiFetch<{ results: GeoPlaceResult[] }>(
+    "/geo/places",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ q, limit }),
+    }
+  )
+  return res.results
+}
+
+export async function geoFeatures(input: {
+  place?: string
+  /** [west, south, east, north] in WGS84. Mutually exclusive with `place`. */
+  bbox?: [number, number, number, number]
+  /** OSM tags dict, e.g. `{ natural: "water" }` or `{ highway: true }`. */
+  tags?: Record<string, unknown>
+}): Promise<GeoJSON.FeatureCollection> {
+  return apiFetch<GeoJSON.FeatureCollection>("/geo/features", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  })
+}
+
+export interface GeoGraphResult {
+  graph: GeoJSON.FeatureCollection
+  stats: GeoStats
+}
+
+export async function geoGraph(input: {
+  place?: string
+  bbox?: [number, number, number, number]
+  /** "drive" | "walk" | "bike" | "all" — defaults to "drive". */
+  network_type?: string
+}): Promise<GeoGraphResult> {
+  return apiFetch<GeoGraphResult>("/geo/graph", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ network_type: "drive", ...input }),
+  })
+}
+
+export interface GeoBufferResult {
+  buffered: GeoJSON.FeatureCollection
+}
+
+export async function geoBuffer(input: {
+  features: GeoJSON.FeatureCollection
+  /** Buffer radius in meters. */
+  distance_m: number
+  /** If true, all output polygons are merged into one. */
+  dissolve?: boolean
+}): Promise<GeoBufferResult> {
+  return apiFetch<GeoBufferResult>("/geo/buffer", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  })
+}
+
+export interface GeoSpatialJoinResult {
+  joined: GeoJSON.FeatureCollection
+  /** polygon feature index → count of points inside */
+  counts: Record<string, number>
+}
+
+export async function geoSpatialJoin(input: {
+  points: GeoJSON.FeatureCollection
+  polygons: GeoJSON.FeatureCollection
+  /** "intersects" | "contains" | "within" | "dwithin" — defaults to "intersects". */
+  predicate?: string
+}): Promise<GeoSpatialJoinResult> {
+  return apiFetch<GeoSpatialJoinResult>("/geo/spatial_join", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ predicate: "intersects", ...input }),
+  })
+}
+
+export interface GeoNetworkStatsResult {
+  stats: GeoStats
+}
+
+export async function geoNetworkStats(input: {
+  place?: string
+  bbox?: [number, number, number, number]
+}): Promise<GeoNetworkStatsResult> {
+  return apiFetch<GeoNetworkStatsResult>("/geo/stats", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  })
+}

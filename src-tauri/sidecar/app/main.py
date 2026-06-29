@@ -2,8 +2,9 @@ import asyncio
 import logging
 import time
 import traceback
+from typing import Any
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Request
 
 from app.models import (
     EnrichRequest,
@@ -15,7 +16,17 @@ from app.models import (
     SearchResponse,
     SearchResultItem,
 )
-from app.providers import arxiv, github, kaggle, openalex, scrapling_search, semantic_scholar, stealth, zenodo
+from app.providers import (
+    arxiv,
+    geo,
+    github,
+    kaggle,
+    openalex,
+    scrapling_search,
+    semantic_scholar,
+    stealth,
+    zenodo,
+)
 
 app = FastAPI(title="Modeler Sidecar", version="0.1.0")
 
@@ -243,3 +254,140 @@ def _short_error(exc: Exception) -> str:
     if len(msg) > 120:
         return msg[:120] + "..."
     return msg or traceback.format_exception_only(type(exc), exc)[0].strip()
+
+
+# ── Geo Workshop endpoints ───────────────────────────────────────────
+#
+# All driven by `app/providers/geo.py` (thin async wrappers over osmnx).
+# The routes accept JSON via `request.json()` so the frontend can ship
+# arbitrary params (place name, tags, bbox, distance_m, etc.) without
+# bespoke Pydantic models per endpoint.
+
+
+def _require_geo() -> None:
+    """503 if the geo extras didn't load (sidecar started without osmnx)."""
+    if not geo.is_available():
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "geo provider unavailable: install with "
+                "`pip install osmnx[neighbors]==2.1.0 shapely pyogrio`"
+            ),
+        )
+
+
+@app.post("/geo/places")
+async def geo_places(request: Request) -> dict[str, Any]:
+    _require_geo()
+    body = await request.json()
+    q = body.get("q", "").strip()
+    if not q:
+        raise HTTPException(status_code=400, detail="q is required")
+    limit = int(body.get("limit", 5))
+    try:
+        results = await geo.geocode_places(q, limit=limit)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=_short_error(exc)) from exc
+    return {"results": results}
+
+
+@app.post("/geo/features")
+async def geo_features(request: Request) -> dict[str, Any]:
+    _require_geo()
+    body = await request.json()
+    place = body.get("place")
+    bbox = body.get("bbox")
+    tags = body.get("tags") or {}
+    if not place and not bbox:
+        raise HTTPException(
+            status_code=400, detail="either place or bbox required"
+        )
+    try:
+        return await geo.fetch_features(place=place, bbox=bbox, tags=tags)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=_short_error(exc)) from exc
+
+
+@app.post("/geo/graph")
+async def geo_graph(request: Request) -> dict[str, Any]:
+    _require_geo()
+    body = await request.json()
+    place = body.get("place")
+    bbox = body.get("bbox")
+    network_type = body.get("network_type", "drive")
+    if not place and not bbox:
+        raise HTTPException(
+            status_code=400, detail="either place or bbox required"
+        )
+    try:
+        return await geo.fetch_graph(
+            place=place, bbox=bbox, network_type=network_type
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=_short_error(exc)) from exc
+
+
+@app.post("/geo/buffer")
+async def geo_buffer(request: Request) -> dict[str, Any]:
+    _require_geo()
+    body = await request.json()
+    features = body.get("features")
+    distance_m = body.get("distance_m", 1000)
+    dissolve = bool(body.get("dissolve", False))
+    if not features or "features" not in features:
+        raise HTTPException(
+            status_code=400, detail="features FeatureCollection required"
+        )
+    try:
+        return await geo.buffer_features(
+            features=features, distance_m=float(distance_m), dissolve=dissolve
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=_short_error(exc)) from exc
+
+
+@app.post("/geo/spatial_join")
+async def geo_spatial_join(request: Request) -> dict[str, Any]:
+    _require_geo()
+    body = await request.json()
+    points = body.get("points")
+    polygons = body.get("polygons")
+    predicate = body.get("predicate", "intersects")
+    if not points or not polygons:
+        raise HTTPException(
+            status_code=400, detail="points and polygons FeatureCollections required"
+        )
+    try:
+        return await geo.spatial_join(
+            points=points, polygons=polygons, predicate=predicate
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=_short_error(exc)) from exc
+
+
+@app.post("/geo/stats")
+async def geo_stats(request: Request) -> dict[str, Any]:
+    _require_geo()
+    body = await request.json()
+    place = body.get("place")
+    bbox = body.get("bbox")
+    if not place and not bbox:
+        raise HTTPException(
+            status_code=400, detail="either place or bbox required"
+        )
+    try:
+        return await geo.network_stats(place=place, bbox=bbox)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=_short_error(exc)) from exc
+
+
+@app.get("/geo/health")
+async def geo_health() -> dict[str, Any]:
+    """Quick probe for whether the geo stack is loaded in this sidecar.
+
+    The frontend pings this once on panel mount to show "Geo available"
+    vs "Install osmnx to enable this panel" without hitting Overpass.
+    """
+    return {
+        "available": geo.is_available(),
+    }
