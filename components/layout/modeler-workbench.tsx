@@ -1361,13 +1361,18 @@ export function ModelerWorkbench({ projectId }: { projectId: string }) {
   const [sessionQuery, setSessionQuery] = useState("")
   const [showArchived, setShowArchived] = useState(false)
 
-  // On mount, populate the session list. Without this the sidebar stays empty
-  // until the user clicks "+ New Chat" (which is the only call site that
-  // triggered refreshSessions() before this PR). Safe under StrictMode —
-  // refreshSessions is idempotent.
+  // Populate the session list once the auth identity is known. We depend on
+  // `user?.id` (not just `[]`) because `useAuth()` resolves asynchronously —
+  // a mount-time-only effect would capture `user === null` from the first
+  // render, call `listSessions("")`, and get an empty list back; the effect
+  // would never re-fire when auth finally populated the user, so the
+  // sidebar stayed empty until "+ New Chat" happened to call
+  // `refreshSessions()` again. Gating on `user?.id` re-runs the fetch as
+  // soon as the auth identity becomes available.
   useEffect(() => {
-    refreshSessions()
-  }, [])
+    if (!user?.id) return
+    void refreshSessions()
+  }, [user?.id])
 
   // Sync tab titles from server-side session names. Sessions auto-title from
   // the first user message (see session.rs:144-151), but tabs are created with
