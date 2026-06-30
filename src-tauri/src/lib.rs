@@ -147,6 +147,7 @@ pub fn run() {
             toggle_plugin,
             get_server_port,
             get_sidecar_status,
+            get_sidecar_port,
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")
@@ -163,6 +164,16 @@ pub fn run() {
 #[tauri::command]
 async fn get_sidecar_status(sidecar: State<'_, SidecarState>) -> Result<bool, String> {
     Ok(sidecar.is_available().await)
+}
+
+/// Returns the port the Python sidecar is currently listening on (or 0 if
+/// not running). The Geo Workshop panel uses this to talk to the FastAPI
+/// `/geo/*` endpoints directly — the embedded Rust/Node backend does not
+/// proxy those routes, so the frontend has to address the sidecar by its
+/// own port.
+#[tauri::command]
+async fn get_sidecar_port(sidecar: State<'_, SidecarState>) -> Result<u16, String> {
+    Ok(sidecar.port().await.unwrap_or(0))
 }
 
 #[tauri::command]

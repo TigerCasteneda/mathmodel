@@ -232,6 +232,22 @@ export async function getSidecarStatus(): Promise<boolean> {
   }
 }
 
+/**
+ * Port the Python sidecar is listening on, or 0 if it isn't running.
+ *
+ * The Geo Workshop panel needs this to address the FastAPI sidecar
+ * directly for `/geo/*` routes — the embedded Rust/Node backend doesn't
+ * proxy them, so the front-end can't reuse the regular `getServerPort()`.
+ */
+export async function getSidecarPort(): Promise<number> {
+  if (!isTauri()) return 0
+  try {
+    return await invoke<number>("get_sidecar_port")
+  } catch {
+    return 0
+  }
+}
+
 export async function setAiModel(model: string): Promise<AiConfigStatus | null> {
   if (!isTauri()) return null
   return invoke<AiConfigStatus>("set_ai_model", { model })

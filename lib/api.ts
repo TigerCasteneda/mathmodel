@@ -13,6 +13,32 @@ async function getApiBase(): Promise<string> {
   return API_BASE
 }
 
+// Some routes live on a different port even inside Tauri: the embedded
+// Rust/Node backend handles auth/files/AI, but the Geo Workshop's `/geo/*`
+// endpoints live on the Python sidecar (FastAPI). Detect that prefix and
+// address the sidecar directly so the request doesn't 404 against the
+// embedded backend. Returns null when the sidecar isn't running yet, in
+// which case the caller should fail with a friendly message.
+let sidecarBasePromise: Promise<string | null> | null = null
+
+async function getSidecarBase(): Promise<string | null> {
+  if (typeof window === "undefined" || !("__TAURI_INTERNALS__" in window)) {
+    return null
+  }
+  if (!sidecarBasePromise) {
+    sidecarBasePromise = (async () => {
+      const { getSidecarPort } = await import("@/lib/tauri-api")
+      const port = await getSidecarPort()
+      return port > 0 ? `http://127.0.0.1:${port}` : null
+    })()
+  }
+  return sidecarBasePromise
+}
+
+function pathGoesToSidecar(path: string): boolean {
+  return path.startsWith("/geo/")
+}
+
 export async function getWebSocketBase(): Promise<string> {
   if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
     const { getServerPort } = await import("@/lib/tauri-api")
@@ -117,14 +143,37 @@ export async function apiFetch<T = unknown>(
     headers["Authorization"] = `Bearer ${token}`
   }
 
-  const base = await getApiBase()
-  let res = await fetch(`${base}${path}`, { ...options, headers })
+  // Some routes live on the Python sidecar, not the embedded backend.
+  // Detect the prefix and address the right port.
+  let base: string
+  if (pathGoesToSidecar(path)) {
+    const sidecar = await getSidecarBase()
+    if (!sidecar) {
+      throw new Error("Geo sidecar is not running. Restart the app to retry.")
+    }
+    base = sidecar
+  } else {
+    base = await getApiBase()
+  }
 
-  if (res.status === 401 && refreshTokenStore) {
+  const fullUrl = `${base}${path}`
+  let res: Response
+  try {
+    res = await fetch(fullUrl, { ...options, headers })
+  } catch (err) {
+    // fetch throws "Failed to fetch" (TypeError) for network-level
+    // failures: connection refused, DNS, CSP block, CORS preflight, etc.
+    // Without the URL the message is useless — surface it so callers
+    // (and the Geo Workshop banner) can diagnose.
+    const reason = err instanceof Error ? err.message : String(err)
+    throw new Error(`fetch ${fullUrl} failed: ${reason}`)
+  }
+
+  if (res.status === 401 && refreshTokenStore && !pathGoesToSidecar(path)) {
     const refreshed = await refreshAccessToken()
     if (refreshed) {
       headers["Authorization"] = `Bearer ${getToken()}`
-      res = await fetch(`${base}${path}`, { ...options, headers })
+      res = await fetch(fullUrl, { ...options, headers })
     }
   }
 

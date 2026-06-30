@@ -5,6 +5,7 @@ import traceback
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
 
 from app.models import (
     EnrichRequest,
@@ -29,6 +30,21 @@ from app.providers import (
 )
 
 app = FastAPI(title="Modeler Sidecar", version="0.1.0")
+
+# The Tauri WebView's origin is `tauri://localhost` (or
+# `http://localhost:3500` in dev), which is cross-origin with the sidecar
+# bound at `http://127.0.0.1:<rand>`. Without CORS, browser fetch rejects
+# the response with the opaque "Failed to fetch" error — the Geo Workshop
+# panel needs the FastAPI routes to be reachable from that origin.
+# We allow all origins because the sidecar only listens on 127.0.0.1 and
+# has no auth surface (the backend handles auth through Bearer tokens).
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 # Heuristic: if StealthyFetcher returned 0 items AND took >20s, it's almost
@@ -270,8 +286,9 @@ def _require_geo() -> None:
         raise HTTPException(
             status_code=503,
             detail=(
-                "geo provider unavailable: install with "
-                "`pip install osmnx[neighbors]==2.1.0 shapely pyogrio`"
+                "geo provider unavailable: install osmnx 2.1.0 from the "
+                "local clone with `py -3 -m pip install --no-deps -e ./osmnx` "
+                "and restart the app"
             ),
         )
 

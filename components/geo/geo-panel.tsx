@@ -33,12 +33,30 @@ interface GeoPanelProps {
 }
 
 export function GeoPanel({ projectId: _projectId, capabilities: _capabilities }: GeoPanelProps) {
-  // Backend availability — pings `/geo/health` once on mount.
+  // Backend availability — pings `/geo/health` once on mount. We keep
+  // the *raw* probe outcome in state so the banner can distinguish:
+  //   - threw (network / wrong port / sidecar down)
+  //   - returned 200 with `{available: false}` (sidecar up, osmnx load failed)
+  // Either way the user sees the real reason instead of just "needs osmnx".
   const [available, setAvailable] = useState<boolean | null>(null)
+  const [healthError, setHealthError] = useState<string | null>(null)
+  const [healthResponse, setHealthResponse] = useState<string | null>(null)
   useEffect(() => {
+    let cancelled = false
     geoHealth()
-      .then((r) => setAvailable(r.available))
-      .catch(() => setAvailable(false))
+      .then((r) => {
+        if (cancelled) return
+        setAvailable(r.available)
+        setHealthResponse(JSON.stringify(r))
+      })
+      .catch((err) => {
+        if (cancelled) return
+        setAvailable(false)
+        setHealthError(err instanceof Error ? err.message : String(err))
+      })
+    return () => {
+      cancelled = true
+    }
   }, [])
 
   // ── place picker ────────────────────────────────────────
@@ -170,18 +188,38 @@ export function GeoPanel({ projectId: _projectId, capabilities: _capabilities }:
       <div className="flex h-full flex-col items-center justify-center gap-3 bg-essay-bg p-6 text-center text-sm text-essay-text-muted">
         <MapPin className="h-8 w-8 text-essay-text-faint" />
         <p>
-          The Geo Workshop needs{" "}
+          The Geo Workshop needs the local{" "}
           <code className="rounded bg-essay-code-bg px-1.5 py-0.5 text-essay-accent">
-            osmnx[neighbors]==2.1.0
+            osmnx
           </code>{" "}
-          installed in the sidecar.
+          (2.1.0) installed in the sidecar Python.
         </p>
         <p className="text-xs text-essay-text-faint">
-          Run{" "}
-          <code className="rounded bg-essay-code-bg px-1.5 py-0.5">
-            pip install osmnx[neighbors]==2.1.0 shapely pyogrio
-          </code>{" "}
-          in <code>src-tauri/sidecar</code> and restart the app.
+          From the repo root, run:
+        </p>
+        <pre className="rounded border border-essay-border bg-essay-code-bg px-3 py-2 text-left text-[11px] text-essay-text">
+{`py -3 -m pip install --no-deps -e ./osmnx
+py -3 -m pip install -e ./src-tauri/sidecar`}
+        </pre>
+        {healthError && (
+          <details className="mt-2 max-w-md rounded border border-essay-border bg-essay-code-bg px-3 py-2 text-left text-[11px] text-essay-text-muted">
+            <summary className="cursor-pointer text-essay-text-faint">
+              Probed /geo/health but the fetch failed:
+            </summary>
+            <pre className="mt-1 whitespace-pre-wrap break-words">{healthError}</pre>
+          </details>
+        )}
+        {!healthError && healthResponse && (
+          <details className="mt-2 max-w-md rounded border border-essay-border bg-essay-code-bg px-3 py-2 text-left text-[11px] text-essay-text-muted">
+            <summary className="cursor-pointer text-essay-text-faint">
+              Probed /geo/health and got back:
+            </summary>
+            <pre className="mt-1 whitespace-pre-wrap break-words">{healthResponse}</pre>
+          </details>
+        )}
+        <p className="text-xs text-essay-text-faint">
+          (<code>osmnx</code> 2.x is not on PyPI;
+          we install it from the <code>osmnx/</code> clone.)
         </p>
       </div>
     )
