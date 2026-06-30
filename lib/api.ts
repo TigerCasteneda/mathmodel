@@ -428,6 +428,12 @@ export interface ArenaCard {
   unresolved_links: string[]
   content: string
   updated_at: number
+  /** `user_id` of the user who originally created this card. `null` for
+   * legacy rows predating the authorship migration; render as "Unknown". */
+  created_by: string | null
+  /** `user_id` of the user who most recently saved the card. Mirrors
+   * `updated_at`. `null` for legacy rows. */
+  last_edited_by: string | null
 }
 
 export interface ArenaIndex {

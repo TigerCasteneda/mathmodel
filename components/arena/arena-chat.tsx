@@ -40,6 +40,7 @@ import {
   type ChatWsEvent,
 } from "@/lib/arena-chat-ws"
 import { useAuth } from "@/hooks/use-auth"
+import { UserAvatar } from "@/components/ui/user-avatar"
 
 // ── helpers ──
 
@@ -86,23 +87,6 @@ function fileIconForMime(mime: string | null | undefined) {
 }
 
 // ── sub-components ──
-
-function AvatarBubble({ name, userId }: { name: string; userId: string }) {
-  const initial = (name || userId || "?").charAt(0).toUpperCase()
-  // deterministic color from user_id
-  const hue = userId
-    .split("")
-    .reduce((acc, ch) => acc + ch.charCodeAt(0), 0) % 360
-  return (
-    <span
-      className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-xs font-bold text-white"
-      style={{ backgroundColor: `hsl(${hue}, 55%, 45%)` }}
-      title={name}
-    >
-      {initial}
-    </span>
-  )
-}
 
 function MarkdownContent({ content }: { content: string }) {
   return (
@@ -238,7 +222,7 @@ function ChatBubble({
 
   return (
     <div className={cn("flex gap-2 py-1.5", isMine && "flex-row-reverse")}>
-      <AvatarBubble name={message.display_name} userId={message.user_id} />
+      <UserAvatar userId={message.user_id} name={message.display_name} size="md" />
       <div className={cn("min-w-0 max-w-[75%]", isMine && "items-end")}>
         {/* header */}
         <div className={cn("mb-0.5 flex items-center gap-2 text-xs", isMine && "flex-row-reverse")}>

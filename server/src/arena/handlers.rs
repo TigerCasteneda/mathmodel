@@ -28,6 +28,8 @@ struct ArenaFileRow {
     name: String,
     updated_at: i64,
     ydoc_state: Option<Vec<u8>>,
+    created_by: Option<String>,
+    last_edited_by: Option<String>,
 }
 
 pub fn routes() -> Router<AppState> {
@@ -291,7 +293,8 @@ async fn load_card_rows(
 ) -> Result<Vec<ArenaFileRow>, AppError> {
     let (_, cards_id, _) = ensure_arena_folders(pool, project_id).await?;
     let rows = sqlx::query_as::<_, ArenaFileRow>(
-        "SELECT f.id, f.name, f.updated_at, c.ydoc_state
+        "SELECT f.id, f.name, f.updated_at, c.ydoc_state,
+                f.created_by, f.last_edited_by
          FROM files f
          LEFT JOIN crdt_docs c ON c.file_id = f.id
          WHERE f.project_id = ? AND f.parent_id = ? AND f.type = 'file' AND f.name LIKE '%.md'
@@ -320,6 +323,8 @@ fn card_from_row(row: ArenaFileRow) -> Result<ArenaCard, AppError> {
         unresolved_links: Vec::new(),
         content,
         updated_at: row.updated_at,
+        created_by: row.created_by,
+        last_edited_by: row.last_edited_by,
     })
 }
 
@@ -371,7 +376,7 @@ async fn create_card(
 
     let mut tx = state.pool.begin().await?;
     sqlx::query(
-        "INSERT INTO files (id, project_id, parent_id, name, type, mime_type, size, zone, created_at, updated_at) VALUES (?, ?, ?, ?, 'file', 'text/markdown', ?, ?, ?, ?)",
+        "INSERT INTO files (id, project_id, parent_id, name, type, mime_type, size, zone, created_at, updated_at, created_by, last_edited_by) VALUES (?, ?, ?, ?, 'file', 'text/markdown', ?, ?, ?, ?, ?, ?)",
     )
     .bind(&file_id)
     .bind(&project_id)
@@ -381,6 +386,8 @@ async fn create_card(
     .bind(ARENA_ZONE)
     .bind(now)
     .bind(now)
+    .bind(&auth.user_id)
+    .bind(&auth.user_id)
     .execute(&mut *tx)
     .await?;
     sqlx::query("INSERT INTO crdt_docs (file_id, ydoc_state, updated_at) VALUES (?, ?, ?)")
@@ -404,6 +411,8 @@ async fn create_card(
         unresolved_links: Vec::new(),
         content,
         updated_at: now,
+        created_by: Some(auth.user_id.clone()),
+        last_edited_by: Some(auth.user_id),
     }))
 }
 
@@ -416,15 +425,15 @@ async fn update_card(
     ensure_capability(&state.pool, &project_id, &auth.user_id, "files.write").await?;
 
     let (_, cards_id, _) = ensure_arena_folders(&state.pool, &project_id).await?;
-    let file: Option<(String, i64)> = sqlx::query_as(
-        "SELECT name, updated_at FROM files WHERE id = ? AND project_id = ? AND parent_id = ? AND type = 'file'",
+    let file: Option<(String, i64, Option<String>)> = sqlx::query_as(
+        "SELECT name, updated_at, created_by FROM files WHERE id = ? AND project_id = ? AND parent_id = ? AND type = 'file'",
     )
     .bind(&file_id)
     .bind(&project_id)
     .bind(&cards_id)
     .fetch_optional(&state.pool)
     .await?;
-    let (name, updated_at) =
+    let (name, updated_at, created_by) =
         file.ok_or_else(|| AppError::NotFound("arena card not found".into()))?;
     if let Some(expected_updated_at) = req.expected_updated_at {
         if updated_at != expected_updated_at {
@@ -445,13 +454,16 @@ async fn update_card(
     .bind(now)
     .execute(&mut *tx)
     .await?;
-    sqlx::query("UPDATE files SET size = ?, updated_at = ? WHERE id = ? AND project_id = ?")
-        .bind(req.content.len() as i64)
-        .bind(now)
-        .bind(&file_id)
-        .bind(&project_id)
-        .execute(&mut *tx)
-        .await?;
+    sqlx::query(
+        "UPDATE files SET size = ?, updated_at = ?, last_edited_by = ? WHERE id = ? AND project_id = ?",
+    )
+    .bind(req.content.len() as i64)
+    .bind(now)
+    .bind(&auth.user_id)
+    .bind(&file_id)
+    .bind(&project_id)
+    .execute(&mut *tx)
+    .await?;
     tx.commit().await?;
 
     let parsed = parse_arena_markdown(&req.content, name.strip_suffix(".md").unwrap_or(&name));
@@ -467,6 +479,8 @@ async fn update_card(
         unresolved_links: Vec::new(),
         content: req.content,
         updated_at: now,
+        created_by,
+        last_edited_by: Some(auth.user_id),
     }))
 }
 
@@ -526,7 +540,7 @@ async fn append_log(
     let ydoc_state = encode_text_as_crdt(&content);
     let mut tx = state.pool.begin().await?;
     sqlx::query(
-        "INSERT OR IGNORE INTO files (id, project_id, parent_id, name, type, mime_type, size, zone, created_at, updated_at) VALUES (?, ?, ?, ?, 'file', 'text/markdown', ?, ?, ?, ?)",
+        "INSERT OR IGNORE INTO files (id, project_id, parent_id, name, type, mime_type, size, zone, created_at, updated_at, created_by, last_edited_by) VALUES (?, ?, ?, ?, 'file', 'text/markdown', ?, ?, ?, ?, ?, ?)",
     )
     .bind(&file_id)
     .bind(&project_id)
@@ -536,6 +550,8 @@ async fn append_log(
     .bind(ARENA_ZONE)
     .bind(now)
     .bind(now)
+    .bind(&auth.user_id)
+    .bind(&auth.user_id)
     .execute(&mut *tx)
     .await?;
     sqlx::query(
@@ -546,13 +562,16 @@ async fn append_log(
     .bind(now)
     .execute(&mut *tx)
     .await?;
-    sqlx::query("UPDATE files SET size = ?, updated_at = ? WHERE id = ? AND project_id = ?")
-        .bind(content.len() as i64)
-        .bind(now)
-        .bind(&file_id)
-        .bind(&project_id)
-        .execute(&mut *tx)
-        .await?;
+    sqlx::query(
+        "UPDATE files SET size = ?, updated_at = ?, last_edited_by = ? WHERE id = ? AND project_id = ?",
+    )
+    .bind(content.len() as i64)
+    .bind(now)
+    .bind(&auth.user_id)
+    .bind(&file_id)
+    .bind(&project_id)
+    .execute(&mut *tx)
+    .await?;
     tx.commit().await?;
 
     Ok(Json(AppendArenaLogResponse {
@@ -560,4 +579,39 @@ async fn append_log(
         content,
         updated_at: now,
     }))
+}
+
+#[cfg(test)]
+mod authorship_tests {
+    use super::*;
+
+    /// Regression: the `files.created_by` / `files.last_edited_by` columns
+    /// must exist after the migration runs. Pure PRAGMA check — doesn't
+    /// exercise the handlers but catches the case where someone adds a new
+    /// migration file but forgets to register it in `db.rs::run_migrations`.
+    #[test]
+    fn migration_adds_authorship_columns() {
+        let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
+        runtime.block_on(async {
+            let pool = sqlx::SqlitePool::connect("sqlite::memory:")
+                .await
+                .expect("connect");
+            crate::db::init_pool_in_memory(&pool).await;
+
+            let cols: Vec<(String,)> = sqlx::query_as(
+                "SELECT name FROM pragma_table_info('files')
+                 WHERE name IN ('created_by', 'last_edited_by')
+                 ORDER BY name",
+            )
+            .fetch_all(&pool)
+            .await
+            .expect("pragma_table_info");
+            let names: Vec<&str> = cols.iter().map(|(n,)| n.as_str()).collect();
+            assert_eq!(
+                names,
+                vec!["created_by", "last_edited_by"],
+                "migration 009_arena_authorship must add both columns to files",
+            );
+        });
+    }
 }

@@ -23,6 +23,7 @@ async fn run_migrations(pool: &SqlitePool) {
     run_specific_migration(pool, include_str!("../migrations/003_history.sql")).await;
     run_specific_migration(pool, include_str!("../migrations/004_research.sql")).await;
     run_specific_migration(pool, include_str!("../migrations/008_arena_chat.sql")).await;
+    run_specific_migration(pool, include_str!("../migrations/009_arena_authorship.sql")).await;
     run_005_migration(pool).await;
     run_006_migration(pool).await;
     run_007_migration(pool).await;
@@ -35,6 +36,13 @@ pub async fn run_specific_migration(pool: &SqlitePool, sql: &str) {
             .await
             .expect("Failed to run migration");
     }
+}
+
+/// Run the migration suite against an already-connected pool. Used by
+/// unit tests that want to bring up an in-memory SQLite and exercise
+/// handlers/schema without touching the filesystem.
+pub async fn init_pool_in_memory(pool: &SqlitePool) {
+    run_migrations(pool).await;
 }
 
 /// Idempotent column addition: checks PRAGMA table_info before ALTER TABLE.

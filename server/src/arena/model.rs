@@ -13,6 +13,13 @@ pub struct ArenaCard {
     pub unresolved_links: Vec<String>,
     pub content: String,
     pub updated_at: i64,
+    /// `user_id` of the user who originally created this card. `None` for
+    /// legacy rows inserted before the authorship migration.
+    pub created_by: Option<String>,
+    /// `user_id` of the user who most recently saved this card. `None` for
+    /// legacy rows. Updated on every successful `update_card` /
+    /// `append_log`; the corresponding `updated_at` ticks alongside it.
+    pub last_edited_by: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -108,6 +115,8 @@ mod tests {
             unresolved_links: Vec::new(),
             content: String::new(),
             updated_at: 0,
+            created_by: None,
+            last_edited_by: None,
         }
     }
 

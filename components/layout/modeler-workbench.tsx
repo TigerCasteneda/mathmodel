@@ -50,7 +50,6 @@ import {
   getToken,
   getProject,
   getProjectFileContent,
-  listProjectMembers,
   listProjectInvites,
   listProjectTree,
   listResearchItems,
@@ -70,6 +69,7 @@ import {
 import { researchItemToArenaInput, searchResultToArenaInput } from "@/lib/research-to-arena"
 import { AgentResearchView } from "@/components/research/agent-research-view"
 import { useAuth } from "@/hooks/use-auth"
+import { useProjectMembers } from "@/hooks/use-project-members"
 
 type Activity =
   | "explorer"
@@ -950,7 +950,6 @@ function MembersPanel({
   screenShare: ReturnType<typeof useScreenShare>
   onProjectRefresh: () => Promise<void>
 }) {
-  const [members, setMembers] = useState<ProjectMember[]>([])
   const [invites, setInvites] = useState<ProjectInvite[]>([])
   const [invite, setInvite] = useState("")
   const [inviteRole, setInviteRole] = useState<ProjectRole>("editor")
@@ -959,9 +958,11 @@ function MembersPanel({
   const showShareControl = screenShare.canShare && project?.role !== "owner"
   const showViewControl = screenShare.canView
 
-  const refreshMembers = async () => {
-    try { setMembers(await listProjectMembers(projectId)) } catch { setMembers([]) }
-  }
+  // Members list is shared with the Arena panel (for resolving card
+  // authorship user_ids → display names). `refresh` is called by member-
+  // mutation handlers below; the hook handles initial fetch + projectId
+  // changes on its own.
+  const { members, refresh: refreshMembers } = useProjectMembers(projectId)
 
   const refreshInvites = async () => {
     if (!canManageInvites) return
@@ -969,7 +970,6 @@ function MembersPanel({
   }
 
   useEffect(() => {
-    void refreshMembers()
     void refreshInvites()
   }, [projectId, canManageInvites])
 
