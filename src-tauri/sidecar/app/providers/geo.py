@@ -43,6 +43,7 @@ try:
     import geopandas as gpd
     from shapely.geometry import shape as _shape
     from shapely.ops import unary_union
+    from osmnx._errors import InsufficientResponseError
 
     ox.settings.http_user_agent = _DEFAULT_UA
     ox.settings.cache_folder = _CACHE_DIR
@@ -113,6 +114,16 @@ def _maybe_tags(tags: dict | None) -> dict | None:
     return {k: v for k, v in tags.items() if v is not None}
 
 
+def _safe_float(value: Any) -> float | None:
+    """Parse Nominatim's stringy lat/lon into a float; None on failure."""
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 # ── public surface ────────────────────────────────────────────────────
 
 
@@ -121,26 +132,57 @@ async def geocode_places(q: str, limit: int = 5) -> list[dict[str, Any]]:
 
     Returns a list of matches, each `{id, display_name, bbox, lat, lon, geojson}`.
     `bbox` is `[west, south, east, north]` in WGS84.
+
+    Returns `[]` instead of raising when Nominatim finds no candidates —
+    an unknown query is a normal user-facing outcome, not a server fault.
+
+    Implementation note: we hit Nominatim's /search endpoint directly
+    with `limit=N` (via osmnx's private `_download_nominatim_element`).
+    `ox.geocode_to_gdf`'s `which_result` doesn't compose well with
+    multi-result lookups: passing a list assigns it to the query-string
+    `limit` parameter as a stringified list, which Nominatim ignores,
+    so we get 0 results instead of N.
     """
     _require_osmnx()
 
     def _run() -> list[dict[str, Any]]:
-        gdf = ox.geocode_to_gdf(q)
-        if gdf.empty:
+        from osmnx import _nominatim  # private but stable shape — see note above
+        try:
+            raw = _nominatim._download_nominatim_element(
+                q,
+                by_osmid=False,
+                limit=limit,
+                polygon_geojson=True,
+            )
+        except Exception:
+            # Network errors, rate limits, etc. — treat as no results so
+            # the front-end dropdown just shows empty rather than 502.
             return []
-        # gdf columns: geometry, bbox (tuple), lat, lon, display_name,
-        # osmid, class, type, place_rank, etc.
-        out = []
-        for _, row in gdf.head(limit).iterrows():
-            geom = row.geometry
-            bbox = row.get("bbox") if hasattr(row, "get") else None
+        if not raw:
+            return []
+        out: list[dict[str, Any]] = []
+        for hit in raw:
+            bbox_str = hit.get("boundingbox") or []
+            # Nominatim returns boundingbox as [south, north, west, east] strings
+            bbox = None
+            if len(bbox_str) == 4:
+                try:
+                    s, n, w, e = (float(x) for x in bbox_str)
+                    bbox = [w, s, e, n]
+                except (TypeError, ValueError):
+                    bbox = None
+            lat = _safe_float(hit.get("lat"))
+            lon = _safe_float(hit.get("lon"))
+            osm_id = hit.get("osm_id")
+            osm_type = hit.get("osm_type")  # 'node' | 'way' | 'relation'
+            ident = f"{osm_type[0].upper()}{osm_id}" if osm_type and osm_id else str(osm_id or len(out))
             out.append({
-                "id": str(row.get("osmid", row.name)),
-                "display_name": str(row.get("display_name", q)),
-                "lat": float(row.get("lat")) if row.get("lat") is not None else None,
-                "lon": float(row.get("lon")) if row.get("lon") is not None else None,
-                "bbox": list(bbox) if bbox is not None else None,
-                "geojson": geom.__geo_interface__ if geom is not None else None,
+                "id": ident,
+                "display_name": hit.get("display_name") or q,
+                "lat": lat,
+                "lon": lon,
+                "bbox": bbox,
+                "geojson": hit.get("geojson"),
             })
         return out
 
